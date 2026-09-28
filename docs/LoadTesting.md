@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Cintamaya <contact@cintamaya.com>
+# SPDX-FileCopyrightText: 2026 Baptiste COQUELET <github.com/BaptisteCoquelet>
+# SPDX-License-Identifier: CC BY-ND 4.0
+
 # Tests de charge
 
 La commande Django `load_test` génère des données synthétiques isolées et lance des charges directes PostgreSQL ou HTTP. Elle n'ajoute ni dépendance ni table dédiée.

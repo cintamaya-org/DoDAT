@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Cintamaya <contact@cintamaya.com>
+# SPDX-FileCopyrightText: 2026 Baptiste COQUELET <github.com/BaptisteCoquelet>
+# SPDX-License-Identifier: CC BY-ND 4.0
+
 # Modèle de sécurité
 
 **Public visé :** développeurs, exploitants, auditeurs et responsables sécurité.  

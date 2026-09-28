@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Cintamaya <contact@cintamaya.com>
+# SPDX-FileCopyrightText: 2026 Baptiste COQUELET <github.com/BaptisteCoquelet>
+# SPDX-License-Identifier: CC BY-ND 4.0
+
 # Stockage des données d'un DAT
 
 **Public visé :** développeurs, exploitants PostgreSQL et personnes responsables des exports DAT.
