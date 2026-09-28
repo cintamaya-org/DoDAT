@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Cintamaya <contact@cintamaya.com>
+# SPDX-FileCopyrightText: 2026 Baptiste COQUELET <github.com/BaptisteCoquelet>
+# SPDX-License-Identifier: CC-BY-ND-4.0
+
 # Génération des flux applicatifs depuis draw.io et LikeC4
 
 **Public visé :** architectes, responsables de DAT et développeurs.  

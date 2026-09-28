@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Cintamaya <contact@cintamaya.com>
+# SPDX-FileCopyrightText: 2026 Baptiste COQUELET <github.com/BaptisteCoquelet>
+# SPDX-License-Identifier: CC-BY-ND-4.0
+
 # Configuration
 
 **Public visé :** développeurs et exploitants.  
@@ -32,17 +36,74 @@ Booléens Django acceptés comme vrais : `1`, `true`, `yes`, `on`, sans distinct
 
 ## Base de données
 
-| Variable | Défaut Django |
-| --- | --- |
-| `DATABASE_NAME` | `POSTGRES_DB`, sinon vide |
-| `DATABASE_USER` | `POSTGRES_USER`, sinon vide |
-| `DATABASE_PASSWORD` | `POSTGRES_PASSWORD`, sinon vide |
-| `DATABASE_HOST` | `db` |
-| `DATABASE_PORT` | `5432` |
+Le mode de connexion est explicite :
 
-Variables `POSTGRES_*` configurent aussi le conteneur PostgreSQL. En environnement avec PgBouncer, Django vise PgBouncer (`DATABASE_HOST`, `DATABASE_PORT=6432`) et PgBouncer vise PostgreSQL.
+- `DB_MODE=local` (défaut) conserve le conteneur PostgreSQL fourni par Compose ;
+- `DB_MODE=external` connecte Django directement à un serveur PostgreSQL joignable depuis le réseau des conteneurs. En mode scaling, PgBouncer local est alors désactivé et Django se connecte directement à PostgreSQL.
 
-Secrets DB doivent différer entre environnements et rester dans gestionnaire de secrets.
+| Variable | Défaut | Usage |
+| --- | --- | --- |
+| `DB_MODE` | `local` | `local` ou `external`. Toute autre valeur bloque le démarrage. |
+| `DATABASE_HOST` | `db` en local | Nom ou adresse du serveur PostgreSQL. Obligatoire en mode externe. |
+| `DATABASE_PORT` | `5432` | Port PostgreSQL, compris entre `1` et `65535`. |
+| `DATABASE_NAME` | `POSTGRES_DB`, sinon vide | Base de données. Obligatoire en mode externe. |
+| `DATABASE_USER` | `POSTGRES_USER`, sinon vide | Utilisateur PostgreSQL. Obligatoire en mode externe. |
+| `DATABASE_PASSWORD` | `POSTGRES_PASSWORD`, sinon vide | Mot de passe. Peut être vide si l'authentification PostgreSQL le permet. |
+| `DATABASE_SSLMODE` | `prefer` en local, `require` en externe | `disable`, `allow`, `prefer`, `require`, `verify-ca` ou `verify-full`. |
+| `DATABASE_WAIT_TIMEOUT` | `120` secondes | Durée maximale d'attente d'une connexion DB au démarrage. |
+
+En mode local, les variables `POSTGRES_DB`, `POSTGRES_USER` et `POSTGRES_PASSWORD` servent à initialiser le conteneur PostgreSQL et restent les valeurs de repli de Django. En mode externe, le serveur, la base, l'utilisateur, les permissions et les sauvegardes doivent être préparés hors de Compose. `DATABASE_URL` n'est pas une interface supportée.
+
+### Exemple PostgreSQL externe
+
+Dans `.env`, remplacer les valeurs d'exemple par celles fournies par l'administrateur PostgreSQL :
+
+```dotenv
+DB_MODE=external
+DATABASE_HOST=postgres.example.internal
+DATABASE_PORT=5432
+DATABASE_NAME=cintafactory
+DATABASE_USER=cintafactory_app
+DATABASE_PASSWORD=replace-with-db-password
+DATABASE_SSLMODE=require
+DATABASE_WAIT_TIMEOUT=120
+```
+
+L'utilisateur doit disposer uniquement des permissions nécessaires à l'application. Le serveur PostgreSQL doit autoriser le réseau des conteneurs dans son pare-feu et les identifiants doivent rester dans un gestionnaire de secrets. L'exploitant externe reste responsable du provisionnement, des migrations, des sauvegardes/restaurations, de la supervision, des mises à jour et des règles réseau.
+
+### Commandes Compose
+
+Développement avec PostgreSQL fourni par Compose :
+
+```bash
+docker compose -f docker-compose.dev.yml up -d --build
+```
+
+Développement avec PostgreSQL externe :
+
+```bash
+docker compose -f docker-compose.dev.yml -f docker-compose.dev.external.yml up -d --build
+```
+
+Scaling avec la base locale et PgBouncer :
+
+```bash
+docker compose -f docker-compose.scaling.dev.yml up -d --build
+```
+
+Scaling avec PostgreSQL externe, sans conteneur `db` ni PgBouncer :
+
+```bash
+docker compose -f docker-compose.scaling.dev.yml -f docker-compose.scaling.dev.external.yml up -d --build
+```
+
+Les fichiers externes utilisent la fusion Compose `!override` pour retirer uniquement les dépendances liées à la base. Ils nécessitent une version récente de Docker Compose v2. Le fichier de déploiement utilise déjà une base PostgreSQL externe : renseigner les mêmes variables `DB_MODE` et `DATABASE_*` dans `deploy/env/prod.env` ou `deploy/env/test.env`.
+
+### TLS PostgreSQL
+
+Utiliser au minimum `DATABASE_SSLMODE=require` pour une base externe sur un réseau non totalement isolé. `require` chiffre la connexion, mais ne vérifie pas l'autorité de certification ni le nom d'hôte. Préférer `verify-full` lorsque le certificat et l'autorité de certification sont disponibles dans l'image ; `verify-ca` vérifie l'autorité sans vérifier le nom d'hôte. Réserver `disable` à un réseau maîtrisé et isolé. Ne pas utiliser `prefer` comme choix explicite pour une base externe si le chiffrement est obligatoire.
+
+Le démarrage appelle `wait_for_database` et n'inscrit pas les mots de passe dans les logs. Avec `RUN_MIGRATIONS=1`, les migrations sont exécutées après que la connexion est disponible ; leur responsabilité et leur fenêtre d'exécution restent à définir par l'exploitant de la base externe.
 
 ## Sécurité HTTP et secrets
 

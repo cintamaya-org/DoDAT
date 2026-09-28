@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Cintamaya <contact@cintamaya.com>
+# SPDX-FileCopyrightText: 2026 Baptiste COQUELET <github.com/BaptisteCoquelet>
+# SPDX-License-Identifier: CC-BY-ND-4.0
+
 # CintaFactory
 
 **CintaFactory** est une plateforme Django destinée à centraliser la gestion des dossiers d'architecture technique, appelés **DAT**. Le projet couvre le cycle de vie complet d'un DAT : création, structuration du contenu, affectation des responsables, validation par workflow, suivi des décisions, exports sécurisés et visualisation de diagrammes.

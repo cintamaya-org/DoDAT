@@ -129,8 +129,6 @@ class FrontendAssetTests(SimpleTestCase):
         self.assertIsNotNone(favicon_path)
         with Image.open(favicon_path) as favicon:
             self.assertEqual(favicon.format, "ICO")
-
-
 class DatabaseSettingsTests(SimpleTestCase):
     def test_local_database_config_preserves_postgres_fallbacks(self):
         config = _build_database_config(
@@ -192,6 +190,12 @@ class DatabaseSettingsTests(SimpleTestCase):
         with self.assertRaisesMessage(ImproperlyConfigured, "DATABASE_SSLMODE must be"):
             _build_database_config({"DATABASE_SSLMODE": "unsafe"})
 
+    def test_favicon_has_real_ico_content(self):
+        favicon_path = finders.find("imgs/logo.ico")
+
+        self.assertIsNotNone(favicon_path)
+        with Image.open(favicon_path) as favicon:
+            self.assertEqual(favicon.format, "ICO")
 
 
 class UrlSafetyTests(SimpleTestCase):

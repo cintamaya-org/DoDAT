@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Cintamaya <contact@cintamaya.com>
+# SPDX-FileCopyrightText: 2026 Baptiste COQUELET <github.com/BaptisteCoquelet>
+# SPDX-License-Identifier: CC-BY-ND-4.0
+
 # CintaFactory Monitoring Guide
 
 This document explains the current monitoring and observability system for the local platform.

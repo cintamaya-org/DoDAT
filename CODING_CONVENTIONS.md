@@ -1,7 +1,10 @@
+# SPDX-FileCopyrightText: 2026 Cintamaya <contact@cintamaya.com>
+# SPDX-FileCopyrightText: 2026 Baptiste COQUELET <github.com/BaptisteCoquelet>
+# SPDX-License-Identifier: CC-BY-ND-4.0
 
 # Norme de Nommage - CintaFactory
 
-**Version 1.0**  
+**Version 1.1**  
 Date : 21/10/2025
 
 ---
@@ -65,9 +68,3 @@ Ces normes visent à :
 | Constante             | `DEFAULT_PAGE_SIZE = 42`, `MAX_LOGIN_ATTEMPTS = 5` |
 
 ---
-
-Django Naming conventions
-
-## REUSE Standard
-
-TODO

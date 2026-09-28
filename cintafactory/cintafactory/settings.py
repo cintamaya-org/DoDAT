@@ -223,17 +223,73 @@ WSGI_APPLICATION = 'cintafactory.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.environ.get("DATABASE_NAME", os.environ.get("POSTGRES_DB", "")),
-        "USER": os.environ.get("DATABASE_USER", os.environ.get("POSTGRES_USER", "")),
-        "PASSWORD": os.environ.get("DATABASE_PASSWORD", os.environ.get("POSTGRES_PASSWORD", "")),
-        "HOST": os.environ.get("DATABASE_HOST", "db"),
-        "PORT": os.environ.get("DATABASE_PORT", "5432"),
-        # "OPTIONS": {"sslmode": "prefer"}, if needed in external prod DB
-    }
+_SUPPORTED_DB_MODES = {"local", "external"}
+_SUPPORTED_DATABASE_SSLMODES = {
+    "disable",
+    "allow",
+    "prefer",
+    "require",
+    "verify-ca",
+    "verify-full",
 }
+
+
+def _env_value(environ, name: str, default: str = "") -> str:
+    value = environ.get(name)
+    if value is None or value == "":
+        return default
+    return value
+
+
+def _build_database_config(environ=None) -> dict[str, object]:
+    """Build Django's PostgreSQL configuration from process environment."""
+    env = os.environ if environ is None else environ
+    db_mode = str(_env_value(env, "DB_MODE", "local")).strip().lower()
+    if db_mode not in _SUPPORTED_DB_MODES:
+        supported = ", ".join(sorted(_SUPPORTED_DB_MODES))
+        raise ImproperlyConfigured(f"DB_MODE must be one of: {supported}.")
+
+    if db_mode == "external":
+        required = {
+            name: str(env.get(name, "")).strip()
+            for name in ("DATABASE_HOST", "DATABASE_NAME", "DATABASE_USER")
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            raise ImproperlyConfigured(
+                "External DB mode requires: " + ", ".join(missing) + "."
+            )
+
+    host = _env_value(env, "DATABASE_HOST", "db")
+    port = _env_value(env, "DATABASE_PORT", "5432")
+    name = _env_value(env, "DATABASE_NAME", _env_value(env, "POSTGRES_DB"))
+    user = _env_value(env, "DATABASE_USER", _env_value(env, "POSTGRES_USER"))
+    password = env.get("DATABASE_PASSWORD")
+    if password is None:
+        password = env.get("POSTGRES_PASSWORD", "")
+
+    if not str(port).isdigit() or not 1 <= int(port) <= 65535:
+        raise ImproperlyConfigured("DATABASE_PORT must be an integer between 1 and 65535.")
+
+    sslmode = _env_value(
+        env,
+        "DATABASE_SSLMODE",
+        "require" if db_mode == "external" else "prefer",
+    ).strip().lower()
+    if sslmode not in _SUPPORTED_DATABASE_SSLMODES:
+        supported = ", ".join(sorted(_SUPPORTED_DATABASE_SSLMODES))
+        raise ImproperlyConfigured(f"DATABASE_SSLMODE must be one of: {supported}.")
+
+    return {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": name,
+        "USER": user,
+        "PASSWORD": password,
+        "HOST": host,
+        "PORT": port,
+        "OPTIONS": {"sslmode": sslmode},
+    }
+
 
 
 # Password validation
