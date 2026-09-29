@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from django.contrib.messages import get_messages
 from django.contrib.auth import get_user_model
 from django.test import Client, RequestFactory, TestCase
 from django.urls import reverse
@@ -527,6 +528,56 @@ class WorkflowNotificationsViewTests(TestCase):
         self.user_notification.refresh_from_db()
         self.assertIsNotNone(self.user_notification.viewed_at)
 
+    def test_notification_levels_are_displayed_in_french(self):
+        expected_labels = {
+            NotificationType.LEVEL_INFO: "Information",
+            NotificationType.LEVEL_SUCCESS: "Succès",
+            NotificationType.LEVEL_WARNING: "Avertissement",
+            NotificationType.LEVEL_ERROR: "Erreur",
+        }
+        for index, level in enumerate(expected_labels, start=1):
+            notification_type = NotificationType.objects.create(
+                title=f"Notification niveau {index}",
+                level=level,
+            )
+            UserNotification.objects.create(
+                user=self.user,
+                notification_type=notification_type,
+                notification_message=self.notification_message,
+                dat=self.dat,
+            )
+
+        response = self.client.get(reverse("workflows:notifications"))
+
+        for label in expected_labels.values():
+            self.assertContains(response, label)
+        self.assertNotRegex(
+            response.content.decode(),
+            r">\s*(?:Info|Success|Warning|Error)\s*<",
+        )
+
+    def test_notification_model_labels_are_french(self):
+        self.assertEqual(str(NotificationType._meta.verbose_name), "Type de notification")
+        self.assertEqual(str(NotificationType._meta.verbose_name_plural), "Types de notification")
+        self.assertEqual(str(NotificationMessage._meta.verbose_name), "Message de notification")
+        self.assertEqual(
+            str(NotificationMessage._meta.verbose_name_plural),
+            "Messages de notification",
+        )
+        self.assertEqual(str(UserNotification._meta.verbose_name), "Notification utilisateur")
+        self.assertEqual(
+            str(UserNotification._meta.verbose_name_plural),
+            "Notifications utilisateur",
+        )
+        self.assertEqual(
+            str(HistoryNotificationSeen._meta.verbose_name),
+            "Consultation d’historique de workflow",
+        )
+        self.assertEqual(
+            str(HistoryNotificationSeen._meta.verbose_name_plural),
+            "Consultations d’historique de workflow",
+        )
+
     def test_notifications_are_scoped_to_connected_user(self):
         other_user = get_user_model().objects.create_user(username="notif-other", password="pwd")
         other_notification_type = NotificationType.objects.create(
@@ -588,6 +639,10 @@ class WorkflowNotificationsViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            [str(message) for message in get_messages(response.wsgi_request)],
+            ["Toutes les notifications ont été marquées comme lues."],
+        )
         self.assertTrue(
             HistoryNotificationSeen.objects.filter(user=self.user, history=self.history).exists()
         )

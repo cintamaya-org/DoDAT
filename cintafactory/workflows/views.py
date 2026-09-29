@@ -210,7 +210,7 @@ class WorkflowNotificationsView(LoginRequiredMixin, TemplateView):
     def post(self, request, *args, **kwargs):
         if request.POST.get("mark_all") == "1":
             mark_all_notifications_as_seen(request.user)
-            messages.success(request, "Toutes les notifications ont ete marquees comme lues.")
+            messages.success(request, "Toutes les notifications ont été marquées comme lues.")
         return redirect("workflows:notifications")
 
     def get_notifications(self, *, offset=0):
@@ -260,6 +260,7 @@ class WorkflowNotificationsView(LoginRequiredMixin, TemplateView):
                         "details": entry.user_notification.extra_data or {},
                         "action": entry.user_notification.level,
                         "level": entry.user_notification.level,
+                        "level_display": entry.user_notification.get_level_display(),
                         "target_url": entry.user_notification.target_url,
                         "is_unread": not entry.user_notification.is_viewed,
                     }

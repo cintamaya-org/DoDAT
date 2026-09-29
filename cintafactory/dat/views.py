@@ -2770,7 +2770,7 @@ class DATViewSet(BaseSecuredViewSet):
     search_fields = ("reference", "title", "description", "application__name", "application__code", "business_direction__name")
 
     layout = Layout(
-        Fieldset("Identite", Row("reference", "title"), Row("application")),
+        Fieldset("Identité", Row("reference", "title"), Row("application")),
         Fieldset(
             "Participants",
             Row("participant_porteur_demande"),
@@ -2823,7 +2823,7 @@ class ApplicationViewSet(PaginatedModelViewSetMixin, BaseSecuredViewSet):
 
     form_fields = ["code", "name", "business_direction", "description"]
     layout = Layout(
-        Fieldset("Identite", Row("code", "name"), Row("business_direction")),
+        Fieldset("Identité", Row("code", "name"), Row("business_direction")),
         Fieldset("Description", Row("description")),
     )
 

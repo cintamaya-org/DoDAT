@@ -88,7 +88,7 @@
                     {% endif %}
                   {% else %}
                     <span class="chip grey lighten-3">{{ notification.actor_name }}</span>
-                    <span class="chip blue lighten-5">{{ notification.level|default:"info"|capfirst }}</span>
+                    <span class="chip blue lighten-5">{{ notification.level_display|default:"Information" }}</span>
                   {% endif %}
                   {% if notification.is_unread %}
                     <span class="chip red darken-1 white-text">Nouveau</span>
