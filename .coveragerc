@@ -1,9 +1,6 @@
-# Périmètre mesuré par coverage, en CI comme en local.
 [run]
 source = cintafactory
 branch = True
-# Chemins relatifs à la racine du dépôt, sinon SonarQube ne rattache
-# la couverture à aucun fichier.
 relative_files = True
 omit =
     */migrations/*
