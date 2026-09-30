@@ -72,3 +72,5 @@ tmp/
 .sonarlint/
 .sonarlintshell.sh
 shell.sh
+
+uv.lock
