@@ -1,0 +1,105 @@
+name: "Tests unitaires"
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+      - dev-Abd
+    paths:
+      - "cintafactory/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/tests.yml"
+  pull_request:
+    branches:
+      - main
+      - dev
+      - dev-Abd
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    name: "Django — tests applicatifs"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: cintafactory_test
+          POSTGRES_USER: cintafactory
+          POSTGRES_PASSWORD: cintafactory
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cintafactory"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DJANGO_SECRET_KEY: ci-secret-key-not-used-in-production
+      DJANGO_DEBUG: "0"
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1
+      DATABASE_NAME: cintafactory_test
+      DATABASE_USER: cintafactory
+      DATABASE_PASSWORD: cintafactory
+      DATABASE_HOST: localhost
+      DATABASE_PORT: "5432"
+
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Installation de uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Installation des dépendances
+        run: uv sync --locked
+
+      - name: Vérification de la configuration Django
+        run: uv run python cintafactory/manage.py check
+
+      - name: Vérification de la dérive des migrations
+        run: uv run python cintafactory/manage.py makemigrations --check --dry-run
+
+      - name: Tests unitaires applicatifs
+        run: >-
+          uv run coverage run cintafactory/manage.py test
+          cintafactory dat users workflows diagrams configuration
+          --verbosity 2 --noinput
+
+      - name: Rapport de couverture
+        if: always()
+        run: |
+          uv run coverage xml -o coverage.xml
+          uv run coverage report
+
+      - name: Archivage du rapport de couverture
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.sha }}
+          path: coverage.xml
+          retention-days: 14
+
+      - name: SonarQube
+        if: always() && github.event.pull_request.user.login != 'dependabot[bot]'
+        uses: sonarsource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # 8.2.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
