@@ -159,6 +159,18 @@
                     {% endif %}
                   {% endif %}
                 </div>
+                <div class="wf-notification__actions">
+                  <form method="post" action="{% url 'workflows:notifications' %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="mark_notification" value="1">
+                    <input type="hidden" name="notification_source" value="{{ notification.source }}">
+                    <input type="hidden" name="notification_id" value="{% if notification.source == 'history' %}{{ notification.history.pk }}{% else %}{{ notification.user_notification.pk }}{% endif %}">
+                    <input type="hidden" name="page" value="{{ page_obj.number }}">
+                    <button type="submit" class="btn-flat"{% if not notification.is_unread %} disabled aria-disabled="true"{% endif %}>
+                      {% if notification.is_unread %}Marquer comme lue{% else %}Lue{% endif %}
+                    </button>
+                  </form>
+                </div>
               </div>
             </li>
           {% endfor %}

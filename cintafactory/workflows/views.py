@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core import signing
@@ -34,6 +36,8 @@ from .notifications import (
     mark_notifications_as_seen,
     mark_user_notifications_as_viewed,
     notification_count_for_user,
+    notification_queryset_for_user,
+    user_notification_queryset,
 )
 
 from cintafactory.pagination import DEFAULT_PAGE_SIZE
@@ -305,7 +309,41 @@ class WorkflowNotificationsView(LoginRequiredMixin, TemplateView):
         if request.POST.get("mark_all") == "1":
             mark_all_notifications_as_seen(request.user)
             messages.success(request, "Toutes les notifications ont été marquées comme lues.")
-        return redirect("workflows:notifications")
+        elif request.POST.get("mark_notification") == "1":
+            notification_source = request.POST.get("notification_source")
+            notification_id = request.POST.get("notification_id")
+            marked = False
+            if notification_source == "history":
+                try:
+                    history_id = int(notification_id)
+                except (TypeError, ValueError):
+                    history_id = None
+                if history_id is not None and notification_queryset_for_user(request.user).filter(
+                    pk=history_id
+                ).exists():
+                    mark_notifications_as_seen(request, [history_id])
+                    marked = True
+            elif notification_source == "user":
+                try:
+                    user_notification_id = UUID(notification_id)
+                except (TypeError, ValueError, AttributeError):
+                    user_notification_id = None
+                if user_notification_id is not None and user_notification_queryset(
+                    request.user
+                ).filter(pk=user_notification_id, viewed_at__isnull=True).exists():
+                    mark_user_notifications_as_viewed(request.user, [user_notification_id])
+                    marked = True
+            if marked:
+                messages.success(request, "Notification marquée comme lue.")
+
+        redirect_url = reverse("workflows:notifications")
+        try:
+            page_number = int(request.POST.get("page", "1"))
+        except (TypeError, ValueError):
+            page_number = 1
+        if page_number > 1:
+            redirect_url = f"{redirect_url}?page={page_number}"
+        return redirect(redirect_url)
 
     def get_notifications(self, *, offset=0):
         entries = fetch_notifications_for_user(
@@ -317,7 +355,6 @@ class WorkflowNotificationsView(LoginRequiredMixin, TemplateView):
         history_ids = [entry.history.id for entry in entries if entry.history is not None]
         seen_ids = get_seen_notification_ids(self.request, history_ids=history_ids)
         notifications = []
-        user_notification_ids = []
         for entry in entries:
             dat = entry.dat
             application = getattr(dat, "application", None) if dat else None
@@ -343,7 +380,6 @@ class WorkflowNotificationsView(LoginRequiredMixin, TemplateView):
                     }
                 )
             elif entry.user_notification is not None:
-                user_notification_ids.append(entry.user_notification.id)
                 payload.update(
                     {
                         "user_notification": entry.user_notification,
@@ -360,28 +396,7 @@ class WorkflowNotificationsView(LoginRequiredMixin, TemplateView):
                     }
                 )
             notifications.append(payload)
-        self._notification_history_ids = history_ids
-        self._notification_user_ids = user_notification_ids
         return notifications
-
-    def _mark_notifications_as_seen(self) -> None:
-        history_ids = getattr(self, "_notification_history_ids", [])
-        user_notification_ids = getattr(self, "_notification_user_ids", [])
-        if history_ids:
-            mark_notifications_as_seen(
-                self.request,
-                history_ids,
-            )
-        if user_notification_ids:
-            mark_user_notifications_as_viewed(
-                self.request.user,
-                user_notification_ids,
-            )
-
-    def render_to_response(self, context, **response_kwargs):
-        response = super().render_to_response(context, **response_kwargs)
-        response.add_post_render_callback(lambda _response: self._mark_notifications_as_seen())
-        return response
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
