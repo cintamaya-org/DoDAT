@@ -8,23 +8,34 @@
 
 L'objectif est de fournir un espace commun aux équipes métier, architecture et validation pour préparer, relire et tracer les dossiers d'architecture d'une application.
 
-## Quick start
+## Démarrage rapide
 
-1. Clone the repository.
-2. Populate `.env` like `.env.exemple`
+1. Clonez le dépôt.
+2. Créez un fichier `.env` à la racine du dépôt avec ces variables minimales :
 
-3. Start Docker:
+   ```dotenv
+   DJANGO_SECRET_KEY=local-demo-django-secret-change-me
+   SEAWEEDFS_JWT_WRITE_KEY=local-demo-seaweed-filer-write-key-123456
+   SEAWEEDFS_JWT_READ_KEY=local-demo-seaweed-filer-read-key-123456
+   SEAWEEDFS_VOLUME_JWT_WRITE_KEY=local-demo-seaweed-volume-write-key-123456
+   SEAWEEDFS_VOLUME_JWT_READ_KEY=local-demo-seaweed-volume-read-key-123456
+   ```
+
+   Ces valeurs sont prévues pour un lancement local. Les autres variables disponibles sont décrites dans [`.env.exemple`](./.env.exemple) pour personnaliser davantage la configuration.
+
+3. Démarrez les services Docker :
 
    ```bash
    docker compose -f docker-compose.dev.yml up -d --build
    ```
 
-4. Apply DB migrations:
+4. Appliquez les migrations de la base de données :
 
    ```bash
    docker compose -f docker-compose.dev.yml exec -T web python manage.py migrate
-   docker compose -f docker-compose.dev.yml exec -T web python manage.py makemigrations
    ```
+
+5. Accédez à l’application dans votre navigateur : <http://localhost:8101>. La page de connexion est aussi accessible à <http://localhost:8101/accounts/login/>.
 
 ## Ce que permet le projet
 
