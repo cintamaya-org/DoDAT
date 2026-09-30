@@ -37,6 +37,24 @@ L'objectif est de fournir un espace commun aux équipes métier, architecture et
 
 5. Accédez à l’application dans votre navigateur : <http://localhost:8101>. La page de connexion est aussi accessible à <http://localhost:8101/accounts/login/>.
 
+### Comptes par défaut
+
+Sur une base de données vierge, la migration initiale crée ces comptes :
+
+| Profil | Identifiant |
+| --- | --- |
+| Administrateur | `super_admin` |
+| Porteur de la demande | `porteur_demande_user` |
+| Architecte référent | `architecte_referent_user` |
+| Architecte technique | `architecte_technique_user` |
+| Urbaniste | `urbaniste_user` |
+| Analyste sécurité | `analyste_secu_user` |
+| RSSI | `rssi_user` |
+| Comité de validation | `comite_validation_user` |
+| Infrastructure / Exploitation | `infra_exploitation_user` |
+
+Mot de passe par défaut unique, commun à tous les comptes : `123+Aze`. Réservez ces identifiants à l’environnement local; changez-les avant toute exposition de l’application.
+
 ## Ce que permet le projet
 
 - Gérer les **applications** et leurs rattachements aux directions métier.
