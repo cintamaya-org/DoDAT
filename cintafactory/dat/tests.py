@@ -245,6 +245,30 @@ class ApplicationOptionsViewTest(TestCase):
         labels = [option["label"] for option in payload["options"]]
         self.assertEqual(labels, sorted(labels))
 
+    def test_refresh_returns_new_applications_without_cache(self):
+        self.client.force_login(self.staff)
+        first_response = self.client.get(self.url)
+        self.assertEqual(first_response.status_code, 200)
+        self.assertIn("no-store", first_response["Cache-Control"])
+        self.assertNotIn(
+            "New application",
+            [option["label"] for option in first_response.json()["options"]],
+        )
+
+        application = Application.objects.create(
+            code="new-application",
+            name="New application",
+            business_direction=get_default_business_direction(),
+        )
+        refreshed_response = self.client.get(self.url)
+
+        self.assertEqual(refreshed_response.status_code, 200)
+        self.assertIn("no-store", refreshed_response["Cache-Control"])
+        self.assertIn(
+            {"value": str(application.pk), "label": application.name},
+            refreshed_response.json()["options"],
+        )
+
     def test_skips_applications_without_direction(self):
         Application.objects.create(code="app-3", name="Sans direction", business_direction=None)
         self.client.force_login(self.staff)

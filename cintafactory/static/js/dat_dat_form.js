@@ -19,7 +19,11 @@
           button.dataset.originalHtml = originalHtml;
           button.disabled = true;
           button.innerHTML = '<i class="material-icons left" aria-hidden="true">autorenew</i>Actualisation...';
-          fetch(url, { credentials: "same-origin" })
+          fetch(url, {
+            credentials: "same-origin",
+            cache: "no-store",
+            headers: { Accept: "application/json" },
+          })
             .then(function (response) {
               if (!response.ok) {
                 throw new Error("bad response");

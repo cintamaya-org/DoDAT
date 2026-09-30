@@ -32,6 +32,7 @@ from django.shortcuts import get_object_or_404, redirect
 from django.template.loader import render_to_string
 from django.urls import reverse, reverse_lazy
 from django.views import View
+from django.views.decorators.cache import never_cache
 from django.views.generic import DetailView, ListView, TemplateView, FormView
 from django.views.decorators.http import require_POST, require_safe
 
@@ -3657,6 +3658,7 @@ def my_application_options(request):
 
 @login_required
 @require_safe
+@never_cache
 def application_options(request):
     if not (user_can_manage_dat(request.user) or user_can_create_dat_entities(request.user)):
         raise PermissionDenied
