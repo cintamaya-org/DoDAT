@@ -116,6 +116,12 @@ class DAT(models.Model):
     class Meta:
         db_table = "dat_dat"
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(
+                fields=["-updated_at", "-id"],
+                name="dat_updated_pk_desc_idx",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.reference} - {self.title}"
