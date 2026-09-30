@@ -2655,10 +2655,8 @@ class DATCreateView(ModuleContextMixin, CreateModelView):
         kwargs["user"] = self.request.user
         return kwargs
 
-    def form_valid(self, form):
-        response = super().form_valid(form)
+    def message_user(self):
         messages.success(self.request, "Le DAT a été créé avec succès.")
-        return response
 
     def get_success_url(self):
         if user_can_manage_dat(self.request.user):
