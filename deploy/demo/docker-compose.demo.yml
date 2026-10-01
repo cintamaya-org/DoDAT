@@ -1,42 +1,13 @@
 # Overlay de la démo publique, appliqué par-dessus docker-compose.yml :
 #   docker compose -p demo_factory -f docker-compose.yml -f deploy/demo/docker-compose.demo.yml up -d
-# Les chemins relatifs sont résolus depuis la racine du dépôt (dossier du premier fichier -f).
+# L'exposition HTTPS est assurée par le SWAG déjà présent sur le VPS
+# (voir deploy/demo/swag/dodat-demo.subdomain.conf) via le réseau swag-network.
 
 services:
   web:
     environment:
-      # Caddy termine le TLS : on garde la redirection HTTPS côté Caddy pour ne pas
-      # casser les appels internes en HTTP (likec4 -> http://web:8000/...).
       DJANGO_ENFORCE_STRICT_SECRETS: "1"
       SESSION_COOKIE_SECURE: "1"
       CSRF_COOKIE_SECURE: "1"
-
-  # Reverse proxy public avec certificats Let's Encrypt automatiques.
-  caddy:
-    image: caddy:2.10-alpine
-    container_name: ${APP_NAME}_caddy
-    restart: unless-stopped
-    depends_on:
-      - web
-    environment:
-      DEMO_DOMAIN: ${DEMO_DOMAIN:?Set DEMO_DOMAIN}
-      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL}
-      APP_PORT: ${APP_PORT:-8000}
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    volumes:
-      - ./deploy/demo/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    security_opt:
-      - no-new-privileges:true
-    networks:
-      - swag-network
-
-volumes:
-  caddy_data:
-    name: "${APP_NAME}_caddy_data"
-  caddy_config:
-    name: "${APP_NAME}_caddy_config"
+      # VPS partagé : on limite le nombre de workers (gunicorn.conf.py en lance 2*CPU+1 sinon).
+      GUNICORN_CMD_ARGS: "--workers 2"

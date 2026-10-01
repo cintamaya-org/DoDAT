@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Préparation initiale d'un VPS OVH (Ubuntu 22.04/24.04 ou Debian 12) pour la démo.
+# Préparation initiale d'un VPS OVH VIERGE (Ubuntu 22.04/24.04 ou Debian 12) pour la démo.
+# Ne pas utiliser sur un serveur qui héberge déjà des services : le script met à jour
+# le système et redémarre Docker, ce qui arrête les conteneurs sans politique de redémarrage.
 # À lancer UNE fois, en root, sur le VPS :
 #
 #   sudo DEPLOY_PUBKEY="ssh-ed25519 AAAA... github-actions-demo" bash bootstrap-vps.sh
@@ -20,6 +22,12 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 : "${DEPLOY_PUBKEY:?Fournir DEPLOY_PUBKEY (clé publique SSH utilisée par GitHub Actions)}"
+
+if command -v docker >/dev/null 2>&1 && [ -n "$(docker ps -q 2>/dev/null)" ] && [ "${FORCE:-0}" != "1" ]; then
+  echo "Des conteneurs tournent déjà sur cette machine : ce script est prévu pour un VPS vierge." >&2
+  echo "Abandon (FORCE=1 pour passer outre, en connaissance de cause)." >&2
+  exit 1
+fi
 
 # shellcheck disable=SC1091
 . /etc/os-release
@@ -47,7 +55,9 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 # Rotation des logs des conteneurs pour ne pas remplir le disque.
+docker_needs_restart=0
 if [ ! -f /etc/docker/daemon.json ]; then
+  docker_needs_restart=1
   cat > /etc/docker/daemon.json <<'EOF'
 {
   "log-driver": "json-file",
@@ -56,7 +66,9 @@ if [ ! -f /etc/docker/daemon.json ]; then
 EOF
 fi
 systemctl enable --now docker
-systemctl restart docker
+if [ "${docker_needs_restart}" = "1" ]; then
+  systemctl restart docker
+fi
 
 echo "==> Utilisateur de déploiement '${DEPLOY_USER}'"
 if ! id "${DEPLOY_USER}" >/dev/null 2>&1; then
