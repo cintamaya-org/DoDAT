@@ -1,7 +1,5 @@
 name: Déploiement DEMO (VPS OVH)
 
-# Déploie la démo à chaque tag de version (ex. v1.2.0).
-# Le lancement manuel permet de choisir un tag existant dans "Use workflow from" (redéploiement / retour arrière).
 on:
   push:
     tags:
@@ -11,7 +9,6 @@ on:
 permissions:
   contents: read
 
-# Un seul déploiement à la fois, sans interrompre celui en cours.
 concurrency:
   group: deploy-demo
   cancel-in-progress: false
@@ -20,7 +17,6 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # Secrets et variables sont rangés dans l'environnement GitHub "demo".
     environment:
       name: demo
       url: https://${{ vars.DEMO_DOMAIN }}
