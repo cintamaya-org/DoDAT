@@ -291,6 +291,8 @@ def _build_database_config(environ=None) -> dict[str, object]:
     }
 
 
+DATABASES = {"default": _build_database_config()}
+
 
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
