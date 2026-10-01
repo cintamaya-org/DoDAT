@@ -5,7 +5,6 @@ on:
     branches:
       - main
       - dev
-      - dev-Abd
     paths:
       - "cintafactory/**"
       - "pyproject.toml"
@@ -16,7 +15,6 @@ on:
     branches:
       - main
       - dev
-      - dev-Abd
   workflow_call:
 
 permissions:
