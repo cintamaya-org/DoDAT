@@ -1,0 +1,16 @@
+[run]
+source = cintafactory
+branch = True
+relative_files = True
+omit =
+    */migrations/*
+    */tests.py
+    */tests_*.py
+    */tests_ops/*
+    */manage.py
+    */settings.py
+    */wsgi.py
+    */asgi.py
+
+[report]
+skip_empty = True
