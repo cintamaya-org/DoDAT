@@ -3,7 +3,7 @@
 #
 # Entrées :
 #   - ${BASE_DIR}/demo.env          écrit par la CI à chaque déploiement
-#                                   (DEMO_DOMAIN, ACME_EMAIL, DEMO_ADMIN_*, DEMO_VERSION)
+#                                   (DEMO_DOMAIN, DEMO_ADMIN_*, DEMO_VERSION)
 #   - ${BASE_DIR}/demo-secrets.env  généré au premier déploiement puis conservé
 #                                   (clé Django, mot de passe Postgres, tokens LikeC4, clés SeaweedFS)
 set -euo pipefail
@@ -47,7 +47,6 @@ source "${SECRETS_FILE}"
 set +a
 
 : "${DEMO_DOMAIN:?DEMO_DOMAIN manquant}"
-: "${ACME_EMAIL:?ACME_EMAIL manquant}"
 : "${DEMO_ADMIN_USERNAME:?DEMO_ADMIN_USERNAME manquant}"
 : "${DEMO_ADMIN_EMAIL:?DEMO_ADMIN_EMAIL manquant}"
 : "${DEMO_ADMIN_PASSWORD:?DEMO_ADMIN_PASSWORD manquant}"
@@ -65,6 +64,19 @@ export POSTGRES_USER="cintafactory"
 export SEAWEEDFS_ALLOWED_ORIGINS="https://${DEMO_DOMAIN}"
 
 docker network inspect swag-network >/dev/null 2>&1 || docker network create swag-network
+
+# VPS partagé : on ne construit pas les images si le disque risque de saturer
+# (un disque plein ferait tomber les autres services de la machine).
+MIN_FREE_GB="${MIN_FREE_GB:-8}"
+free_gb="$(( $(df --output=avail -k / | tail -1) / 1024 / 1024 ))"
+if [ "${free_gb}" -lt "${MIN_FREE_GB}" ]; then
+  echo "::error::Seulement ${free_gb} Go libres sur le VPS (minimum ${MIN_FREE_GB} Go). Libérer de l'espace avant de déployer." >&2
+  exit 1
+fi
+
+if ! docker exec swag test -f /config/nginx/proxy-confs/dodat-demo.subdomain.conf 2>/dev/null; then
+  echo "::warning::Proxy SWAG absent : copier deploy/demo/swag/dodat-demo.subdomain.conf dans /opt/swag/config/nginx/proxy-confs/."
+fi
 
 echo "Déploiement de la version ${DEMO_VERSION:-inconnue} sur ${DEMO_DOMAIN}"
 "${COMPOSE[@]}" up -d --build --remove-orphans
