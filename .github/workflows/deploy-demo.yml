@@ -1,0 +1,150 @@
+name: Déploiement DEMO (VPS OVH)
+
+# Déploie la démo à chaque tag de version (ex. v1.2.0).
+# Le lancement manuel permet de choisir un tag existant dans "Use workflow from" (redéploiement / retour arrière).
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Un seul déploiement à la fois, sans interrompre celui en cours.
+concurrency:
+  group: deploy-demo
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Secrets et variables sont rangés dans l'environnement GitHub "demo".
+    environment:
+      name: demo
+      url: https://${{ vars.DEMO_DOMAIN }}
+    env:
+      BASE_DIR: /opt/cintafactory
+      DEMO_VPS_HOST: ${{ secrets.DEMO_VPS_HOST }}
+      DEMO_VPS_USER: ${{ secrets.DEMO_VPS_USER }}
+      DEMO_DOMAIN: ${{ vars.DEMO_DOMAIN }}
+      DEMO_ACME_EMAIL: ${{ vars.DEMO_ACME_EMAIL }}
+      DEMO_ADMIN_USERNAME: ${{ vars.DEMO_ADMIN_USERNAME }}
+      DEMO_ADMIN_EMAIL: ${{ vars.DEMO_ADMIN_EMAIL }}
+      DEMO_ADMIN_PASSWORD: ${{ secrets.DEMO_ADMIN_PASSWORD }}
+
+    steps:
+      - name: Récupération du code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # 4.3.1
+
+      - name: Vérification de la configuration
+        shell: bash
+        env:
+          DEMO_VPS_SSH_KEY: ${{ secrets.DEMO_VPS_SSH_KEY }}
+          DEMO_VPS_KNOWN_HOSTS: ${{ secrets.DEMO_VPS_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in DEMO_VPS_HOST DEMO_VPS_USER DEMO_VPS_SSH_KEY DEMO_VPS_KNOWN_HOSTS \
+                      DEMO_DOMAIN DEMO_ACME_EMAIL DEMO_ADMIN_USERNAME DEMO_ADMIN_EMAIL DEMO_ADMIN_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::${name} n'est pas défini dans l'environnement GitHub 'demo'."
+              missing=1
+            fi
+          done
+          [ "${missing}" = "0" ] || exit 1
+          if [ "${#DEMO_ADMIN_PASSWORD}" -lt 12 ]; then
+            echo "::error::DEMO_ADMIN_PASSWORD doit contenir au moins 12 caractères."
+            exit 1
+          fi
+
+      - name: Configuration de la connexion SSH
+        shell: bash
+        env:
+          DEMO_VPS_SSH_KEY: ${{ secrets.DEMO_VPS_SSH_KEY }}
+          DEMO_VPS_KNOWN_HOSTS: ${{ secrets.DEMO_VPS_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${DEMO_VPS_SSH_KEY}" > ~/.ssh/demo_key
+          chmod 600 ~/.ssh/demo_key
+          # Empreinte du serveur fournie en secret : pas de confiance aveugle via ssh-keyscan.
+          printf '%s\n' "${DEMO_VPS_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host demo-vps
+            HostName ${DEMO_VPS_HOST}
+            User ${DEMO_VPS_USER}
+            IdentityFile ~/.ssh/demo_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            BatchMode yes
+            ServerAliveInterval 30
+          EOF
+
+      - name: Synchronisation du code vers le VPS
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh demo-vps "mkdir -p '${BASE_DIR}/demo'"
+          rsync -az --delete \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='terraform' \
+            ./ "demo-vps:${BASE_DIR}/demo/"
+
+      - name: Envoi de la configuration de la démo
+        shell: bash
+        run: |
+          set -euo pipefail
+          env_file="${RUNNER_TEMP}/demo.env"
+          (
+            umask 077
+            # %q produit des valeurs correctement échappées pour être "source"-ées par bash.
+            printf 'DEMO_DOMAIN=%q\n' "${DEMO_DOMAIN}"
+            printf 'ACME_EMAIL=%q\n' "${DEMO_ACME_EMAIL}"
+            printf 'DEMO_ADMIN_USERNAME=%q\n' "${DEMO_ADMIN_USERNAME}"
+            printf 'DEMO_ADMIN_EMAIL=%q\n' "${DEMO_ADMIN_EMAIL}"
+            printf 'DEMO_ADMIN_PASSWORD=%q\n' "${DEMO_ADMIN_PASSWORD}"
+            printf 'DEMO_VERSION=%q\n' "${GITHUB_REF_NAME}"
+          ) > "${env_file}"
+          ssh demo-vps "umask 077 && cat > '${BASE_DIR}/demo.env'" < "${env_file}"
+          rm -f "${env_file}"
+
+      - name: Déploiement sur le VPS
+        shell: bash
+        run: ssh demo-vps "BASE_DIR='${BASE_DIR}' bash '${BASE_DIR}/demo/deploy/demo/remote-deploy.sh'"
+
+      # Vérifie l'accès public en HTTPS (le premier certificat Let's Encrypt peut prendre une minute).
+      - name: Vérification HTTPS publique
+        shell: bash
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 30); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' "https://${DEMO_DOMAIN}/" || true)"
+            if [ "${code}" -ge 200 ] && [ "${code}" -lt 400 ]; then
+              echo "https://${DEMO_DOMAIN} répond (HTTP ${code})."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::https://${DEMO_DOMAIN} ne répond pas (dernier code HTTP : ${code}). Vérifier le DNS et les ports 80/443."
+          exit 1
+
+      - name: Résumé
+        if: success()
+        shell: bash
+        run: |
+          {
+            echo "### Démo déployée"
+            echo ""
+            echo "- Version : \`${GITHUB_REF_NAME}\`"
+            echo "- URL : https://${DEMO_DOMAIN}"
+            echo "- Compte : \`${DEMO_ADMIN_USERNAME}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Nettoyage de la clé SSH locale
+        if: always()
+        shell: bash
+        run: rm -f ~/.ssh/demo_key
