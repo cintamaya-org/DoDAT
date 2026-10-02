@@ -32,6 +32,7 @@ from django.shortcuts import get_object_or_404, redirect
 from django.template.loader import render_to_string
 from django.urls import reverse, reverse_lazy
 from django.views import View
+from django.views.decorators.cache import never_cache
 from django.views.generic import DetailView, ListView, TemplateView, FormView
 from django.views.decorators.http import require_POST, require_safe
 
@@ -2654,10 +2655,8 @@ class DATCreateView(ModuleContextMixin, CreateModelView):
         kwargs["user"] = self.request.user
         return kwargs
 
-    def form_valid(self, form):
-        response = super().form_valid(form)
+    def message_user(self):
         messages.success(self.request, "Le DAT a été créé avec succès.")
-        return response
 
     def get_success_url(self):
         if user_can_manage_dat(self.request.user):
@@ -2770,7 +2769,7 @@ class DATViewSet(BaseSecuredViewSet):
     search_fields = ("reference", "title", "description", "application__name", "application__code", "business_direction__name")
 
     layout = Layout(
-        Fieldset("Identite", Row("reference", "title"), Row("application")),
+        Fieldset("Identité", Row("reference", "title"), Row("application")),
         Fieldset(
             "Participants",
             Row("participant_porteur_demande"),
@@ -2823,7 +2822,7 @@ class ApplicationViewSet(PaginatedModelViewSetMixin, BaseSecuredViewSet):
 
     form_fields = ["code", "name", "business_direction", "description"]
     layout = Layout(
-        Fieldset("Identite", Row("code", "name"), Row("business_direction")),
+        Fieldset("Identité", Row("code", "name"), Row("business_direction")),
         Fieldset("Description", Row("description")),
     )
 
@@ -3657,6 +3656,7 @@ def my_application_options(request):
 
 @login_required
 @require_safe
+@never_cache
 def application_options(request):
     if not (user_can_manage_dat(request.user) or user_can_create_dat_entities(request.user)):
         raise PermissionDenied

@@ -6,8 +6,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from django.contrib.messages import get_messages
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import Client, RequestFactory, TestCase
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
 from dat.models import Application, DAT, DATParticipant, DATStatus, DATHistory, DATHistoryAction
@@ -33,6 +36,7 @@ from .services import (
     workflow_has_capability,
 )
 from .sync import sync_workflow_definitions
+from .views import WorkflowBoardView
 
 
 ROLE_FIXTURES = {
@@ -296,9 +300,9 @@ class WorkflowEngineTests(TestCase):
 
 class WorkflowBoardViewTests(TestCase):
     def setUp(self):
+        self.user = get_user_model().objects.create_user(username="architect", password="pwd")
         self.roles = {slug: create_role(slug, name) for slug, name in ROLE_FIXTURES.items()}
         sync_workflow_definitions()
-        self.user = get_user_model().objects.create_user(username="architect", password="pwd")
         self.other_user = get_user_model().objects.create_user(username="other-user", password="pwd")
         self.client = Client()
         self.client.force_login(self.user)
@@ -421,7 +425,13 @@ class WorkflowBoardViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "Passer a l'etape suivante")
 
-    def test_board_enriches_only_current_page(self):
+    def test_dat_board_ordering_index_is_installed(self):
+        with connection.cursor() as cursor:
+            constraints = connection.introspection.get_constraints(cursor, DAT._meta.db_table)
+
+        self.assertIn("dat_updated_pk_desc_idx", constraints)
+
+    def test_board_cursor_pagination_avoids_count_and_enriches_only_current_page(self):
         DAT.objects.bulk_create(
             [
                 DAT(
@@ -436,19 +446,88 @@ class WorkflowBoardViewTests(TestCase):
             ]
         )
 
-        response = self.client.get(reverse("workflows:board"), {"page": 2})
+        request = RequestFactory().get(reverse("workflows:board"))
+        request.user = self.user
+        view = WorkflowBoardView()
+        view.setup(request)
+        with CaptureQueriesContext(connection) as queries:
+            fetched_items = view.get_dat_items()
+
+        self.assertEqual(len(fetched_items), 25)
+        self.assertFalse(
+            any("COUNT(" in query["sql"].upper() for query in queries),
+            "DAT page retrieval must not issue an exact-count query.",
+        )
+        dat_page_queries = [
+            query["sql"].upper()
+            for query in queries
+            if 'FROM "DAT_DAT"' in query["sql"].upper()
+        ]
+        self.assertTrue(any("LIMIT 26" in query for query in dat_page_queries))
+        self.assertTrue(all("OFFSET" not in query for query in dat_page_queries))
+
+        first_page = self.client.get(reverse("workflows:board"))
+        self.assertEqual(first_page.status_code, 200)
+        self.assertFalse(first_page.context["has_previous"])
+        self.assertTrue(first_page.context["has_next"])
+        first_items = [
+            dat.pk
+            for column in first_page.context["columns"]
+            for dat in column["items"]
+        ]
+        self.assertEqual(len(first_items), 25)
+
+        second_page = self.client.get(first_page.context["next_url"])
+        self.assertEqual(second_page.status_code, 200)
+        second_items = [
+            dat.pk
+            for column in second_page.context["columns"]
+            for dat in column["items"]
+        ]
+        self.assertEqual(len(second_items), 5)
+        self.assertFalse(set(first_items).intersection(second_items))
+        self.assertEqual(len(set(first_items + second_items)), 30)
+        self.assertTrue(second_page.context["has_previous"])
+        self.assertFalse(second_page.context["has_next"])
+
+        returned_to_first = self.client.get(second_page.context["previous_url"])
+        returned_items = [
+            dat.pk
+            for column in returned_to_first.context["columns"]
+            for dat in column["items"]
+        ]
+        self.assertEqual(returned_items, first_items)
+
+    def test_invalid_board_cursor_returns_first_page(self):
+        DAT.objects.bulk_create(
+            [
+                DAT(
+                    reference=f"DAT-INVALID-CURSOR-{index:02d}",
+                    title=f"Invalid cursor {index:02d}",
+                    status=DATStatus.NOUVELLE_DEMANDE,
+                    application=self.application,
+                    business_direction=self.business_direction,
+                    owner=self.user,
+                )
+                for index in range(30)
+            ]
+        )
+
+        response = self.client.get(
+            reverse("workflows:board"),
+            {"cursor": "not-a-valid-signed-cursor", "direction": "previous"},
+        )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context["paginator"].count, 30)
-        self.assertEqual(response.context["page_obj"].number, 2)
         rendered_items = sum(
             (column["items"] for column in response.context["columns"]),
             [],
         )
-        self.assertEqual(len(rendered_items), 5)
-        self.assertContains(response, "Page 2 sur 2")
+        self.assertEqual(len(rendered_items), 25)
+        self.assertFalse(response.context["has_previous"])
+        self.assertTrue(response.context["has_next"])
 
-    def test_my_tasks_board_uses_same_server_side_pagination(self):
+    def test_my_tasks_board_uses_cursor_pagination(self):
         DAT.objects.bulk_create(
             [
                 DAT(
@@ -463,12 +542,14 @@ class WorkflowBoardViewTests(TestCase):
             ]
         )
 
-        response = self.client.get(reverse("workflows:my_tasks"), {"page": 2})
+        first_page = self.client.get(reverse("workflows:my_tasks"))
+        second_page = self.client.get(first_page.context["next_url"])
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context["paginator"].count, 30)
-        self.assertEqual(response.context["page_obj"].number, 2)
-        self.assertContains(response, "Page 2 sur 2")
+        self.assertEqual(first_page.status_code, 200)
+        self.assertTrue(first_page.context["has_next"])
+        self.assertEqual(second_page.status_code, 200)
+        self.assertTrue(second_page.context["has_previous"])
+        self.assertFalse(second_page.context["has_next"])
 
 
 class WorkflowNotificationsViewTests(TestCase):
@@ -526,6 +607,56 @@ class WorkflowNotificationsViewTests(TestCase):
 
         self.user_notification.refresh_from_db()
         self.assertIsNotNone(self.user_notification.viewed_at)
+
+    def test_notification_levels_are_displayed_in_french(self):
+        expected_labels = {
+            NotificationType.LEVEL_INFO: "Information",
+            NotificationType.LEVEL_SUCCESS: "Succès",
+            NotificationType.LEVEL_WARNING: "Avertissement",
+            NotificationType.LEVEL_ERROR: "Erreur",
+        }
+        for index, level in enumerate(expected_labels, start=1):
+            notification_type = NotificationType.objects.create(
+                title=f"Notification niveau {index}",
+                level=level,
+            )
+            UserNotification.objects.create(
+                user=self.user,
+                notification_type=notification_type,
+                notification_message=self.notification_message,
+                dat=self.dat,
+            )
+
+        response = self.client.get(reverse("workflows:notifications"))
+
+        for label in expected_labels.values():
+            self.assertContains(response, label)
+        self.assertNotRegex(
+            response.content.decode(),
+            r">\s*(?:Info|Success|Warning|Error)\s*<",
+        )
+
+    def test_notification_model_labels_are_french(self):
+        self.assertEqual(str(NotificationType._meta.verbose_name), "Type de notification")
+        self.assertEqual(str(NotificationType._meta.verbose_name_plural), "Types de notification")
+        self.assertEqual(str(NotificationMessage._meta.verbose_name), "Message de notification")
+        self.assertEqual(
+            str(NotificationMessage._meta.verbose_name_plural),
+            "Messages de notification",
+        )
+        self.assertEqual(str(UserNotification._meta.verbose_name), "Notification utilisateur")
+        self.assertEqual(
+            str(UserNotification._meta.verbose_name_plural),
+            "Notifications utilisateur",
+        )
+        self.assertEqual(
+            str(HistoryNotificationSeen._meta.verbose_name),
+            "Consultation d’historique de workflow",
+        )
+        self.assertEqual(
+            str(HistoryNotificationSeen._meta.verbose_name_plural),
+            "Consultations d’historique de workflow",
+        )
 
     def test_notifications_are_scoped_to_connected_user(self):
         other_user = get_user_model().objects.create_user(username="notif-other", password="pwd")
@@ -588,6 +719,10 @@ class WorkflowNotificationsViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            [str(message) for message in get_messages(response.wsgi_request)],
+            ["Toutes les notifications ont été marquées comme lues."],
+        )
         self.assertTrue(
             HistoryNotificationSeen.objects.filter(user=self.user, history=self.history).exists()
         )

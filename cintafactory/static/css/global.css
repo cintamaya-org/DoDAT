@@ -1823,6 +1823,16 @@ dmc-sidenav .sidenav.sidenav-fixed > li.sidenav-footer img {
     padding-left: 0;
 }
 
+.wf-notification__actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 0.35rem;
+}
+
+.wf-notification__actions form {
+    margin: 0;
+}
+
 .wf-notification__status-chips {
     display: flex;
     flex-wrap: wrap;

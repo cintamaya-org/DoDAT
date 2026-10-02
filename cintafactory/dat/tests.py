@@ -8,9 +8,11 @@ from datetime import timedelta
 from unittest import mock
 
 from django.contrib.auth import get_user_model
+from django.contrib.messages import get_messages
+from django.contrib.messages.storage.fallback import FallbackStorage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db.models import ProtectedError
-from django.test import SimpleTestCase, TestCase
+from django.test import RequestFactory, SimpleTestCase, TestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -244,6 +246,30 @@ class ApplicationOptionsViewTest(TestCase):
         self.assertIn("options", payload)
         labels = [option["label"] for option in payload["options"]]
         self.assertEqual(labels, sorted(labels))
+
+    def test_refresh_returns_new_applications_without_cache(self):
+        self.client.force_login(self.staff)
+        first_response = self.client.get(self.url)
+        self.assertEqual(first_response.status_code, 200)
+        self.assertIn("no-store", first_response["Cache-Control"])
+        self.assertNotIn(
+            "New application",
+            [option["label"] for option in first_response.json()["options"]],
+        )
+
+        application = Application.objects.create(
+            code="new-application",
+            name="New application",
+            business_direction=get_default_business_direction(),
+        )
+        refreshed_response = self.client.get(self.url)
+
+        self.assertEqual(refreshed_response.status_code, 200)
+        self.assertIn("no-store", refreshed_response["Cache-Control"])
+        self.assertIn(
+            {"value": str(application.pk), "label": application.name},
+            refreshed_response.json()["options"],
+        )
 
     def test_skips_applications_without_direction(self):
         Application.objects.create(code="app-3", name="Sans direction", business_direction=None)
@@ -551,6 +577,39 @@ class DatCreationPermissionTest(TestCase):
         self.client.force_login(self.porteur)
         response = self.client.get(self.application_add_url)
         self.assertEqual(response.status_code, 200)
+
+
+class DatCreationNotificationTest(SimpleTestCase):
+    def test_dat_creation_emits_one_success_notification(self):
+        from .views import DATCreateView
+
+        request = RequestFactory().post("/dat/manage/dats/crud/add/")
+        request.user = mock.Mock(
+            is_authenticated=True,
+            is_staff=False,
+            is_superuser=False,
+        )
+        request.user.is_role.return_value = False
+        request.session = {}
+        request._messages = FallbackStorage(request)
+
+        view = DATCreateView()
+        view.setup(request)
+        view.model = DAT
+        form = mock.Mock()
+        form.save.return_value = DAT(
+            pk="4a83e2e8-d58a-4f43-a6fa-b61f707805d0",
+            reference="DAT-TEST",
+            title="Test",
+        )
+
+        response = view.form_valid(form)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            [str(message) for message in get_messages(request)],
+            ["Le DAT a été créé avec succès."],
+        )
 
 
 class ApplicationManagementPaginationTest(TestCase):
