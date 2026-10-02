@@ -20,7 +20,8 @@ from django.test import TestCase
 from django.urls import reverse
 
 from .models import BusinessDirection, BusinessGroup, OAuthAccount, TechnicalDirection, Role
-from .forms import BusinessGroupForm
+from .forms import BusinessGroupForm, UserForm
+from . import oauth_views
 from .oauth_providers import OAuthProvider, get_oauth_provider, list_enabled_oauth_providers
 from .oauth_service import OAuthError, build_authorize_url, resolve_oauth_user
 from .oauth_views import SESSION_NEXT_KEY, SESSION_PROVIDER_KEY, SESSION_STATE_KEY
@@ -885,3 +886,254 @@ class ProfilePictureTests(TestCase):
         upload = SimpleUploadedFile("avatar.txt", b"not an image", content_type="text/plain")
         with self.assertRaises(ValidationError):
             process_profile_picture_upload(upload)
+
+
+class UserFormCoverageTests(TestCase):
+    def setUp(self):
+        self.UserModel = get_user_model()
+        self.admin = self.UserModel.objects.create_superuser(
+            username="form-admin",
+            email="form-admin@example.com",
+            password="pwd",
+        )
+        self.direction_a = TechnicalDirection.objects.create(name="Form Direction A", slug="form-direction-a")
+        self.direction_b = TechnicalDirection.objects.create(name="Form Direction B", slug="form-direction-b")
+        self.role_a = Role.objects.create(name="Form Role A", slug="form-role-a", technical_direction=self.direction_a)
+        self.role_b = Role.objects.create(name="Form Role B", slug="form-role-b", technical_direction=self.direction_b)
+        self.role_transverse = Role.objects.create(name="Form Transverse", slug="form-transverse")
+        self.group_a = BusinessGroup.objects.create(
+            name="Form Group A",
+            direction=self.direction_a,
+            responsible=self.admin,
+        )
+        self.group_b = BusinessGroup.objects.create(
+            name="Form Group B",
+            direction=self.direction_b,
+            responsible=self.admin,
+        )
+
+    def _data(self, *, role=None, group=None, **overrides):
+        data = {
+            "username": "form-new-user",
+            "email": "form-new-user@example.com",
+            "first_name": "Form",
+            "last_name": "User",
+            "role": str(role.pk) if role else "",
+            "business_group": str(group.pk) if group else "",
+            "is_active": "on",
+            "is_staff": "",
+            "is_superuser": "",
+            "password1": "",
+            "password2": "",
+        }
+        data.update(overrides)
+        return data
+
+    def test_new_user_role_group_rules_cover_missing_mismatched_and_transverse_roles(self):
+        missing_group = UserForm(data=self._data(role=self.role_a))
+        self.assertFalse(missing_group.is_valid())
+        self.assertIn("business_group", missing_group.errors)
+
+        mismatched_group = UserForm(data=self._data(role=self.role_a, group=self.group_b))
+        self.assertFalse(mismatched_group.is_valid())
+        self.assertIn("role", mismatched_group.errors)
+
+        transverse_group = UserForm(data=self._data(role=self.role_transverse, group=self.group_a))
+        self.assertFalse(transverse_group.is_valid())
+        self.assertIn("business_group", transverse_group.errors)
+
+        missing_role = UserForm(data=self._data())
+        self.assertFalse(missing_role.is_valid())
+        self.assertIn("role", missing_role.errors)
+
+    def test_password_pair_errors_and_validation_are_handled(self):
+        base = {"role": self.role_a, "group": self.group_a}
+        missing_first = UserForm(data=self._data(**base, password2="Long-passphrase-493!"))
+        self.assertFalse(missing_first.is_valid())
+        self.assertIn("password1", missing_first.errors)
+
+        missing_confirmation = UserForm(data=self._data(**base, password1="Long-passphrase-493!"))
+        self.assertFalse(missing_confirmation.is_valid())
+        self.assertIn("password2", missing_confirmation.errors)
+
+        mismatch = UserForm(
+            data=self._data(**base, password1="Long-passphrase-493!", password2="Another-passphrase-294!"),
+        )
+        self.assertFalse(mismatch.is_valid())
+        self.assertIn("password2", mismatch.errors)
+
+        weak = UserForm(
+            data=self._data(**base, password1="Long-passphrase-493!", password2="Long-passphrase-493!"),
+        )
+        with mock.patch("users.forms.validate_password", side_effect=ValidationError("weak password")):
+            self.assertFalse(weak.is_valid())
+        self.assertIn("password1", weak.errors)
+
+    def test_valid_save_sets_password_or_unusable_password(self):
+        no_password = UserForm(data=self._data(role=self.role_a, group=self.group_a))
+        self.assertTrue(no_password.is_valid(), no_password.errors)
+        user = no_password.save()
+        self.assertFalse(user.has_usable_password())
+
+        with mock.patch("users.forms.validate_password") as validate_password:
+            with_password = UserForm(
+                data=self._data(
+                    role=self.role_a,
+                    group=self.group_a,
+                    username="form-password-user",
+                    email="form-password-user@example.com",
+                    password1="Long-passphrase-493!",
+                    password2="Long-passphrase-493!",
+                )
+            )
+            self.assertTrue(with_password.is_valid(), with_password.errors)
+            saved = with_password.save()
+        validate_password.assert_called_once()
+        self.assertTrue(saved.check_password("Long-passphrase-493!"))
+
+    def test_profile_picture_cleaner_processes_uploaded_files(self):
+        upload = SimpleUploadedFile("avatar.png", b"fake image", content_type="image/png")
+        processed = SimpleUploadedFile("processed.png", b"processed", content_type="image/png")
+        form = UserForm(data=self._data(role=self.role_a, group=self.group_a), files={"profile_picture": upload})
+        with mock.patch("users.forms.process_profile_picture_upload", return_value=processed) as process:
+            self.assertTrue(form.is_valid(), form.errors)
+        process.assert_called_once_with(upload, field_name="profile_picture")
+        self.assertIs(form.cleaned_data["profile_picture"], processed)
+
+
+class OAuthViewTests(TestCase):
+    provider_config = {
+        "client_id": "demo-client",
+        "client_secret": "demo-secret",
+        "authorize_url": "https://provider.example.test/authorize",
+        "token_url": "https://provider.example.test/token",
+        "userinfo_url": "https://provider.example.test/userinfo",
+        "scopes": ["openid", "email"],
+    }
+
+    def _configure_provider(self, *, enabled=True):
+        config = dict(self.provider_config)
+        if not enabled:
+            config["client_secret"] = ""
+        return self.settings(
+            OAUTH_PROVIDERS={"demo": config},
+            LOGIN_REDIRECT_URL="/home/",
+        )
+
+    def _seed_callback_session(self, *, provider="demo", next_url="/dashboard/"):
+        session = self.client.session
+        session[SESSION_STATE_KEY] = "known-state"
+        session[SESSION_PROVIDER_KEY] = provider
+        session[SESSION_NEXT_KEY] = next_url
+        session.save()
+
+    def test_login_redirect_stores_state_provider_and_safe_next(self):
+        with self._configure_provider():
+            response = self.client.get(reverse("oauth_login", args=["demo"]), {"next": "/dashboard/"})
+
+        self.assertEqual(response.status_code, 302)
+        query = parse_qs(urlparse(response["Location"]).query)
+        session = self.client.session
+        self.assertEqual(session[SESSION_STATE_KEY], query["state"][0])
+        self.assertEqual(session[SESSION_PROVIDER_KEY], "demo")
+        self.assertEqual(session[SESSION_NEXT_KEY], "/dashboard/")
+        self.assertEqual(query["client_id"], ["demo-client"])
+
+    def test_login_handles_unknown_disabled_and_external_next_provider(self):
+        with self._configure_provider():
+            response = self.client.get(
+                reverse("oauth_login", args=["demo"]),
+                {"next": "https://evil.example/"},
+            )
+            self.assertEqual(self.client.session[SESSION_NEXT_KEY], "/home/")
+            self.assertEqual(response.status_code, 302)
+
+        with self._configure_provider(enabled=False):
+            disabled = self.client.get(reverse("oauth_login", args=["demo"]))
+        self.assertEqual(disabled.status_code, 302)
+        self.assertEqual(disabled["Location"], reverse("login"))
+
+        with self._configure_provider():
+            missing = self.client.get(reverse("oauth_login", args=["missing"]))
+        self.assertEqual(missing.status_code, 404)
+
+    @mock.patch("users.oauth_views.login")
+    @mock.patch("users.oauth_views.resolve_oauth_user")
+    @mock.patch("users.oauth_views.fetch_userinfo", return_value={"sub": "provider-user"})
+    @mock.patch("users.oauth_views.exchange_code_for_token", return_value={"access_token": "access"})
+    def test_callback_exchanges_code_logs_user_in_and_redirects_to_safe_next(
+        self, exchange, fetch, resolve, login_user
+    ):
+        user = get_user_model().objects.create_user(username="oauth-view-user", password="pwd")
+        resolve.return_value = (user, None)
+        self._seed_callback_session()
+        with self._configure_provider(), self.settings(AUTHENTICATION_BACKENDS=["custom.backend"]):
+            response = self.client.get(
+                reverse("oauth_callback", args=["demo"]),
+                {"state": "known-state", "code": "auth-code"},
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], "/dashboard/")
+        self.assertEqual(exchange.call_args.args[1], "auth-code")
+        fetch.assert_called_once()
+        resolve.assert_called_once()
+        login_user.assert_called_once_with(mock.ANY, user, backend="custom.backend")
+        session = self.client.session
+        self.assertNotIn(SESSION_STATE_KEY, session)
+        self.assertNotIn(SESSION_PROVIDER_KEY, session)
+        self.assertNotIn(SESSION_NEXT_KEY, session)
+
+    def test_callback_rejects_bad_state_unknown_provider_and_disabled_provider(self):
+        with self._configure_provider():
+            invalid_state = self.client.get(
+                reverse("oauth_callback", args=["demo"]),
+                {"state": "wrong", "code": "auth-code"},
+            )
+            self.assertEqual(invalid_state.status_code, 400)
+            unknown = self.client.get(reverse("oauth_callback", args=["missing"]))
+            self.assertEqual(unknown.status_code, 404)
+
+        with self._configure_provider(enabled=False):
+            disabled = self.client.get(reverse("oauth_callback", args=["demo"]))
+        self.assertEqual(disabled.status_code, 302)
+        self.assertEqual(disabled["Location"], reverse("login"))
+
+    def test_callback_error_missing_code_and_oauth_failure_clear_session(self):
+        with self._configure_provider():
+            self._seed_callback_session()
+            rejected = self.client.get(
+                reverse("oauth_callback", args=["demo"]),
+                {"state": "known-state", "error": "access_denied"},
+            )
+            self.assertEqual(rejected.status_code, 302)
+            self.assertNotIn(SESSION_NEXT_KEY, self.client.session)
+
+            self._seed_callback_session()
+            missing_code = self.client.get(
+                reverse("oauth_callback", args=["demo"]),
+                {"state": "known-state"},
+            )
+            self.assertEqual(missing_code.status_code, 302)
+            self.assertNotIn(SESSION_NEXT_KEY, self.client.session)
+
+            self._seed_callback_session()
+            with mock.patch(
+                "users.oauth_views.exchange_code_for_token",
+                return_value={},
+            ):
+                missing_token = self.client.get(
+                    reverse("oauth_callback", args=["demo"]),
+                    {"state": "known-state", "code": "auth-code"},
+                )
+            self.assertEqual(missing_token.status_code, 302)
+            self.assertNotIn(SESSION_NEXT_KEY, self.client.session)
+
+            self._seed_callback_session()
+            with mock.patch("users.oauth_views.exchange_code_for_token", side_effect=OAuthError("provider offline")):
+                failed = self.client.get(
+                    reverse("oauth_callback", args=["demo"]),
+                    {"state": "known-state", "code": "auth-code"},
+                )
+            self.assertEqual(failed.status_code, 302)
+            self.assertNotIn(SESSION_NEXT_KEY, self.client.session)
