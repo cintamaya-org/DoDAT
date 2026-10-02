@@ -104,7 +104,8 @@ if [ "${ready}" != "1" ]; then
 fi
 
 # Comptes, réalignés à chaque déploiement :
-#   - compte de démo : créé au premier passage, mot de passe = secret DEMO_ADMIN_PASSWORD ;
+#   - compte de démo : créé au premier passage, mot de passe = secret DEMO_ADMIN_PASSWORD,
+#     rôle « Porteur de la demande » (seul rôle autorisé à créer DAT et applications) ;
 #   - super_admin (créé par la migration users/0001 avec le mot de passe public 123+Aze) : désactivé ;
 #   - comptes de rôle de cette même migration (<role>_user) : gardés pour montrer le circuit
 #     de validation, avec le mot de passe de la démo à la place de 123+Aze.
@@ -121,6 +122,7 @@ password = os.environ["DEMO_ADMIN_PASSWORD"]
 user, created = User.objects.get_or_create(username=os.environ["DEMO_ADMIN_USERNAME"])
 user.email = os.environ["DEMO_ADMIN_EMAIL"]
 user.is_active = user.is_staff = user.is_superuser = True
+user.role = Role.objects.filter(slug="porteur-demande").first() or user.role
 user.set_password(password)
 user.save()
 print("Compte demo cree." if created else "Compte demo mis a jour.")

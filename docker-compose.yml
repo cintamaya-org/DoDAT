@@ -100,6 +100,10 @@ services:
     image: jgraph/export-server
     container_name: ${APP_NAME}_drawio_export
     restart: unless-stopped
+    environment:
+      # Le réseau app-internal n'a pas accès à Internet : le rendu utilise le draw.io local
+      # au lieu de https://viewer.diagrams.net.
+      DRAWIO_BASE_URL: http://drawio:8080
     expose:
       - "8000"
     networks:
