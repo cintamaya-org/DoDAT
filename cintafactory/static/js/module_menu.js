@@ -126,6 +126,13 @@
   }
 
   function initAll() {
+    var moduleItems = document.querySelectorAll(".sidenav-modules__list > li");
+    Array.prototype.forEach.call(moduleItems, function (item) {
+      if (!item.innerHTML.trim()) {
+        item.remove();
+      }
+    });
+
     var menus = document.querySelectorAll("[data-module-menu]");
     Array.prototype.forEach.call(menus, initMenu);
     applyMenuIconClass();
