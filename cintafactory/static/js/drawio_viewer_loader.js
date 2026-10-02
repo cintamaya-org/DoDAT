@@ -378,7 +378,7 @@
     style.textContent = `
       .dat-drawio-import-button {
         position: relative;
-        min-width: 140px;
+        min-width: min(100%, 140px);
         justify-content: center;
       }
       .dat-drawio-import-button .dat-drawio-button-label {
