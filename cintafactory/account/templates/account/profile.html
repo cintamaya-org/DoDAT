@@ -36,8 +36,8 @@
                 <img src="{% static provider.icon %}" alt="" aria-hidden="true" class="account-oauth-icon">
               {% endif %}
               <strong>{{ provider.label }}</strong>
-              <div class="u-flex u-items-center u-justify-between u-gap-0-5">
-                <div class="u-inline-flex u-items-center u-gap-0-5">
+              <div class="u-flex u-items-center u-justify-between u-gap-0-5 account-oauth-card__status-actions">
+                <div class="u-inline-flex u-items-center u-gap-0-5 account-oauth-card__status">
                   {% if not provider.enabled %}
                     <span class="chip orange lighten-4 orange-text text-darken-3">Non disponible</span>
                   {% elif provider.connected %}
@@ -48,7 +48,7 @@
                     <span class="chip grey lighten-2 grey-text text-darken-2">Non connecte</span>
                   {% endif %}
                 </div>
-                <div>
+                <div class="account-oauth-card__action">
                   {% if provider.enabled %}
                     {% if provider.connected %}
                       <button type="button" class="btn waves-effect waves-light cinta-btn-secondary" disabled>Deconnecter</button>

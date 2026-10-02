@@ -300,16 +300,45 @@ textarea {
 
 .account-oauth-grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
     gap: 1rem;
 }
 
 .account-oauth-card {
     height: 100%;
+    min-width: 0;
     position: relative;
     padding-right: 2.75rem;
     margin-bottom: 0px;
     padding-bottom: 0.75rem;
+}
+
+.account-oauth-card__status-actions {
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.account-oauth-card__status,
+.account-oauth-card__action {
+    min-width: 0;
+    max-width: 100%;
+}
+
+.account-oauth-card__status {
+    flex-wrap: wrap;
+}
+
+.account-oauth-card .chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    height: auto;
+    min-height: 32px;
+    max-width: 100%;
+    line-height: 1.25;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
 .account-oauth-icon {
@@ -320,18 +349,6 @@ textarea {
     height: 35px;
     object-fit: contain;
     opacity: 0.85;
-}
-
-@media (max-width: 1024px) {
-    .account-oauth-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-}
-
-@media (max-width: 640px) {
-    .account-oauth-grid {
-        grid-template-columns: 1fr;
-    }
 }
 
 .topbar {
@@ -584,7 +601,12 @@ textarea {
 
 .btn {
     display: flex;
-    padding: 12px 16px;
+    box-sizing: border-box;
+    min-width: 0;
+    max-width: 100%;
+    height: auto;
+    min-height: 36px;
+    padding: 0.5rem 1rem;
     justify-content: center;
     align-items: center;
     gap: 12px;
@@ -592,6 +614,9 @@ textarea {
     color: #ffffff;
     border: none;
     cursor: pointer;
+    line-height: 1.25;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
 .btn-side-margin {
@@ -1542,6 +1567,7 @@ dmc-sidenav .sidenav.sidenav-fixed > li.sidenav-footer img {
     display: flex;
     justify-content: flex-end;
     gap: 0.75rem;
+    flex-wrap: wrap;
 }
 
 .diagram-editor-page .module-body .content {
@@ -1614,6 +1640,8 @@ dmc-sidenav .sidenav.sidenav-fixed > li.sidenav-footer img {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem;
 }
 
 .diagram-card {
@@ -1658,6 +1686,8 @@ dmc-sidenav .sidenav.sidenav-fixed > li.sidenav-footer img {
 .diagram-card .card-action {
     display: flex;
     justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.5rem;
 }
 
 .diagram-list__actions {
@@ -2299,13 +2329,19 @@ dmc-sidenav .sidenav.sidenav-fixed > li.sidenav-footer img {
 .dat-drawio-action-button {
     border-radius: 999px;
     padding: 0 1.25rem;
-    height: 40px;
+    height: auto;
+    min-height: 40px;
+    min-width: 0;
+    max-width: 100%;
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
     text-transform: uppercase;
     font-weight: 600;
     letter-spacing: 0.04em;
+    line-height: 1.25;
+    white-space: normal;
+    overflow-wrap: anywhere;
     background-color: var(--cinta-color-white);
     border: 1px solid rgba(var(--cinta-color-primary-rgb), 0.25);
     color: var(--cinta-color-primary-700);
@@ -2423,6 +2459,7 @@ dmc-sidenav .sidenav.sidenav-fixed > li.sidenav-footer img {
     display: flex;
     justify-content: flex-end;
     gap: 0.5rem;
+    flex-wrap: wrap;
 }
 
 body.dat-modal-open {
@@ -2698,9 +2735,10 @@ body.dat-modal-open {
 }
 
 .dat-sub-section__compact-button {
-    padding: 0 12px;
-    height: 32px;
-    line-height: 32px;
+    padding: 0.35rem 0.75rem;
+    height: auto;
+    min-height: 32px;
+    line-height: 1.25;
 }
 
 .dat-section-status-actions {
@@ -3052,13 +3090,19 @@ body.dat-modal-open {
 .dat-repeater .dat-repeater-drawio-field .btn-flat {
     border-radius: 999px;
     padding: 0 1.25rem;
-    height: 40px;
+    height: auto;
+    min-height: 40px;
+    min-width: 0;
+    max-width: 100%;
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
     text-transform: uppercase;
     font-weight: 600;
     letter-spacing: 0.04em;
+    line-height: 1.25;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
 .dat-repeater .dat-repeater-drawio-view {

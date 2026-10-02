@@ -11,6 +11,7 @@ omit =
     */settings.py
     */wsgi.py
     */asgi.py
+    */gunicorn.conf.py
 
 [report]
 skip_empty = True

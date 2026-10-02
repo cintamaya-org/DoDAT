@@ -196,85 +196,83 @@ Tokens `LIKEC4_METADATA_TOKEN` et `LIKEC4_API_TOKEN` doivent être identiques da
 
 ## Configuration OAuth
 
-### État de validation
+### Fournisseurs disponibles et validation
 
-Google est actuellement le seul fournisseur OAuth testé de bout en bout. Les configurations Microsoft, Amazon, Okta et Cintamaya sont présentes, mais doivent être considérées comme expérimentales tant que leur parcours complet n'a pas été validé dans l'environnement cible.
-
-Un autre fournisseur peut être ajouté sans créer un nouveau parcours de connexion s'il respecte le contrat OAuth 2.0/OIDC utilisé par l'application :
-
-- flux Authorization Code ;
-- endpoints d'autorisation, de jeton et de profil accessibles en HTTPS ;
-- échange du code par requête `POST` de formulaire ;
-- réponse JSON contenant un `access_token` ;
-- endpoint de profil acceptant `Authorization: Bearer <token>` et renvoyant du JSON ;
-- identifiant utilisateur stable disponible dans le profil.
-
-OAuth 1.0, SAML ou un fournisseur imposant un échange particulier — PKCE obligatoire, `client_assertion`, authentification HTTP Basic du client, réponse non JSON ou profil fortement imbriqué — nécessitent une adaptation du code.
+Le parcours utilise Authorization Code et récupère l'identité via un endpoint UserInfo ou profil. Les tests locaux simulent les échanges HTTP ; ils ne valident pas l'acceptation des redirect URI ni le comportement d'un tenant réel.
 
 ### Variables communes
 
-- `OAUTH_HTTP_TIMEOUT`, défaut 10 secondes ;
-- `OAUTH_ALLOW_EMAIL_LINKING`, défaut activé ;
-- `ENDPOINT_RATE_LIMIT_PER_IP_PER_MINUTE`, défaut 30 pour les endpoints sensibles.
+- OAUTH_HTTP_TIMEOUT, défaut 10 secondes ;
+- OAUTH_ALLOW_EMAIL_LINKING, défaut activé ; contrôle l'association par adresse email ;
+- ENDPOINT_RATE_LIMIT_PER_IP_PER_MINUTE, défaut 30 pour les endpoints sensibles.
 
-Fournisseurs préconfigurés :
+Fournisseurs préconfigurés. Les boutons restent désactivés tant que client, secret et endpoints ne sont pas tous configurés :
 
 | Fournisseur | Variables | Validation |
 | --- | --- | --- |
-| Google | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` | Testé |
-| Microsoft | `MICROSOFT_OAUTH_TENANT_ID`, `MICROSOFT_OAUTH_CLIENT_ID`, `MICROSOFT_OAUTH_CLIENT_SECRET` | À valider |
-| Amazon | `AMAZON_OAUTH_CLIENT_ID`, `AMAZON_OAUTH_CLIENT_SECRET` | À valider |
-| Okta | `OKTA_OAUTH_DOMAIN`, `OKTA_OAUTH_CLIENT_ID`, `OKTA_OAUTH_CLIENT_SECRET` | À valider |
-| Cintamaya | `CINTAMAYA_OAUTH_CLIENT_ID`, `CINTAMAYA_OAUTH_CLIENT_SECRET` | À valider |
+| Google | GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET | Testé précédemment |
+| Microsoft Entra ID | MICROSOFT_OAUTH_TENANT_ID, MICROSOFT_OAUTH_CLIENT_ID, MICROSOFT_OAUTH_CLIENT_SECRET | Échanges simulés ; pas de configuration réelle |
+| Login with Amazon | AMAZON_OAUTH_CLIENT_ID, AMAZON_OAUTH_CLIENT_SECRET | Échanges simulés ; pas de configuration réelle |
+| Okta | OKTA_OAUTH_DOMAIN, OKTA_OAUTH_CLIENT_ID, OKTA_OAUTH_CLIENT_SECRET, OKTA_OAUTH_TOKEN_AUTH_METHOD | Échanges simulés ; pas de configuration réelle |
 
-Un fournisseur sans identifiant et secret complets reste désactivé.
+AMAZON_OAUTH_* configure Login with Amazon pour les comptes Amazon grand public. Ce parcours ne configure pas AWS IAM Identity Center.
+
+### Enregistrer une application fournisseur
+
+Pour chaque fournisseur, enregistrer l'URL de callback publique exacte :
+
+    https://<hôte>/accounts/oauth/<fournisseur>/callback/
+
+Les identifiants de développement peuvent être configurés dans .env. En production, les fournir depuis le gestionnaire de secrets du déploiement. Ne jamais committer de secret.
+
+- **Microsoft Entra ID** : créer une inscription d'application Web et accorder les scopes openid email profile. MICROSOFT_OAUTH_TENANT_ID=common autorise comptes personnels et comptes professionnels/scolaires. Utiliser organizations ou l'ID du tenant pour restreindre les connexions.
+- **Amazon** : créer un profil de sécurité Login with Amazon, enregistrer la callback et autoriser les scopes profile et profile:user_id.
+- **Okta** : créer une intégration OIDC de type Web Application avec Authorization Code. OKTA_OAUTH_DOMAIN doit être l'URL HTTPS de l'organisation, sans slash final ; le serveur d'autorisation configuré par défaut utilise /oauth2/default. OKTA_OAUTH_TOKEN_AUTH_METHOD vaut client_secret_basic par défaut. Le régler à client_secret_post si l'intégration Okta utilise cette méthode.
+
+Compose transmet ces variables au service Django dans les fichiers production, dev et scaling. Après leur modification, recréer/redémarrer le service web.
+
+### Comptes locaux et association
+
+Microsoft, Amazon et Okta ne créent pas automatiquement de compte local. L'utilisateur doit déjà exister dans Cintafactory. À sa première connexion, l'application associe son identité à l'unique compte local dont l'adresse email correspond sans tenir compte de la casse, si OAUTH_ALLOW_EMAIL_LINKING=1.
+
+Une revendication email_verified absente est acceptée pour cette association ; une valeur explicitement fausse est refusée. Une adresse absente, aucun compte correspondant, plusieurs comptes correspondants ou un compte désactivé font échouer la connexion. Un lien fournisseur déjà enregistré reste utilisable si son compte local est actif. Avec OAUTH_ALLOW_EMAIL_LINKING=0, seuls les liens OAuthAccount déjà enregistrés fonctionnent.
 
 ### Ajouter un fournisseur OAuth2/OIDC
 
-1. Créer une application auprès du fournisseur et déclarer exactement l'URL de callback publique :
+Ajouter une entrée dans OAUTH_PROVIDERS, dans cintafactory/cintafactory/settings.py :
 
-   ```text
-   https://<hôte>/accounts/oauth/<slug>/callback/
-   ```
+~~~python
+"example": {
+    "label": "Mon fournisseur",
+    "client_id": os.getenv("EXAMPLE_OAUTH_CLIENT_ID", ""),
+    "client_secret": os.getenv("EXAMPLE_OAUTH_CLIENT_SECRET", ""),
+    "authorize_url": "https://idp.example.com/oauth/authorize",
+    "token_url": "https://idp.example.com/oauth/token",
+    "userinfo_url": "https://idp.example.com/oauth/userinfo",
+    "scopes": ("openid", "email", "profile"),
+    "extra_authorize_params": {},
+    "userinfo_mapping": {
+        "user_id": "sub",
+        "email": "email",
+        "email_verified": "email_verified",
+        "first_name": "given_name",
+        "last_name": "family_name",
+        "full_name": "name",
+    },
+    "allow_user_creation": True,
+    "token_endpoint_auth_method": "client_secret_post",
+},
+~~~
 
-   Le `<slug>` doit être identique à la clé ajoutée dans `OAUTH_PROVIDERS`.
+token_endpoint_auth_method accepte client_secret_post et client_secret_basic. Adapter les endpoints, scopes et userinfo_mapping à la documentation fournisseur. user_id doit être stable et présent. Ne pas activer la création automatique de comptes sans décision explicite sur le provisionnement.
 
-2. Ajouter l'identifiant et le secret aux variables sécurisées du déploiement. Ne jamais enregistrer de vrai secret dans Git. Seuls des noms de variables et des exemples vides doivent apparaître dans `.env.exemple`.
+### Tests et limites
 
-3. Ajouter une entrée dans `OAUTH_PROVIDERS`, dans `cintafactory/cintafactory/settings.py` :
+Les tests OAuth remplacent les endpoints distants par des réponses simulées et vérifient les redirections, l'état, l'échange du code, le profil et l'association locale. Sans identifiants réels, aucune connexion à Microsoft, Amazon ou Okta ne peut être validée en direct. Après configuration, tester chaque callback en environnement non productif.
 
-   ```python
-   "example": {
-       "label": "Mon fournisseur",
-       "client_id": os.getenv("EXAMPLE_OAUTH_CLIENT_ID", ""),
-       "client_secret": os.getenv("EXAMPLE_OAUTH_CLIENT_SECRET", ""),
-       "authorize_url": "https://idp.example.com/oauth/authorize",
-       "token_url": "https://idp.example.com/oauth/token",
-       "userinfo_url": "https://idp.example.com/oauth/userinfo",
-       "scopes": ("openid", "email", "profile"),
-       "extra_authorize_params": {},
-       "userinfo_mapping": {
-           "user_id": "sub",
-           "email": "email",
-           "email_verified": "email_verified",
-           "first_name": "given_name",
-           "last_name": "family_name",
-           "full_name": "name",
-       },
-   }
-   ```
-
-   Les URL et scopes ci-dessus sont des exemples : utiliser ceux documentés par le fournisseur.
-
-4. Adapter `userinfo_mapping` aux clés réellement renvoyées par l'endpoint de profil. `user_id` est obligatoire. Les autres champs sont facultatifs, mais `email` et `email_verified` sont importants pour la liaison avec un compte existant.
-
-5. Facultatif : ajouter une icône statique et sa correspondance dans `icon_map` de `cintafactory/users/oauth_views.py`. Sans icône, le fournisseur reste utilisable.
-
-6. Redémarrer l'application, puis tester le parcours complet dans un environnement non productif : affichage du bouton, redirection, validation de `state`, callback, échange du code, lecture du profil, création ou liaison du compte, reconnexion et déconnexion.
-
-### Liaison par adresse email
-
-Quand `OAUTH_ALLOW_EMAIL_LINKING` est activé, un profil OAuth peut être lié à un compte local portant la même adresse. Avant d'activer cette option pour un nouveau fournisseur, vérifier qu'il renvoie une adresse fiable et un statut `email_verified` correctement mappé. En cas de doute, désactiver la liaison automatique jusqu'à validation.
+~~~bash
+docker compose -f docker-compose.dev.yml exec -T web python manage.py test users.tests.OAuthProviderTests users.tests.OAuthServiceTests
+~~~
 
 Les jetons OAuth étant enregistrés par l'application, la base de données, les sauvegardes et les accès administratifs doivent être protégés en conséquence.
 

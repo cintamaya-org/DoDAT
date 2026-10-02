@@ -384,6 +384,10 @@ OAUTH_ALLOW_EMAIL_LINKING = os.getenv("OAUTH_ALLOW_EMAIL_LINKING", "1").lower() 
 ENDPOINT_RATE_LIMIT_PER_IP_PER_MINUTE = int(os.getenv("ENDPOINT_RATE_LIMIT_PER_IP_PER_MINUTE", "30"))
 MICROSOFT_OAUTH_TENANT_ID = os.getenv("MICROSOFT_OAUTH_TENANT_ID", "common").strip() or "common"
 OKTA_OAUTH_DOMAIN = os.getenv("OKTA_OAUTH_DOMAIN", "").rstrip("/")
+OKTA_OAUTH_TOKEN_AUTH_METHOD = (
+    os.getenv("OKTA_OAUTH_TOKEN_AUTH_METHOD", "client_secret_basic").strip().lower()
+    or "client_secret_basic"
+)
 OAUTH_PROVIDERS = {
     "google": {
         "label": "Google",
@@ -408,6 +412,8 @@ OAUTH_PROVIDERS = {
         "userinfo_url": "https://graph.microsoft.com/oidc/userinfo",
         "scopes": ("openid", "email", "profile"),
         "extra_authorize_params": {},
+        "allow_user_creation": False,
+        "token_endpoint_auth_method": "client_secret_post",
     },
     "amazon": {
         "label": "Amazon",
@@ -418,6 +424,8 @@ OAUTH_PROVIDERS = {
         "userinfo_url": "https://api.amazon.com/user/profile",
         "scopes": ("profile", "profile:user_id"),
         "extra_authorize_params": {},
+        "allow_user_creation": False,
+        "token_endpoint_auth_method": "client_secret_post",
         "userinfo_mapping": {
             "user_id": "user_id",
             "email": "email",
@@ -433,16 +441,8 @@ OAUTH_PROVIDERS = {
         "userinfo_url": f"{OKTA_OAUTH_DOMAIN}/oauth2/default/v1/userinfo" if OKTA_OAUTH_DOMAIN else "",
         "scopes": ("openid", "email", "profile"),
         "extra_authorize_params": {},
-    },
-    "cintamaya": {
-        "label": "Cintamaya",
-        "client_id": os.getenv("CINTAMAYA_OAUTH_CLIENT_ID", ""),
-        "client_secret": os.getenv("CINTAMAYA_OAUTH_CLIENT_SECRET", ""),
-        "authorize_url": "https://auth.CINTAMAYA.com/authorize",
-        "token_url": "https://auth.CINTAMAYA.com/token",
-        "userinfo_url": "https://auth.CINTAMAYA.com/userinfo",
-        "scopes": ("openid", "email", "profile"),
-        "extra_authorize_params": {},
+        "allow_user_creation": False,
+        "token_endpoint_auth_method": OKTA_OAUTH_TOKEN_AUTH_METHOD,
     }
 }
 

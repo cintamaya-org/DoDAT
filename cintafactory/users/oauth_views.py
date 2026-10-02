@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlencode
 
 from django.conf import settings
 from django.contrib import messages
@@ -14,6 +15,7 @@ from django.core.exceptions import SuspiciousOperation
 from django.http import Http404, HttpRequest, HttpResponse
 from django.shortcuts import redirect
 from django.urls import reverse
+from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET
 
 from .oauth_providers import get_oauth_provider, list_oauth_providers
@@ -39,37 +41,23 @@ class LoginViewWithProviders(auth_views.LoginView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        request = getattr(self, "request", None)
-        print(f"[OAuth] login page load path={getattr(request, 'path', '?')}")
         icon_map = {
             "google": "imgs/google_logo.svg",
             "microsoft": "imgs/microsoft_logo.svg",
             "amazon": "imgs/amazon_logo.svg",
             "okta": "imgs/okta_logo.svg",
-            "cintamaya": "imgs/logo.svg"
         }
         providers = []
+        next_url = context.get("next")
         for provider in list_oauth_providers():
-            has_client_id = bool(provider.client_id)
-            has_credentials = has_client_id and bool(provider.client_secret)
-            reason_parts = []
-            if not has_client_id:
-                reason_parts.append("missing_client_id")
-            if not provider.client_secret:
-                reason_parts.append("missing_client_auth")
-            print(
-                "[OAuth] provider status:"
-                f" {provider.slug}"
-                f" enabled={provider.enabled}"
-                f" client_id_set={has_client_id}"
-                f" credentials_set={has_credentials}"
-                f" reason={','.join(reason_parts) or 'none'}"
-            )
+            login_url = reverse("oauth_login", args=[provider.slug])
+            if next_url:
+                login_url = f"{login_url}?{urlencode({'next': next_url})}"
             providers.append(
                 {
                     "slug": provider.slug,
                     "label": provider.label,
-                    "login_url": reverse("oauth_login", args=[provider.slug]),
+                    "login_url": login_url,
                     "enabled": provider.enabled,
                     "icon": icon_map.get(provider.slug, ""),
                 }
@@ -91,10 +79,9 @@ def oauth_login(request: HttpRequest, provider: str) -> HttpResponse:
     state = build_oauth_state()
     request.session[SESSION_STATE_KEY] = state
     request.session[SESSION_PROVIDER_KEY] = provider_config.slug
-    next_url = request.GET.get("next") or settings.LOGIN_REDIRECT_URL
+    next_url = _safe_next_url(request, request.GET.get("next"))
     request.session[SESSION_NEXT_KEY] = next_url
     redirect_uri = request.build_absolute_uri(reverse("oauth_callback", args=[provider_config.slug]))
-    print(f"[OAuth] login redirect_uri={redirect_uri}")
     auth_url = build_authorize_url(provider_config, redirect_uri, state)
     return redirect(auth_url)
 
@@ -109,25 +96,27 @@ def oauth_callback(request: HttpRequest, provider: str) -> HttpResponse:
         logger.warning("OAuth callback provider not configured: %s", provider_config.slug)
         messages.error(request, "Le fournisseur OAuth n'est pas configure.")
         return redirect("login")
-    if request.GET.get("error"):
-        error = request.GET.get("error_description") or request.GET.get("error")
-        logger.warning("OAuth callback error: provider=%s error=%s", provider_config.slug, error)
-        messages.error(request, f"Authentification OAuth refusee: {error}")
-        return redirect("login")
     state = request.GET.get("state")
     expected_state = request.session.get(SESSION_STATE_KEY)
-    if not state or expected_state != state:
+    expected_provider = request.session.get(SESSION_PROVIDER_KEY)
+    if not state or expected_state != state or expected_provider != provider_config.slug:
         logger.warning(
-            "OAuth callback invalid state: provider=%s expected=%s received=%s",
+            "OAuth callback invalid state: provider=%s",
             provider_config.slug,
-            expected_state,
-            state,
         )
         raise SuspiciousOperation("OAuth state invalide.")
+    request.session.pop(SESSION_STATE_KEY, None)
+    request.session.pop(SESSION_PROVIDER_KEY, None)
+    if request.GET.get("error"):
+        logger.warning("OAuth callback error: provider=%s", provider_config.slug)
+        messages.error(request, "Authentification OAuth refusee.")
+        request.session.pop(SESSION_NEXT_KEY, None)
+        return redirect("login")
     code = request.GET.get("code")
     if not code:
         logger.warning("OAuth callback missing code: provider=%s", provider_config.slug)
         messages.error(request, "Le code OAuth est manquant.")
+        request.session.pop(SESSION_NEXT_KEY, None)
         return redirect("login")
     redirect_uri = request.build_absolute_uri(reverse("oauth_callback", args=[provider_config.slug]))
     try:
@@ -143,14 +132,13 @@ def oauth_callback(request: HttpRequest, provider: str) -> HttpResponse:
             request_user=request.user if request.user.is_authenticated else None,
         )
         logger.info(
-            "OAuth callback success: provider=%s user_id=%s email=%s",
+            "OAuth callback success: provider=%s",
             provider_config.slug,
-            getattr(user, "id", None),
-            getattr(user, "email", None),
         )
     except OAuthError as exc:
         logger.warning("OAuth callback failed: %s", exc)
         messages.error(request, str(exc))
+        request.session.pop(SESSION_NEXT_KEY, None)
         return redirect("login")
 
     backend = None
@@ -162,5 +150,19 @@ def oauth_callback(request: HttpRequest, provider: str) -> HttpResponse:
     login(request, user, backend=backend)
     request.session.pop(SESSION_STATE_KEY, None)
     request.session.pop(SESSION_PROVIDER_KEY, None)
-    next_url = request.session.pop(SESSION_NEXT_KEY, None) or settings.LOGIN_REDIRECT_URL
+    next_url = _safe_next_url(
+        request,
+        request.session.pop(SESSION_NEXT_KEY, None),
+    )
     return redirect(next_url)
+
+
+def _safe_next_url(request: HttpRequest, candidate: str | None) -> str:
+    default = settings.LOGIN_REDIRECT_URL
+    if candidate and url_has_allowed_host_and_scheme(
+        candidate,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
+    ):
+        return candidate
+    return default

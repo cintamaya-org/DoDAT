@@ -2,17 +2,25 @@
 # SPDX-FileCopyrightText: 2026 Baptiste COQUELET <github.com/BaptisteCoquelet>
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import base64
 import json
+import uuid
+import zlib
+from datetime import date, datetime, timedelta, timezone as datetime_timezone
+from decimal import Decimal
 from io import BytesIO
-from datetime import timedelta
+from types import SimpleNamespace
 from unittest import mock
+from urllib.error import HTTPError
+from urllib.parse import parse_qs, urlsplit
 
+from django import forms
 from django.contrib.auth import get_user_model
 from django.contrib.messages import get_messages
 from django.contrib.messages.storage.fallback import FallbackStorage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db.models import ProtectedError
-from django.test import RequestFactory, SimpleTestCase, TestCase
+from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -21,13 +29,15 @@ from cintafactory.logging.logging_utils import bind_request_context, clear_reque
 from diagrams.models import DrawIODiagram
 from users.models import BusinessDirection, BusinessGroup, Role, TechnicalDirection
 
+from . import views as dat_views
 from .constants import (
     DAT_PORTEUR_ROLE_SLUG,
     DAT_REQUIRED_PARTICIPANT_ROLE_LABELS,
     DAT_REQUIRED_PARTICIPANT_ROLE_SLUGS,
 )
 from .exporters import DATExportModelBuilder
-from .forms import DATForm
+from .forms import DATForm, DATImportForm, DATSubSectionForm, RepeatableTableWidget, build_dat_part_field
+from .importers import DATImportError, DATImportService
 from .models import (
     Application,
     DAT,
@@ -40,11 +50,13 @@ from .models import (
     DATParticipant,
     DATParticipantType,
     DATPart,
+    DATPartEntry,
     DATPartEntryType,
+    DATPartPayload,
     DATSection,
+    DATSectionMetadata,
     DATSectionParticipant,
     DATSectionResponsible,
-    DATSectionMetadata,
     DATSubSection,
     DATStatus,
     DATHistoryAction,
@@ -57,7 +69,14 @@ from .permissions import (
     user_is_dat_admin_for_dat,
     user_is_responsible_for_section,
 )
-from .drawio_parser import _clean_model_xml, dedupe_architecture_rows, extract_drawio_pages, parse_architecture_diagram
+from .drawio_parser import (
+    _clean_model_xml,
+    _inflate_drawio_payload,
+    dedupe_architecture_rows,
+    extract_drawio_pages,
+    parse_architecture_diagram,
+)
+from .drawio_parser import MAX_XML_CHARS
 from .tasks import _run_pdf_generation
 from .utils import dat_pdf_export_exists, dat_pdf_export_modified_at, format_user_display, open_dat_pdf_export
 from workflows.models import UserNotification
@@ -2464,3 +2483,881 @@ class DatSectionsSyncTests(TestCase):
             section.metadata.save(update_fields=["title"])
         self.assertTrue(sync_dat_sections_if_needed(self.dat))
         self.assertFalse(dat_sections_need_sync(self.dat))
+
+
+class DatPartFieldCoverageTests(SimpleTestCase):
+    @staticmethod
+    def _part(data_type, config=None, *, required=False):
+        return SimpleNamespace(
+            data_type=data_type,
+            config=config or {},
+            required=required,
+            label="Test field",
+        )
+
+    def test_choice_text_and_long_text_fields_use_configuration(self):
+        single = build_dat_part_field(
+            self._part(
+                DATPartEntryType.TEXT,
+                {"choices": [{"value": "a", "label": "Alpha"}], "widget": "radio"},
+            )
+        )
+        self.assertEqual(single.choices, [("a", "Alpha")])
+        self.assertEqual(single.widget.__class__.__name__, "MaterialRadioSelect")
+
+        multiple = build_dat_part_field(
+            self._part(
+                DATPartEntryType.TEXT,
+                {"choices": [{"value": "a"}], "multiple": True, "widget": "checkboxes"},
+            )
+        )
+        self.assertEqual(multiple.choices, [("a", "a")])
+        self.assertEqual(multiple.widget.__class__.__name__, "MaterialCheckboxSelectMultiple")
+
+        text = build_dat_part_field(
+            self._part(DATPartEntryType.TEXT, {"max_length": 15, "pattern": "[A-Z]+", "pattern_message": "Caps"})
+        )
+        self.assertEqual(text.max_length, 15)
+        self.assertEqual(text.widget.attrs["pattern"], "[A-Z]+")
+        self.assertEqual(text.widget.attrs["title"], "Caps")
+        self.assertTrue(text.validators)
+
+        long_text = build_dat_part_field(self._part(DATPartEntryType.LONG_TEXT, {"rows": 5}))
+        self.assertEqual(long_text.widget.attrs["rows"], 5)
+        default_long_text = build_dat_part_field(self._part(DATPartEntryType.LONG_TEXT))
+        self.assertEqual(default_long_text.widget.attrs["style"], "height:160px;")
+
+    def test_supported_part_types_and_repeatable_widget_options(self):
+        cases = [
+            (DATPartEntryType.INTEGER, forms.IntegerField),
+            (DATPartEntryType.DECIMAL, forms.DecimalField),
+            (DATPartEntryType.DATE, forms.DateField),
+            (DATPartEntryType.BOOLEAN, forms.BooleanField),
+            (DATPartEntryType.JSON, forms.JSONField),
+            (DATPartEntryType.URL, forms.URLField),
+            ("unknown-type", forms.CharField),
+        ]
+        for data_type, expected_type in cases:
+            with self.subTest(data_type=data_type):
+                field = build_dat_part_field(self._part(data_type))
+                self.assertIsInstance(field, expected_type)
+
+        repeater = build_dat_part_field(
+            self._part(
+                DATPartEntryType.REPEATER,
+                {"columns": [{"key": "name"}], "min_rows": 1, "max_rows": 4, "allow_row_removal": False},
+            )
+        )
+        self.assertIsInstance(repeater.widget, RepeatableTableWidget)
+        self.assertEqual(repeater.widget.min_rows, 1)
+        self.assertEqual(repeater.widget.max_rows, 4)
+        self.assertFalse(repeater.widget.allow_row_removal)
+
+    def test_repeatable_widget_normalizes_empty_and_json_values(self):
+        widget = RepeatableTableWidget(columns=[{"key": "service"}], min_rows=1)
+        self.assertEqual(widget.format_value(None), [])
+        self.assertEqual(widget.format_value(""), [])
+        self.assertEqual(widget.get_context("parts", "not-json", {})["widget"]["value"], [])
+        context = widget.get_context("parts", '[{"service":"API"}]', {})["widget"]
+        self.assertEqual(context["value"], [{"service": "API"}])
+        self.assertEqual(context["columns"], [{"key": "service"}])
+        self.assertEqual(context["min_rows"], 1)
+
+    def test_subsection_form_saves_only_changed_values_and_rejects_invalid_save(self):
+        part = SimpleNamespace(
+            data_type=DATPartEntryType.TEXT,
+            config={},
+            required=True,
+            label="Title",
+            key="title",
+            value="before",
+            form_field_name=lambda: "part_title",
+            initial_value=lambda: "before",
+            prepare_value=lambda value: value.strip(),
+            render_value=lambda value: value,
+            update_value=None,
+        )
+        part.update_value = mock.Mock(side_effect=lambda value: setattr(part, "value", value))
+        sub_section = SimpleNamespace(
+            title="Architecture",
+            parts=SimpleNamespace(order_by=lambda *_args: [part]),
+        )
+        form = DATSubSectionForm(sub_section, data={"part_title": " after "})
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(next(form.iter_entries())["field_name"], "part_title")
+        changes = form.save()
+        self.assertEqual(changes["title"]["from"], "before")
+        self.assertEqual(changes["title"]["to"], "after")
+        part.update_value.assert_called_once_with("after")
+
+        part.value = "before"
+        part.update_value.reset_mock()
+        unchanged = DATSubSectionForm(sub_section, data={"part_title": "before"})
+        self.assertTrue(unchanged.is_valid(), unchanged.errors)
+        self.assertEqual(unchanged.save(), {})
+        invalid = DATSubSectionForm(sub_section, data={"part_title": ""})
+        with self.assertRaisesMessage(ValueError, "Cannot save an invalid form."):
+            invalid.save()
+
+
+class DatImportFormCoverageTests(SimpleTestCase):
+    @staticmethod
+    def _upload(payload, *, name="dat.json"):
+        return SimpleUploadedFile(name, payload, content_type="application/json")
+
+    def test_valid_json_import_exposes_payload_and_resets_file_position(self):
+        upload = self._upload(b'{"reference":"DAT-1"}')
+        form = DATImportForm(files={"data_file": upload})
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.payload, {"reference": "DAT-1"})
+        self.assertEqual(form.cleaned_data["data_file"].tell(), 0)
+
+    def test_import_rejects_non_utf8_invalid_json_and_non_object_payloads(self):
+        cases = [
+            (b"\xff", "UTF-8"),
+            (b"{invalid", "JSON valide"),
+            (b"[]", "objet JSON"),
+        ]
+        for content, message in cases:
+            with self.subTest(content=content):
+                form = DATImportForm(files={"data_file": self._upload(content)})
+                self.assertFalse(form.is_valid())
+                self.assertIn(message, str(form.errors["data_file"]))
+
+    @mock.patch("dat.forms.DAT.objects.filter")
+    def test_import_rejects_duplicate_reference_and_accepts_new_reference(self, filter_dat):
+        filter_dat.return_value.exists.return_value = True
+        duplicate = DATImportForm(
+            data={"reference_override": "  DAT-EXISTS  "},
+            files={"data_file": self._upload(b"{}")},
+        )
+        self.assertFalse(duplicate.is_valid())
+        self.assertIn("reference_override", duplicate.errors)
+        filter_dat.assert_called_with(reference="DAT-EXISTS")
+
+        filter_dat.return_value.exists.return_value = False
+        unique = DATImportForm(
+            data={"reference_override": " DAT-NEW "},
+            files={"data_file": self._upload(b"{}")},
+        )
+        self.assertTrue(unique.is_valid(), unique.errors)
+        self.assertEqual(unique.cleaned_data["reference_override"], "DAT-NEW")
+
+
+class DatViewHelperCoverageTests(SimpleTestCase):
+    def test_section_status_map_normalizes_rows_and_uses_custom_choices(self):
+        status_part = DATPart(
+            key="suivi_sections",
+            label="Section status",
+            config={
+                "columns": [
+                    {
+                        "key": "statut",
+                        "choices": [
+                            {"value": "todo", "label": "À faire"},
+                            {"value": "blocked", "label": "Bloqué"},
+                            None,
+                            {"value": ""},
+                        ],
+                    }
+                ]
+            },
+        )
+        status_part._current_entry_cache = SimpleNamespace(
+            resolved_value=[
+                {
+                    "section": "Ancien titre",
+                    "section_slug": "architecture",
+                    "statut": "removed-choice",
+                    "statut_responsable": "en_cours",
+                    "reserve_message": "  ",
+                    "reserve_by_id": 42,
+                    "reserve_by_display": "Admin",
+                    "commentaire": "À corriger",
+                },
+                {"section": "Urbanisme", "statut": "blocked"},
+                "invalid row",
+                {"unknown": "stale"},
+            ]
+        )
+        status_part.update_value = mock.Mock()
+        sections = [
+            SimpleNamespace(slug="architecture", title="Architecture"),
+            SimpleNamespace(slug="informations-generales", title="Informations générales"),
+            SimpleNamespace(slug="urbanisme", title="Urbanisme"),
+        ]
+
+        with mock.patch.object(dat_views, "_find_section_status_part", return_value=status_part):
+            status_map, choices = dat_views.build_section_status_map(
+                SimpleNamespace(), sections_list=sections
+            )
+
+        self.assertEqual(choices, {"todo": "À faire", "blocked": "Bloqué"})
+        self.assertEqual(status_map["architecture"]["value"], "todo")
+        self.assertEqual(status_map["architecture"]["responsable_value"], "todo")
+        self.assertEqual(status_map["architecture"]["commentaire"], "À corriger")
+        self.assertEqual(status_map["architecture"]["reserve_by_id"], None)
+        self.assertFalse(status_map["informations-generales"]["has_status"])
+        self.assertEqual(status_map["urbanisme"]["value"], "blocked")
+        status_part.update_value.assert_called_once()
+        normalized_rows = status_part.update_value.call_args.args[0]
+        self.assertEqual([row["section_slug"] for row in normalized_rows], ["architecture", "urbanisme"])
+        self.assertEqual(normalized_rows[0]["section"], "Architecture")
+
+    def test_section_status_map_leaves_canonical_rows_unchanged_and_handles_missing_part(self):
+        section = SimpleNamespace(slug="architecture", title="Architecture")
+        status_part = DATPart(key="suivi_sections", label="Section status", config={})
+        status_part._current_entry_cache = SimpleNamespace(
+            resolved_value=[
+                {
+                    "section": "Architecture",
+                    "section_slug": "architecture",
+                    "statut": "en_cours",
+                    "statut_responsable": "en_cours",
+                    "reserve_message": "",
+                    "reserve_by_id": None,
+                    "reserve_by_display": "",
+                    "commentaire": "",
+                }
+            ]
+        )
+        status_part.update_value = mock.Mock()
+
+        with mock.patch.object(dat_views, "_find_section_status_part", return_value=status_part):
+            status_map, _choices = dat_views.build_section_status_map(
+                SimpleNamespace(), sections_list=[section]
+            )
+        self.assertEqual(status_map["architecture"]["label"], "En cours")
+        status_part.update_value.assert_not_called()
+
+        with mock.patch.object(dat_views, "_find_section_status_part", return_value=None):
+            fallback_map, fallback_choices = dat_views.build_section_status_map(
+                SimpleNamespace(), sections_list=[section]
+            )
+        self.assertEqual(fallback_map["architecture"]["value"], "en_cours")
+        self.assertIn("valide", fallback_choices)
+
+    def test_status_part_lookup_and_default_selection_cover_related_and_fallback_paths(self):
+        part = SimpleNamespace(key="suivi_sections")
+        subsection = SimpleNamespace(parts=SimpleNamespace(all=lambda: [SimpleNamespace(key="other"), part]))
+        validation = SimpleNamespace(
+            slug="validation",
+            sub_sections=SimpleNamespace(all=lambda: [subsection]),
+        )
+        self.assertIs(dat_views._find_section_status_part(SimpleNamespace(), [validation]), part)
+
+        query = mock.Mock()
+        query.filter.return_value.first.return_value = part
+        with mock.patch.object(dat_views.DATPart.objects, "select_related", return_value=query) as select:
+            self.assertIs(dat_views._find_section_status_part(SimpleNamespace(), []), part)
+        select.assert_called_once_with("sub_section__section")
+
+        with mock.patch.object(dat_views.DATPart.objects, "select_related", side_effect=RuntimeError("db down")):
+            self.assertIsNone(dat_views._find_section_status_part(SimpleNamespace(), []))
+        self.assertEqual(dat_views._default_status_value({"custom": "Custom"}), "custom")
+        self.assertEqual(dat_views._default_status_value({}), "en_cours")
+
+    def test_schema_metadata_extractors_and_reserve_status_reset(self):
+        schema_part = SimpleNamespace(
+            value=[
+                {"diagramme_id": "21cf4380-3a36-4885-a4d7-fb56ebf04c7f"},
+                {"diagramme_id": "21cf4380-3a36-4885-a4d7-fb56ebf04c7f"},
+                "invalid",
+                {"schema_systeme": "LikeC4", "schema_reference": "models/a.c4"},
+                {"schema_systeme": "likec4", "schema_reference": "/models/a.c4"},
+                {"schema_systeme": "drawio", "schema_reference": "ignored.c4"},
+                {"schema_systeme": "likec4", "schema_reference": "../outside.c4"},
+            ]
+        )
+        subsection = SimpleNamespace(
+            parts=SimpleNamespace(filter=lambda **_kwargs: SimpleNamespace(first=lambda: schema_part))
+        )
+        self.assertEqual(
+            dat_views._extract_schema_diagram_ids(subsection),
+            [uuid.UUID("21cf4380-3a36-4885-a4d7-fb56ebf04c7f")],
+        )
+        self.assertEqual(dat_views._extract_schema_likec4_paths(subsection), ["models/a.c4"])
+        self.assertEqual(dat_views._extract_schema_diagram_ids(None), [])
+        self.assertEqual(dat_views._extract_schema_likec4_paths(None), [])
+        empty_subsection = SimpleNamespace(
+            parts=SimpleNamespace(filter=lambda **_kwargs: SimpleNamespace(first=lambda: None))
+        )
+        self.assertEqual(dat_views._extract_schema_diagram_ids(empty_subsection), [])
+        self.assertEqual(dat_views._extract_schema_likec4_paths(empty_subsection), [])
+
+        status_part = SimpleNamespace(update_value=mock.Mock())
+        sections = [
+            SimpleNamespace(slug="architecture", title="Architecture"),
+            SimpleNamespace(slug="informations-generales", title="Informations générales"),
+        ]
+        dat = SimpleNamespace(
+            sections=SimpleNamespace(
+                order_by=lambda *_args: SimpleNamespace(
+                    select_related=lambda *_args: sections
+                )
+            )
+        )
+        with mock.patch.object(dat_views, "_find_section_status_part", return_value=status_part):
+            dat_views.reset_section_statuses_to_default(
+                dat,
+                status_map={"architecture": {"commentaire": "Keep this note"}},
+                status_choices={"custom": "Custom"},
+            )
+        rows = status_part.update_value.call_args.args[0]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["statut"], "custom")
+        self.assertEqual(rows[0]["commentaire"], "Keep this note")
+        self.assertEqual(rows[0]["reserve_by_id"], None)
+
+    def test_workflow_node_statuses_covers_section_messages_and_capability_states(self):
+        nodes = [
+            None,
+            {"scope": "section", "id": "missing-section"},
+            {"scope": "section", "id": "validated", "section": "validated"},
+            {"scope": "section", "id": "blocked", "section": "blocked"},
+            {"scope": "section", "id": "reserved", "section": "reserved"},
+            {"scope": "section", "id": "unknown", "section": "unknown"},
+            {"scope": "workflow", "id": "validation"},
+            {"scope": "workflow", "id": ""},
+        ]
+        status_map = {
+            "validated": {"value": "valide"},
+            "blocked": {"value": "bloque", "commentaire": "Corriger le dossier"},
+            "reserved": {"value": "en_cours", "reserve_message": "En réserve"},
+            "unknown": {"value": "legacy"},
+        }
+        capability_cases = [
+            ({"approved"}, ("validated", "task_alt")),
+            ({"rejected"}, ("blocked", "gpp_maybe")),
+            ({"requires_corrections"}, ("blocked", "gpp_maybe")),
+            ({"reviewable"}, ("review", "rate_review")),
+            (set(), ("in_progress", "pending_actions")),
+        ]
+        for capabilities, expected in capability_cases:
+            with self.subTest(capabilities=capabilities):
+                with mock.patch.object(
+                    dat_views,
+                    "workflow_has_capability",
+                    side_effect=lambda _dat, capability: capability in capabilities,
+                ):
+                    statuses = dat_views.build_workflow_node_statuses(
+                        SimpleNamespace(),
+                        status_map,
+                        {"nodes": nodes},
+                    )
+                self.assertEqual((statuses["validation"]["tone"], statuses["validation"]["icon"]), expected)
+                self.assertEqual(statuses["validated"]["tone"], "validated")
+                self.assertEqual(statuses["blocked"]["message"], "Corriger le dossier")
+                self.assertEqual(statuses["blocked"]["message_kind"], "blocked")
+                self.assertEqual(statuses["reserved"]["message_kind"], "reserve")
+                self.assertEqual(statuses["unknown"]["tone"], "unknown")
+                self.assertNotIn("missing-section", statuses)
+
+    def test_section_lock_only_checks_terminal_workflow_capability(self):
+        status_info = {"value": "bloque"}
+        self.assertFalse(dat_views.section_is_locked(status_info))
+        with mock.patch.object(dat_views, "workflow_has_capability", return_value=False):
+            self.assertFalse(dat_views.section_is_locked(status_info, dat=SimpleNamespace()))
+        with mock.patch.object(dat_views, "workflow_has_capability", return_value=True) as has_capability:
+            self.assertTrue(dat_views.section_is_locked(status_info, dat=SimpleNamespace()))
+        has_capability.assert_called_once_with(mock.ANY, "terminal")
+
+    def test_schema_normalizers_and_protocol_detection_handle_invalid_and_duplicate_values(self):
+        first = uuid.uuid4()
+        second = uuid.uuid4()
+        self.assertEqual(
+            dat_views._normalize_diagram_ids([str(first), first, "invalid", None, str(second)]),
+            [first, second],
+        )
+        self.assertEqual(dat_views._normalize_diagram_ids("not-a-list"), [])
+        self.assertEqual(dat_views._normalize_likec4_path(" /models/context.c4 "), "models/context.c4")
+        self.assertEqual(dat_views._normalize_likec4_path("../outside.c4"), "")
+        self.assertEqual(dat_views._normalize_likec4_path("model.txt"), "")
+        self.assertEqual(
+            dat_views._normalize_likec4_paths(["models/a.c4", "/models/a.c4", "", "bad.json"]),
+            ["models/a.c4"],
+        )
+        self.assertEqual(dat_views._normalize_likec4_paths("models/a.c4"), [])
+        self.assertEqual(dat_views._guess_likec4_protocol("HTTPS/443"), ("https", "443"))
+        self.assertEqual(dat_views._guess_likec4_protocol("uses grpc"), ("grpc", ""))
+        self.assertEqual(dat_views._guess_likec4_protocol("business event"), ("", ""))
+        self.assertEqual(dat_views._guess_likec4_protocol("   "), ("", ""))
+
+    def test_likec4_flow_matrix_maps_components_protocols_and_unknown_endpoints(self):
+        components, flows = dat_views._likec4_rows_from_flow_matrix(
+            {
+                "components": [
+                    {"name": "api", "title": "API", "props": {"description": "Front door"}},
+                    {"name": "db", "metadata": {"commentaire": "Storage"}},
+                    {"title": "Queue"},
+                    {"name": "", "title": ""},
+                    "invalid",
+                ],
+                "flows": [
+                    {"from": "api", "to": "db", "label": "HTTPS/443"},
+                    {"from": "new-service", "to": "API", "label": "event stream"},
+                    {"from": "", "to": "db", "label": "ignored"},
+                    None,
+                ],
+            }
+        )
+        self.assertEqual([row["nom"] for row in components], ["API", "db", "Queue", "new-service"])
+        self.assertEqual(components[0]["description"], "Front door")
+        self.assertEqual(components[1]["description"], "Storage")
+        self.assertEqual(flows[0]["source"], "API")
+        self.assertEqual(flows[0]["cible"], "db")
+        self.assertEqual((flows[0]["protocole"], flows[0]["port"], flows[0]["chiffrement"]), ("https", "443", "oui"))
+        self.assertEqual(flows[1]["flux_id"], "event stream")
+        self.assertEqual(len(flows), 2)
+        self.assertEqual(dat_views._likec4_rows_from_flow_matrix([]), ([], []))
+
+    def test_flow_matrix_fetch_handles_configuration_responses_and_network_errors(self):
+        with override_settings(LIKEC4_EDITOR_URL=""):
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("model.c4"))
+        with override_settings(LIKEC4_EDITOR_URL="file:///tmp/editor"):
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("model.c4"))
+
+        response = mock.MagicMock()
+        response.status = 200
+        response.read.return_value = b'{"flows": []}'
+        with override_settings(
+            LIKEC4_EDITOR_URL="https://editor.example/",
+            LIKEC4_API_TOKEN="test-token",
+        ), mock.patch("dat.views.urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value = response
+            self.assertEqual(dat_views._fetch_likec4_flow_matrix("models/one.c4"), {"flows": []})
+            request = urlopen.call_args.args[0]
+            self.assertEqual(urlsplit(request.full_url).path, "/flow-matrix")
+            self.assertEqual(parse_qs(urlsplit(request.full_url).query), {"file": ["models/one.c4"]})
+            self.assertEqual(request.get_header("X-likec4-token"), "test-token")
+
+            response.status = 503
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("models/one.c4"))
+            response.status = 200
+            response.read.return_value = b"not-json"
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("models/one.c4"))
+
+            urlopen.side_effect = HTTPError(
+                "https://editor.example/flow-matrix",
+                500,
+                "failed",
+                hdrs=None,
+                fp=BytesIO(b"error body"),
+            )
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("models/one.c4"))
+            urlopen.side_effect = OSError("network unavailable")
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("models/one.c4"))
+
+    def test_drawio_repeater_detection_and_repeater_update_report_changes(self):
+        sub_section = SimpleNamespace(
+            parts=SimpleNamespace(
+                all=lambda: [
+                    SimpleNamespace(data_type=DATPartEntryType.TEXT, config={"columns": [{"drawio": True}]}),
+                    SimpleNamespace(data_type=DATPartEntryType.REPEATER, config={"columns": [{"drawio": False}]}),
+                    SimpleNamespace(data_type=DATPartEntryType.REPEATER, config={"columns": [{"drawio": True}]}),
+                ]
+            )
+        )
+        self.assertTrue(dat_views._sub_section_has_drawio_repeater(sub_section))
+        self.assertFalse(
+            dat_views._sub_section_has_drawio_repeater(
+                SimpleNamespace(parts=SimpleNamespace(all=lambda: []))
+            )
+        )
+
+        part = SimpleNamespace(
+            key="schemas",
+            label="Schemas",
+            sub_section=SimpleNamespace(title="Architecture"),
+            data_type=DATPartEntryType.REPEATER,
+            value=[{"name": "Before"}],
+            prepare_value=lambda value: value,
+            render_value=lambda value: value,
+        )
+        part.update_value = mock.Mock(side_effect=lambda value: setattr(part, "value", value))
+        changed, details = dat_views._update_repeater_part(part, [{"name": "Après"}])
+        self.assertTrue(changed)
+        self.assertEqual(json.loads(details["schemas"]["from"]), [{"name": "Before"}])
+        self.assertEqual(json.loads(details["schemas"]["to"]), [{"name": "Après"}])
+        part.update_value.assert_called_once_with([{"name": "Après"}])
+        self.assertEqual(dat_views._update_repeater_part(part, part.value), (False, {}))
+        self.assertEqual(dat_views._update_repeater_part(None, []), (False, {}))
+
+
+class DatPartValueBehaviorTests(SimpleTestCase):
+    @staticmethod
+    def part(data_type, value, config=None):
+        part = DATPart(key="test", label="Test", data_type=data_type, config=config or {})
+        part._current_entry_cache = SimpleNamespace(resolved_value=value)
+        return part
+
+    def test_initial_value_converts_typed_values_and_preserves_invalid_values(self):
+        self.assertIsNone(self.part(DATPartEntryType.TEXT, "").initial_value())
+        self.assertTrue(self.part(DATPartEntryType.BOOLEAN, "yes").initial_value())
+        self.assertEqual(self.part(DATPartEntryType.INTEGER, "12").initial_value(), 12)
+        self.assertEqual(self.part(DATPartEntryType.INTEGER, "bad").initial_value(), "bad")
+        self.assertEqual(self.part(DATPartEntryType.DECIMAL, "1.25").initial_value(), Decimal("1.25"))
+        self.assertEqual(self.part(DATPartEntryType.DECIMAL, "bad").initial_value(), "bad")
+        self.assertEqual(self.part(DATPartEntryType.DATE, "2026-10-02").initial_value(), date(2026, 10, 2))
+        self.assertEqual(self.part(DATPartEntryType.DATE, "not-a-date").initial_value(), "not-a-date")
+        self.assertEqual(self.part(DATPartEntryType.DATE, date(2026, 10, 2)).initial_value(), date(2026, 10, 2))
+
+    def test_prepare_value_normalizes_each_supported_data_type(self):
+        self.assertIsNone(DATPart(key="test", label="Test").prepare_value(""))
+        self.assertEqual(self.part(DATPartEntryType.TEXT, "unused", {"multiple": True}).prepare_value(("a", "b")), ["a", "b"])
+        self.assertTrue(self.part(DATPartEntryType.BOOLEAN, "unused").prepare_value("yes"))
+        self.assertEqual(self.part(DATPartEntryType.INTEGER, "unused").prepare_value("12"), 12)
+        self.assertIsNone(self.part(DATPartEntryType.INTEGER, "unused").prepare_value("invalid"))
+        self.assertEqual(self.part(DATPartEntryType.DECIMAL, "unused").prepare_value(Decimal("1.20")), "1.20")
+        self.assertEqual(self.part(DATPartEntryType.DECIMAL, "unused").prepare_value("2.5"), "2.5")
+        self.assertIsNone(self.part(DATPartEntryType.DECIMAL, "unused").prepare_value("invalid"))
+        self.assertEqual(self.part(DATPartEntryType.DATE, "unused").prepare_value(date(2026, 10, 2)), "2026-10-02")
+        self.assertEqual(self.part(DATPartEntryType.DATE, "unused").prepare_value(20261002), "20261002")
+        self.assertEqual(self.part(DATPartEntryType.REPEATER, "unused").prepare_value('[{"a":1}]'), [{"a": 1}])
+        self.assertEqual(self.part(DATPartEntryType.REPEATER, "unused").prepare_value("invalid"), [])
+        self.assertEqual(self.part(DATPartEntryType.REPEATER, "unused").prepare_value("{}"), [])
+        self.assertEqual(self.part(DATPartEntryType.REPEATER, "unused").prepare_value([{"a": 1}]), [{"a": 1}])
+
+    def test_render_value_formats_choices_and_typed_content(self):
+        choice_part = self.part(
+            DATPartEntryType.TEXT,
+            None,
+            {"choices": [{"value": "a", "label": "Alpha"}], "multiple": True},
+        )
+        self.assertEqual(choice_part.render_value(["a", "other"]), "Alpha, other")
+        self.assertEqual(choice_part.render_value("a"), "Alpha")
+        self.assertEqual(self.part(DATPartEntryType.BOOLEAN, None).render_value(True), "Oui")
+        self.assertEqual(self.part(DATPartEntryType.BOOLEAN, None).render_value(False), "Non")
+        self.assertEqual(self.part(DATPartEntryType.DATE, None).render_value(date(2026, 10, 2)), "2026-10-02")
+        self.assertEqual(self.part(DATPartEntryType.INTEGER, None).render_value(5), "5")
+        self.assertEqual(self.part(DATPartEntryType.DECIMAL, None).render_value(Decimal("1.5")), "1.5")
+        self.assertEqual(self.part(DATPartEntryType.JSON, None).render_value({"a": 1}), '{\n  "a": 1\n}')
+        self.assertEqual(self.part(DATPartEntryType.JSON, None).render_value("opaque"), "opaque")
+        self.assertEqual(self.part(DATPartEntryType.REPEATER, None).render_value('[{"a":1}]'), [{"a": 1}])
+        self.assertEqual(self.part(DATPartEntryType.REPEATER, None).render_value("invalid"), [])
+        self.assertEqual(self.part(DATPartEntryType.REPEATER, None).render_value("{}"), [])
+        self.assertEqual(self.part(DATPartEntryType.TEXT, None).render_value([]), "")
+        self.assertEqual(self.part(DATPartEntryType.TEXT, None).render_value(3), "3")
+        self.assertEqual(self.part(DATPartEntryType.TEXT, "current").formatted_value(), "current")
+
+    def test_current_entry_uses_prefetch_sort_and_empty_cache(self):
+        first = SimpleNamespace(
+            updated_at=datetime(2026, 1, 1, tzinfo=datetime_timezone.utc),
+            pk=1,
+            resolved_value="first",
+        )
+        latest = SimpleNamespace(
+            updated_at=datetime(2026, 1, 2, tzinfo=datetime_timezone.utc),
+            pk=2,
+            resolved_value="latest",
+        )
+        part = DATPart(key="test", label="Test")
+        part._prefetched_objects_cache = {"entries": [first, latest]}
+        self.assertEqual(part.value, "latest")
+        self.assertIs(part._get_current_entry(), latest)
+
+        empty_part = DATPart(key="empty", label="Empty")
+        empty_part._prefetched_objects_cache = {"entries": []}
+        self.assertIsNone(empty_part.value)
+
+
+class DatPartPayloadPersistenceTests(TestCase):
+    def setUp(self):
+        direction = get_default_business_direction()
+        application = Application.objects.create(
+            code="payload-app",
+            name="Payload app",
+            business_direction=direction,
+        )
+        self.dat = DAT.objects.create(
+            reference="DAT-PAYLOAD-1",
+            title="Payload test",
+            application=application,
+        )
+        metadata = DATSectionMetadata.objects.create(title="Test", slug="payload")
+        section = DATSection.objects.create(dat=self.dat, metadata=metadata)
+        sub_section = DATSubSection.objects.create(section=section, title="Test", slug="payload")
+        self.part = DATPart.objects.create(sub_section=sub_section, key="payload", label="Payload")
+
+    def test_payloads_deduplicate_values_and_part_updates_reuse_the_entry(self):
+        self.assertIsNone(DATPartPayload.get_or_create_for_value({}))
+        first_entry = self.part.update_value({"b": 2, "a": 1})
+        first_payload = first_entry.payload
+        same_payload = DATPartPayload.get_or_create_for_value({"a": 1, "b": 2})
+        self.assertEqual(same_payload.pk, first_payload.pk)
+        self.assertEqual(self.part.value, {"b": 2, "a": 1})
+
+        same_entry = self.part.update_value({"a": 1, "b": 2})
+        self.assertEqual(same_entry.pk, first_entry.pk)
+        self.assertEqual(DATPartEntry.objects.filter(part=self.part).count(), 1)
+
+        second_payload = DATPartPayload.get_or_create_for_value({"changed": True})
+        same_entry = self.part.update_value({"changed": True})
+        self.assertEqual(same_entry.pk, first_entry.pk)
+        self.assertEqual(same_entry.payload_id, second_payload.pk)
+        second_payload.data = {"mutated": True}
+        second_payload.save()
+        second_payload.refresh_from_db()
+        self.assertEqual(second_payload.data, {"changed": True})
+
+    def test_payload_hash_and_coercion_fall_back_for_circular_values(self):
+        circular = []
+        circular.append(circular)
+        self.assertEqual(DATPartPayload._normalize_for_hash(circular), json.dumps(str(circular), ensure_ascii=False))
+        self.assertEqual(DATPartPayload._coerce_json_value(circular), str(circular))
+
+
+class DrawioParserEdgeCoverageTests(SimpleTestCase):
+    @staticmethod
+    def _compressed_payload(xml, wbits):
+        compressor = zlib.compressobj(wbits=wbits)
+        compressed = compressor.compress(xml.encode("utf-8")) + compressor.flush()
+        return base64.b64encode(compressed).decode("ascii")
+
+    def test_clean_model_xml_accepts_escaped_and_encoded_models_and_rejects_bad_inputs(self):
+        xml = "<mxGraphModel><root /></mxGraphModel>"
+        self.assertEqual(_clean_model_xml("  " + xml + "  "), xml)
+        self.assertEqual(_clean_model_xml("&lt;mxGraphModel&gt;&lt;root /&gt;&lt;/mxGraphModel&gt;"), xml)
+        self.assertEqual(_clean_model_xml("%3CmxGraphModel%3E%3Croot%20/%3E%3C/mxGraphModel%3E"), xml)
+        self.assertIsNone(_clean_model_xml(""))
+        self.assertIsNone(_clean_model_xml("not xml"))
+        self.assertIsNone(_clean_model_xml("x" * (MAX_XML_CHARS + 1)))
+
+    def test_extract_pages_accepts_compressed_drawio_pages_and_namespaced_children(self):
+        model = "<mxGraphModel><root /></mxGraphModel>"
+        for wbits in (-15, zlib.MAX_WBITS):
+            with self.subTest(wbits=wbits):
+                encoded = self._compressed_payload(model, wbits)
+                pages = extract_drawio_pages(f'<mxfile><diagram name="Compressed">{encoded}</diagram></mxfile>')
+                self.assertEqual(pages[0]["name"], "Compressed")
+                self.assertIn("mxGraphModel", pages[0]["xml"])
+                self.assertEqual(_inflate_drawio_payload(encoded), model)
+
+        pages = extract_drawio_pages(
+            '<mxfile xmlns="urn:drawio"><diagram label="Nested"><mxGraphModel><root /></mxGraphModel></diagram></mxfile>'
+        )
+        self.assertEqual(pages[0]["name"], "Nested")
+        self.assertIn("mxGraphModel", pages[0]["xml"])
+
+    def test_page_extraction_and_inflater_return_empty_for_invalid_documents(self):
+        for invalid in ("", " ", "<broken", "<root />", "x" * (MAX_XML_CHARS + 1)):
+            with self.subTest(invalid=invalid[:20]):
+                self.assertEqual(extract_drawio_pages(invalid), [])
+        self.assertEqual(_inflate_drawio_payload(""), None)
+        self.assertEqual(_inflate_drawio_payload("not-base64"), None)
+        self.assertEqual(_inflate_drawio_payload(base64.b64encode(b"not compressed xml").decode()), None)
+
+
+class DatImportServiceCoverageTests(SimpleTestCase):
+    def test_import_validates_required_sections_reference_duplicate_and_title(self):
+        service = DATImportService()
+        with self.assertRaisesMessage(DATImportError, 'section "dat" manquante'):
+            service.import_from_payload({})
+        with self.assertRaisesMessage(DATImportError, "référence du DAT est absente"):
+            service.import_from_payload({"dat": {"title": "Title"}})
+
+        with mock.patch("dat.importers.DAT.objects.filter") as filter_dat:
+            filter_dat.return_value.exists.side_effect = [True, False, False]
+            with self.assertRaisesMessage(DATImportError, "existe déjà"):
+                service.import_from_payload({"dat": {"reference": "DAT-EXISTS", "title": "Title"}})
+            with self.assertRaisesMessage(DATImportError, "titre du DAT est absent"):
+                service.import_from_payload({"dat": {"reference": "DAT-NO-TITLE", "title": "  "}})
+            with self.assertRaisesMessage(DATImportError, "application associée"):
+                service.import_from_payload(
+                    {"dat": {"reference": "DAT-NO-APP", "title": "Title"}, "application": None}
+                )
+        self.assertEqual(filter_dat.call_count, 3)
+
+    def test_import_creates_dat_sets_actor_and_returns_warnings_without_live_database(self):
+        actor = SimpleNamespace(pk=17)
+        application = Application(code="import-app", name="Imported application")
+        service = DATImportService(actor=actor)
+        with (
+            mock.patch("dat.importers.DAT.objects.filter") as filter_dat,
+            mock.patch("dat.importers.transaction.atomic"),
+            mock.patch.object(DAT, "save") as save_dat,
+            mock.patch.object(service, "_resolve_application", return_value=application),
+            mock.patch.object(service, "_resolve_user", return_value=None),
+            mock.patch.object(service, "_normalise_status", return_value=DATStatus.EN_COURS),
+            mock.patch.object(service, "_synchronise_owner"),
+        ):
+            filter_dat.return_value.exists.return_value = False
+            result = service.import_from_payload(
+                {
+                    "dat": {
+                        "reference": "DAT-NEW-IMPORT",
+                        "title": "Imported DAT",
+                        "description": "Details",
+                        "status": "en_cours",
+                    },
+                    "application": {"code": "app"},
+                    "owner": {"username": "missing"},
+                    "participants": None,
+                    "sections": None,
+                }
+            )
+
+        self.assertEqual(result.dat.reference, "DAT-NEW-IMPORT")
+        self.assertEqual(result.dat.title, "Imported DAT")
+        self.assertEqual(result.dat.description, "Details")
+        self.assertEqual(result.dat.status, DATStatus.EN_COURS)
+        self.assertIs(result.dat._history_actor, actor)
+        self.assertEqual(result.dat._workflow_initial_state, DATStatus.EN_COURS)
+        self.assertEqual(result.warnings, [])
+        save_dat.assert_called_once_with()
+
+    def test_application_user_and_role_resolution_use_fallbacks_and_cache_misses(self):
+        service = DATImportService()
+        application = SimpleNamespace(code="app")
+        with mock.patch("dat.importers.Application.objects.filter") as find_application:
+            find_application.return_value.first.side_effect = [None, application]
+            self.assertIs(service._resolve_application({"id": "missing", "code": "app"}), application)
+            self.assertEqual(find_application.call_args_list, [mock.call(pk="missing"), mock.call(code="app")])
+        with mock.patch("dat.importers.Application.objects.filter") as find_application:
+            find_application.return_value.first.return_value = None
+            with self.assertRaisesMessage(DATImportError, "Veuillez la créer"):
+                DATImportService()._resolve_application({"id": "missing", "code": "missing"})
+        with self.assertRaisesMessage(DATImportError, "absente"):
+            DATImportService()._resolve_application("invalid")
+
+        user = SimpleNamespace(username="alice")
+        service = DATImportService()
+        with mock.patch("dat.importers.UserModel.objects.filter") as find_user:
+            find_user.return_value.first.side_effect = [None, user, None, None]
+            self.assertIs(service._resolve_user({"id": 7, "username": "alice"}), user)
+            self.assertIs(service._resolve_user({"id": 7, "username": "alice"}), user)
+            self.assertIsNone(service._resolve_user({"id": 8, "username": "missing"}))
+            self.assertIsNone(service._resolve_user({"id": 8, "username": "missing"}))
+            self.assertEqual(find_user.call_count, 4)
+        self.assertEqual(len(service._warnings), 1)
+        self.assertIn("missing", service._warnings[0])
+        self.assertIsNone(DATImportService()._resolve_user(None))
+
+        role = SimpleNamespace(slug="architect")
+        with mock.patch("dat.importers.Role.objects.filter") as find_role:
+            find_role.return_value.first.side_effect = [role, None]
+            self.assertIs(service._resolve_role("architect"), role)
+            self.assertIs(service._resolve_role("architect"), role)
+            self.assertIsNone(service._resolve_role("unknown"))
+            self.assertIsNone(service._resolve_role("unknown"))
+            self.assertEqual(find_role.call_count, 2)
+        self.assertEqual(len(service._warnings), 2)
+
+    def test_legacy_status_conversion_and_unknown_status_fall_back_to_initial(self):
+        service = DATImportService()
+        workflow_statuses = [
+            {"status": DATStatus.NOUVELLE_DEMANDE},
+            {"status": DATStatus.EN_COURS},
+            {"status": DATStatus.EN_ATTENTE_DE_REVUE},
+        ]
+        with (
+            mock.patch("dat.importers.workflow_initial_state", return_value=DATStatus.NOUVELLE_DEMANDE),
+            mock.patch("dat.importers.workflow_states", return_value=workflow_statuses),
+        ):
+            self.assertEqual(service._normalise_status(None), DATStatus.NOUVELLE_DEMANDE)
+            self.assertEqual(service._normalise_status(DATStatus.EN_COURS), DATStatus.EN_COURS)
+            self.assertEqual(service._normalise_status("validation_finale"), DATStatus.EN_ATTENTE_DE_REVUE)
+            self.assertEqual(service._normalise_status("legacy-invalid"), DATStatus.NOUVELLE_DEMANDE)
+        self.assertEqual(len(service._warnings), 2)
+
+    def test_participant_owner_and_section_imports_skip_unknown_and_empty_values(self):
+        service = DATImportService(actor="importer")
+        dat = SimpleNamespace(owner_id=None, save=mock.Mock())
+        role = SimpleNamespace(slug="architect")
+        user = SimpleNamespace(username="alice")
+        with (
+            mock.patch.object(service, "_resolve_role", side_effect=[None, role, role]),
+            mock.patch.object(service, "_resolve_user", side_effect=[user, None, user]),
+            mock.patch("dat.importers.DATParticipant.objects.create") as create_participant,
+        ):
+            service._import_participants(
+                dat,
+                [None, {"role_slug": "missing", "user": {}}, {"role": {"slug": "architect"}, "user": {}},
+                 {"role_slug": "architect", "user": {}}, "invalid"],
+            )
+        create_participant.assert_called_once_with(dat=dat, role=role, user=user)
+        service._import_participants(dat, "invalid")
+
+        participant = SimpleNamespace(user_id=99)
+        dat.participants = SimpleNamespace(
+            select_related=lambda *_args: SimpleNamespace(
+                filter=lambda **_kwargs: SimpleNamespace(first=lambda: participant)
+            )
+        )
+        with mock.patch.object(dat, "save") as save:
+            service._synchronise_owner(dat)
+        self.assertEqual(dat.owner_id, 99)
+        self.assertEqual(dat._history_actor, "importer")
+        save.assert_called_once_with(update_fields=["owner", "updated_at"])
+        already_owned = SimpleNamespace(owner_id=42, save=mock.Mock())
+        with mock.patch.object(already_owned, "save") as save:
+            service._synchronise_owner(already_owned)
+        save.assert_not_called()
+
+        part = SimpleNamespace(
+            key="field",
+            prepare_value=mock.Mock(side_effect=lambda value: value),
+            update_value=mock.Mock(),
+        )
+        section_map = {
+            "architecture": {
+                "sub_sections": {
+                    "schemas": {"parts": {"field": part}},
+                }
+            }
+        }
+        with (
+            mock.patch("dat.importers.sync_dat_sections_if_needed"),
+            mock.patch.object(service, "_build_section_map", return_value=section_map),
+        ):
+            service._import_sections(
+                dat,
+                [
+                    None,
+                    {"slug": "unknown", "sub_sections": []},
+                    {"slug": "unknown", "sub_sections": []},
+                    {
+                        "slug": "architecture",
+                        "sub_sections": [
+                            None,
+                            {"slug": "unknown", "parts": []},
+                            {"slug": "unknown", "parts": []},
+                            {
+                                "slug": "schemas",
+                                "parts": [
+                                    None,
+                                    {"key": "unknown", "value": "skip"},
+                                    {"key": "unknown", "value": "skip"},
+                                    {"key": "field", "value": []},
+                                    {"key": "field", "value": {"value": "kept"}},
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            )
+        self.assertEqual(part.prepare_value.call_args_list, [mock.call([]), mock.call({"value": "kept"})])
+        part.update_value.assert_called_once_with({"value": "kept"})
+        self.assertEqual(len(service._warnings), 3)
+
+    def test_section_map_builds_lookup_by_section_subsection_and_part(self):
+        part = SimpleNamespace(key="schema")
+        sub_section = SimpleNamespace(
+            slug="schemas",
+            parts=SimpleNamespace(all=lambda: [part]),
+        )
+        section = SimpleNamespace(
+            slug="architecture",
+            sub_sections=SimpleNamespace(all=lambda: [sub_section]),
+        )
+        dat = SimpleNamespace(
+            sections=SimpleNamespace(
+                select_related=lambda *_args: SimpleNamespace(
+                    prefetch_related=lambda *_args: [section]
+                )
+            )
+        )
+        mapping = DATImportService()._build_section_map(dat)
+        self.assertIs(mapping["architecture"]["section"], section)
+        self.assertIs(mapping["architecture"]["sub_sections"]["schemas"]["sub_section"], sub_section)
+        self.assertIs(mapping["architecture"]["sub_sections"]["schemas"]["parts"]["schema"], part)
