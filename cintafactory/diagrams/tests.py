@@ -16,6 +16,7 @@ from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlsplit
 
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.http import Http404
@@ -287,6 +288,7 @@ class LikeC4ExportBaselineTests(SimpleTestCase):
 class ProxySecurityTests(TestCase):
     def setUp(self) -> None:
         super().setUp()
+        cache.clear()
         self.user = get_user_model().objects.create_user(username="proxy-user", password="pwd")
 
     def test_drawio_proxy_blocks_absolute_url_path(self):

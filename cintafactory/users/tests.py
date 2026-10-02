@@ -7,6 +7,7 @@ import json
 from importlib import import_module
 from io import BytesIO
 from types import SimpleNamespace
+from unittest import mock
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
@@ -992,8 +993,11 @@ class UserFormCoverageTests(TestCase):
         self.assertTrue(saved.check_password("Long-passphrase-493!"))
 
     def test_profile_picture_cleaner_processes_uploaded_files(self):
-        upload = SimpleUploadedFile("avatar.png", b"fake image", content_type="image/png")
-        processed = SimpleUploadedFile("processed.png", b"processed", content_type="image/png")
+        image_buffer = BytesIO()
+        Image.new("RGB", (1, 1)).save(image_buffer, format="PNG")
+        image_bytes = image_buffer.getvalue()
+        upload = SimpleUploadedFile("avatar.png", image_bytes, content_type="image/png")
+        processed = SimpleUploadedFile("processed.png", image_bytes, content_type="image/png")
         form = UserForm(data=self._data(role=self.role_a, group=self.group_a), files={"profile_picture": upload})
         with mock.patch("users.forms.process_profile_picture_upload", return_value=processed) as process:
             self.assertTrue(form.is_valid(), form.errors)

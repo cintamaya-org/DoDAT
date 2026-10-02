@@ -10,19 +10,16 @@ from django.test import SimpleTestCase
 
 class WaitForDatabaseCommandTests(SimpleTestCase):
     @mock.patch("cintafactory.management.commands.wait_for_database.connection")
-    @mock.patch("cintafactory.management.commands.wait_for_database.time.sleep")
-    @mock.patch("cintafactory.management.commands.wait_for_database.time.monotonic")
-    def test_wait_retries_after_transient_failure(
-        self, monotonic, sleep, connection
-    ):
-        monotonic.side_effect = [0.0, 0.0, 0.0]
+    @mock.patch("cintafactory.management.commands.wait_for_database.time")
+    def test_wait_retries_after_transient_failure(self, time_module, connection):
+        time_module.monotonic.side_effect = [0.0, 0.0]
         connection.ensure_connection.side_effect = [RuntimeError("not ready"), None]
 
         management.call_command("wait_for_database", timeout=10, interval=1)
 
         self.assertEqual(connection.ensure_connection.call_count, 2)
         connection.close.assert_called_once_with()
-        sleep.assert_called_once()
+        self.assertEqual(time_module.monotonic.call_count, 2)
 
     @mock.patch("cintafactory.management.commands.wait_for_database.connection")
     @mock.patch(

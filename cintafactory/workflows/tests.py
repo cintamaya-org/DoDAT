@@ -592,7 +592,7 @@ class WorkflowNotificationsViewTests(TestCase):
             target_url="/dat/1/",
         )
 
-    def test_notifications_view_combines_sources_and_marks_as_viewed(self):
+    def test_notifications_view_combines_sources_without_marking_as_viewed(self):
         response = self.client.get(reverse("workflows:notifications"))
         self.assertEqual(response.status_code, 200)
         notifications = response.context["notifications"]
@@ -601,12 +601,12 @@ class WorkflowNotificationsViewTests(TestCase):
         self.assertContains(response, "Export PDF lancé")
         self.assertContains(response, "En Attente de revue")
 
-        self.assertTrue(
+        self.assertFalse(
             HistoryNotificationSeen.objects.filter(user=self.user, history=self.history).exists()
         )
 
         self.user_notification.refresh_from_db()
-        self.assertIsNotNone(self.user_notification.viewed_at)
+        self.assertIsNone(self.user_notification.viewed_at)
 
     def test_notification_levels_are_displayed_in_french(self):
         expected_labels = {
@@ -692,6 +692,17 @@ class WorkflowNotificationsViewTests(TestCase):
     def test_notifications_do_not_reappear_as_unread_once_viewed(self):
         first_response = self.client.get(reverse("workflows:notifications"))
         self.assertEqual(first_response.status_code, 200)
+        self.assertTrue(any(item["is_unread"] for item in first_response.context["notifications"]))
+
+        mark_response = self.client.post(
+            reverse("workflows:notifications"),
+            data={
+                "mark_notification": "1",
+                "notification_source": "user",
+                "notification_id": str(self.user_notification.pk),
+            },
+        )
+        self.assertEqual(mark_response.status_code, 302)
 
         self.user_notification.refresh_from_db()
         self.assertIsNotNone(self.user_notification.viewed_at)
@@ -700,9 +711,12 @@ class WorkflowNotificationsViewTests(TestCase):
         self.assertEqual(second_response.status_code, 200)
 
         notifications = second_response.context["notifications"]
-        unread_flags = [entry.get("is_unread") for entry in notifications]
-        self.assertFalse(any(unread_flags))
-        self.assertEqual(second_response.context["notifications_unread_count"], 0)
+        unread_user_flags = [
+            entry.get("is_unread")
+            for entry in notifications
+            if entry.get("source") == "user"
+        ]
+        self.assertFalse(any(unread_user_flags))
 
     def test_mark_all_as_seen_marks_history_and_user_notifications(self):
         extra_history = DATHistory.objects.create(
