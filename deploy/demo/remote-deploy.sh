@@ -103,19 +103,39 @@ if [ "${ready}" != "1" ]; then
   exit 1
 fi
 
-# Compte de démo : créé au premier passage, mot de passe réaligné sur le secret à chaque déploiement.
+# Comptes, réalignés à chaque déploiement :
+#   - compte de démo : créé au premier passage, mot de passe = secret DEMO_ADMIN_PASSWORD ;
+#   - super_admin (créé par la migration users/0001 avec le mot de passe public 123+Aze) : désactivé ;
+#   - comptes de rôle de cette même migration (<role>_user) : gardés pour montrer le circuit
+#     de validation, avec le mot de passe de la démo à la place de 123+Aze.
 "${COMPOSE[@]}" exec -T -w /app/cintafactory \
   -e DEMO_ADMIN_USERNAME -e DEMO_ADMIN_EMAIL -e DEMO_ADMIN_PASSWORD \
   web python manage.py shell -c '
 import os
 from django.contrib.auth import get_user_model
+from users.models import Role
 
-user, created = get_user_model().objects.get_or_create(username=os.environ["DEMO_ADMIN_USERNAME"])
+User = get_user_model()
+password = os.environ["DEMO_ADMIN_PASSWORD"]
+
+user, created = User.objects.get_or_create(username=os.environ["DEMO_ADMIN_USERNAME"])
 user.email = os.environ["DEMO_ADMIN_EMAIL"]
 user.is_active = user.is_staff = user.is_superuser = True
-user.set_password(os.environ["DEMO_ADMIN_PASSWORD"])
+user.set_password(password)
 user.save()
 print("Compte demo cree." if created else "Compte demo mis a jour.")
+
+for admin in User.objects.filter(username="super_admin"):
+    admin.is_active = False
+    admin.set_unusable_password()
+    admin.save()
+    print("super_admin desactive.")
+
+role_usernames = [slug.replace("-", "_") + "_user" for slug in Role.objects.values_list("slug", flat=True)]
+for role_user in User.objects.filter(username__in=role_usernames):
+    role_user.set_password(password)
+    role_user.save()
+    print(f"{role_user.username} : mot de passe de la demo applique.")
 '
 
 docker image prune -f >/dev/null
