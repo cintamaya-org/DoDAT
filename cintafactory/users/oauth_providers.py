@@ -9,6 +9,8 @@ from typing import Any, Mapping
 
 from django.conf import settings
 
+from cintafactory.url_safety import is_http_url
+
 
 @dataclass(frozen=True)
 class OAuthProvider:
@@ -22,10 +24,19 @@ class OAuthProvider:
     scopes: tuple[str, ...]
     extra_authorize_params: Mapping[str, str]
     userinfo_mapping: Mapping[str, str]
+    allow_user_creation: bool = True
+    token_endpoint_auth_method: str = "client_secret_post"
 
     @property
     def enabled(self) -> bool:
-        return bool(self.client_id and self.client_secret)
+        return bool(
+            self.client_id
+            and self.client_secret
+            and is_http_url(self.authorize_url)
+            and is_http_url(self.token_url)
+            and is_http_url(self.userinfo_url)
+            and self.token_endpoint_auth_method in {"client_secret_basic", "client_secret_post"}
+        )
 
 
 def _load_provider(slug: str, config: Mapping[str, Any]) -> OAuthProvider:
@@ -60,7 +71,19 @@ def _load_provider(slug: str, config: Mapping[str, Any]) -> OAuthProvider:
         scopes=scope_tuple,
         extra_authorize_params={str(key): str(value) for key, value in extra.items()},
         userinfo_mapping=defaults,
+        allow_user_creation=_as_bool(config.get("allow_user_creation", True), default=True),
+        token_endpoint_auth_method=str(
+            config.get("token_endpoint_auth_method") or "client_secret_post"
+        ).strip().lower(),
     )
+
+
+def _as_bool(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def get_oauth_provider(slug: str) -> OAuthProvider | None:

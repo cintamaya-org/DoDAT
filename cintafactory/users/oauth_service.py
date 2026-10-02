@@ -7,10 +7,11 @@ from __future__ import annotations
 import json
 import logging
 import secrets
+from base64 import b64encode
 from datetime import timedelta
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import quote_plus, urlencode
 from urllib.request import Request, urlopen
 
 from django.conf import settings
@@ -51,12 +52,21 @@ def build_authorize_url(provider: OAuthProvider, redirect_uri: str, state: str) 
 def exchange_code_for_token(provider: OAuthProvider, code: str, redirect_uri: str) -> dict[str, Any]:
     payload = {
         "code": code,
-        "client_id": provider.client_id,
-        "client_secret": provider.client_secret,
         "redirect_uri": redirect_uri,
         "grant_type": "authorization_code",
     }
-    return _request_json(provider.token_url, data=payload)
+    headers = {}
+    if provider.token_endpoint_auth_method == "client_secret_basic":
+        client_id = quote_plus(provider.client_id, safe="")
+        client_secret = quote_plus(provider.client_secret, safe="")
+        credentials = b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
+        headers["Authorization"] = f"Basic {credentials}"
+    elif provider.token_endpoint_auth_method == "client_secret_post":
+        payload["client_id"] = provider.client_id
+        payload["client_secret"] = provider.client_secret
+    else:
+        raise OAuthError("Methode d'authentification OAuth non prise en charge.")
+    return _request_json(provider.token_url, headers=headers, data=payload)
 
 
 def fetch_userinfo(provider: OAuthProvider, access_token: str) -> dict[str, Any]:
@@ -72,14 +82,14 @@ def resolve_oauth_user(
     request_user=None,
 ):
     mapping = provider.userinfo_mapping
-    provider_user_id = _extract_value(userinfo, mapping.get("user_id")) or ""
+    provider_user_id = _string_claim(userinfo, mapping.get("user_id"))
     if not provider_user_id:
         raise OAuthError("Identifiant utilisateur manquant dans la reponse du fournisseur.")
-    email = _extract_value(userinfo, mapping.get("email")) or ""
+    email = _string_claim(userinfo, mapping.get("email"))
     email_verified = _extract_value(userinfo, mapping.get("email_verified"))
-    first_name = _extract_value(userinfo, mapping.get("first_name")) or ""
-    last_name = _extract_value(userinfo, mapping.get("last_name")) or ""
-    full_name = _extract_value(userinfo, mapping.get("full_name")) or ""
+    first_name = _string_claim(userinfo, mapping.get("first_name"))
+    last_name = _string_claim(userinfo, mapping.get("last_name"))
+    full_name = _string_claim(userinfo, mapping.get("full_name"))
     if full_name and not (first_name or last_name):
         parts = full_name.strip().split()
         if parts:
@@ -91,10 +101,12 @@ def resolve_oauth_user(
         provider_user_id=provider_user_id,
     ).first()
     if account:
+        _ensure_active_user(account.user)
         _update_account_tokens(account, token_data, userinfo, email=email)
         return account.user, account
 
     if request_user is not None and getattr(request_user, "is_authenticated", False):
+        _ensure_active_user(request_user)
         account = OAuthAccount.objects.create(
             user=request_user,
             provider=provider.slug,
@@ -106,6 +118,31 @@ def resolve_oauth_user(
         return request_user, account
 
     allow_email_linking = getattr(settings, "OAUTH_ALLOW_EMAIL_LINKING", True)
+    if not provider.allow_user_creation:
+        if email and allow_email_linking:
+            if _is_explicitly_false(email_verified):
+                raise OAuthError("L'adresse e-mail fournie par le fournisseur n'est pas verifiee.")
+            matches = list(
+                get_user_model()
+                .objects.filter(email__iexact=email)
+                .order_by("id")[:2]
+            )
+            if len(matches) > 1:
+                raise OAuthError("Plusieurs comptes locaux correspondent a l'adresse fournie.")
+            if matches:
+                existing = matches[0]
+                _ensure_active_user(existing)
+                account = OAuthAccount.objects.create(
+                    user=existing,
+                    provider=provider.slug,
+                    provider_user_id=provider_user_id,
+                    email=email,
+                    raw_profile=userinfo,
+                )
+                _update_account_tokens(account, token_data, userinfo, save=True)
+                return existing, account
+        raise OAuthError("Aucun compte local unique ne correspond a l'identite OAuth.")
+
     if email and allow_email_linking and email_verified is not False:
         existing = (
             get_user_model()
@@ -163,7 +200,7 @@ def _request_json(url: str, *, headers: dict[str, str] | None = None, data: dict
             payload = response.read().decode("utf-8")
     except HTTPError as exc:
         body = exc.read().decode("utf-8") if hasattr(exc, "read") else ""
-        logger.warning("OAuth HTTP error (%s): %s", exc.code, body or exc)
+        logger.warning("OAuth HTTP error (%s)", exc.code)
         raise OAuthError("Erreur lors de l'appel OAuth.", details=body) from exc
     except URLError as exc:
         logger.warning("OAuth URL error: %s", exc)
@@ -193,6 +230,22 @@ def _extract_value(payload: dict[str, Any], field: str | None):
         return None
     value = payload.get(field)
     return value
+
+
+def _string_claim(payload: dict[str, Any], field: str | None) -> str:
+    value = _extract_value(payload, field)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _is_explicitly_false(value: Any) -> bool:
+    if value is False or (isinstance(value, int) and not isinstance(value, bool) and value == 0):
+        return True
+    return isinstance(value, str) and value.strip().lower() in {"false", "0", "no"}
+
+
+def _ensure_active_user(user) -> None:
+    if not getattr(user, "is_active", True):
+        raise OAuthError("Ce compte local est desactive.")
 
 
 def _update_account_tokens(
