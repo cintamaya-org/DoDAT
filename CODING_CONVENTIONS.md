@@ -9,7 +9,7 @@ Date : 21/10/2025
 
 ---
 
-## Objectif  
+## Objectif
 Ces normes visent à :  
 - garantir la lisibilité, la cohérence et la maintenabilité du code source ;  
 - faciliter la compréhension du code et réduire les erreurs de compréhension ou de mauvais usage.

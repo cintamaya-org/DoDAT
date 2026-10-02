@@ -1,6 +1,8 @@
-# SPDX-FileCopyrightText: 2026 Cintamaya <contact@cintamaya.com>
-# SPDX-FileCopyrightText: 2026 Baptiste COQUELET <github.com/BaptisteCoquelet>
-# SPDX-License-Identifier: 
+<!--
+SPDX-FileCopyrightText: 2026 Cintamaya <contact@cintamaya.com>
+SPDX-FileCopyrightText: 2026 Baptiste COQUELET <github.com/BaptisteCoquelet>
+SPDX-License-Identifier: CC-BY-ND-4.0
+-->
 
 # Personnaliser le style frontend
 

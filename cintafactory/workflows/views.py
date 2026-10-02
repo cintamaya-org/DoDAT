@@ -4,11 +4,17 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.core import signing
+from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
+from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse
+from django.utils.dateparse import parse_datetime
 from django.utils.functional import cached_property
 from django.views.generic import TemplateView
 
@@ -30,6 +36,8 @@ from .notifications import (
     mark_notifications_as_seen,
     mark_user_notifications_as_viewed,
     notification_count_for_user,
+    notification_queryset_for_user,
+    user_notification_queryset,
 )
 
 from cintafactory.pagination import DEFAULT_PAGE_SIZE
@@ -47,6 +55,7 @@ class WorkflowBoardView(LoginRequiredMixin, TemplateView):
     template_name = "workflows/board.html"
     workflow_code = "dat-validation"
     paginate_by = DEFAULT_PAGE_SIZE
+    cursor_salt = "workflows.workflow-board.cursor"
     column_titles = {
         "initial": "Nouveau besoin",
         "in_progress": "Projets en cours",
@@ -99,15 +108,48 @@ class WorkflowBoardView(LoginRequiredMixin, TemplateView):
             "write_permissions": self._aggregate_permissions(steps, "write_permissions"),
         }
 
+    def _decode_cursor(self, model):
+        token = self.request.GET.get("cursor")
+        if not token:
+            return None
+        try:
+            payload = signing.loads(token, salt=self.cursor_salt)
+            if not isinstance(payload, dict):
+                return None
+            updated_at = parse_datetime(payload["updated_at"])
+            object_id = model._meta.pk.to_python(payload["pk"])
+        except (
+            signing.BadSignature,
+            KeyError,
+            TypeError,
+            ValueError,
+            ValidationError,
+        ):
+            return None
+        if updated_at is None:
+            return None
+        return updated_at, object_id
+
+    def _encode_cursor(self, dat):
+        return signing.dumps(
+            {"updated_at": dat.updated_at.isoformat(), "pk": str(dat.pk)},
+            salt=self.cursor_salt,
+            compress=True,
+        )
+
+    def _cursor_url(self, dat, *, direction):
+        query = self.request.GET.copy()
+        for key in ("cursor", "direction", "page"):
+            query.pop(key, None)
+        query["cursor"] = self._encode_cursor(dat)
+        query["direction"] = direction
+        return f"{self.request.path}?{query.urlencode()}"
+
     def get_dat_items(self):
         model = self.workflow_model
         if model is None:
             return []
 
-        field_names = {
-            field.name for field in model._meta.get_fields() if not field.many_to_many
-        }
-        order_by = ("-updated_at", "-pk") if "updated_at" in field_names else ("-pk",)
         relation_field_names = {
             field.name
             for field in model._meta.fields
@@ -120,16 +162,69 @@ class WorkflowBoardView(LoginRequiredMixin, TemplateView):
             for field_name in ("owner", "application")
             if field_name in relation_field_names
         ]
-        dat_queryset = model.objects.all().order_by(*order_by)
-        dat_queryset = filter_dat_queryset_for_user(dat_queryset, self.request.user)
+        dat_queryset = filter_dat_queryset_for_user(
+            model.objects.all(),
+            self.request.user,
+        )
         if related_fields:
             dat_queryset = dat_queryset.select_related(*related_fields)
-        paginator = Paginator(dat_queryset, self.paginate_by)
-        page_obj = paginator.get_page(self.request.GET.get("page"))
-        self.paginator = paginator
-        self.page_obj = page_obj
+        base_queryset = dat_queryset
+        cursor = self._decode_cursor(model)
+        direction = self.request.GET.get("direction")
+        if direction not in {"next", "previous"}:
+            direction = "next"
+        if cursor is None:
+            direction = "next"
 
-        dat_items = list(page_obj.object_list)
+        if cursor is not None:
+            updated_at, object_id = cursor
+            if direction == "previous":
+                dat_queryset = dat_queryset.filter(
+                    Q(updated_at__gt=updated_at)
+                    | Q(updated_at=updated_at, pk__gt=object_id)
+                ).order_by("updated_at", "pk")
+            else:
+                dat_queryset = dat_queryset.filter(
+                    Q(updated_at__lt=updated_at)
+                    | Q(updated_at=updated_at, pk__lt=object_id)
+                ).order_by("-updated_at", "-pk")
+        else:
+            dat_queryset = dat_queryset.order_by("-updated_at", "-pk")
+
+        page_rows = list(dat_queryset[: self.paginate_by + 1])
+        has_more_in_direction = len(page_rows) > self.paginate_by
+        dat_items = page_rows[: self.paginate_by]
+        if cursor is not None and direction == "previous":
+            dat_items.reverse()
+            self.has_previous = has_more_in_direction
+            self.has_next = bool(dat_items)
+        elif cursor is not None:
+            self.has_previous = bool(dat_items)
+            self.has_next = has_more_in_direction
+        else:
+            self.has_previous = False
+            self.has_next = has_more_in_direction
+
+        # A stale cursor can point beyond the current result set after DAT changes.
+        if cursor is not None and not dat_items:
+            page_rows = list(
+                base_queryset.order_by("-updated_at", "-pk")[: self.paginate_by + 1]
+            )
+            dat_items = page_rows[: self.paginate_by]
+            self.has_previous = False
+            self.has_next = len(page_rows) > self.paginate_by
+
+        self.previous_url = (
+            self._cursor_url(dat_items[0], direction="previous")
+            if self.has_previous and dat_items
+            else ""
+        )
+        self.next_url = (
+            self._cursor_url(dat_items[-1], direction="next")
+            if self.has_next and dat_items
+            else ""
+        )
+        self.page_item_count = len(dat_items)
         bind_workflow_instances(dat_items, workflow_code=self.workflow_code)
 
         for dat in dat_items:
@@ -190,11 +285,14 @@ class WorkflowBoardView(LoginRequiredMixin, TemplateView):
                 "workflow": self.workflow,
                 "columns": self.get_columns(),
                 "all_statuses": status_choices,
-                "paginator": getattr(self, "paginator", None),
-                "page_obj": getattr(self, "page_obj", None),
+                "has_previous": getattr(self, "has_previous", False),
+                "previous_url": getattr(self, "previous_url", ""),
+                "has_next": getattr(self, "has_next", False),
+                "next_url": getattr(self, "next_url", ""),
+                "page_item_count": getattr(self, "page_item_count", 0),
                 "is_paginated": bool(
-                    getattr(self, "paginator", None)
-                    and self.paginator.num_pages > 1
+                    getattr(self, "has_previous", False)
+                    or getattr(self, "has_next", False)
                 ),
             }
         )
@@ -210,8 +308,42 @@ class WorkflowNotificationsView(LoginRequiredMixin, TemplateView):
     def post(self, request, *args, **kwargs):
         if request.POST.get("mark_all") == "1":
             mark_all_notifications_as_seen(request.user)
-            messages.success(request, "Toutes les notifications ont ete marquees comme lues.")
-        return redirect("workflows:notifications")
+            messages.success(request, "Toutes les notifications ont été marquées comme lues.")
+        elif request.POST.get("mark_notification") == "1":
+            notification_source = request.POST.get("notification_source")
+            notification_id = request.POST.get("notification_id")
+            marked = False
+            if notification_source == "history":
+                try:
+                    history_id = int(notification_id)
+                except (TypeError, ValueError):
+                    history_id = None
+                if history_id is not None and notification_queryset_for_user(request.user).filter(
+                    pk=history_id
+                ).exists():
+                    mark_notifications_as_seen(request, [history_id])
+                    marked = True
+            elif notification_source == "user":
+                try:
+                    user_notification_id = UUID(notification_id)
+                except (TypeError, ValueError, AttributeError):
+                    user_notification_id = None
+                if user_notification_id is not None and user_notification_queryset(
+                    request.user
+                ).filter(pk=user_notification_id, viewed_at__isnull=True).exists():
+                    mark_user_notifications_as_viewed(request.user, [user_notification_id])
+                    marked = True
+            if marked:
+                messages.success(request, "Notification marquée comme lue.")
+
+        redirect_url = reverse("workflows:notifications")
+        try:
+            page_number = int(request.POST.get("page", "1"))
+        except (TypeError, ValueError):
+            page_number = 1
+        if page_number > 1:
+            redirect_url = f"{redirect_url}?page={page_number}"
+        return redirect(redirect_url)
 
     def get_notifications(self, *, offset=0):
         entries = fetch_notifications_for_user(
@@ -223,7 +355,6 @@ class WorkflowNotificationsView(LoginRequiredMixin, TemplateView):
         history_ids = [entry.history.id for entry in entries if entry.history is not None]
         seen_ids = get_seen_notification_ids(self.request, history_ids=history_ids)
         notifications = []
-        user_notification_ids = []
         for entry in entries:
             dat = entry.dat
             application = getattr(dat, "application", None) if dat else None
@@ -249,7 +380,6 @@ class WorkflowNotificationsView(LoginRequiredMixin, TemplateView):
                     }
                 )
             elif entry.user_notification is not None:
-                user_notification_ids.append(entry.user_notification.id)
                 payload.update(
                     {
                         "user_notification": entry.user_notification,
@@ -260,33 +390,13 @@ class WorkflowNotificationsView(LoginRequiredMixin, TemplateView):
                         "details": entry.user_notification.extra_data or {},
                         "action": entry.user_notification.level,
                         "level": entry.user_notification.level,
+                        "level_display": entry.user_notification.get_level_display(),
                         "target_url": entry.user_notification.target_url,
                         "is_unread": not entry.user_notification.is_viewed,
                     }
                 )
             notifications.append(payload)
-        self._notification_history_ids = history_ids
-        self._notification_user_ids = user_notification_ids
         return notifications
-
-    def _mark_notifications_as_seen(self) -> None:
-        history_ids = getattr(self, "_notification_history_ids", [])
-        user_notification_ids = getattr(self, "_notification_user_ids", [])
-        if history_ids:
-            mark_notifications_as_seen(
-                self.request,
-                history_ids,
-            )
-        if user_notification_ids:
-            mark_user_notifications_as_viewed(
-                self.request.user,
-                user_notification_ids,
-            )
-
-    def render_to_response(self, context, **response_kwargs):
-        response = super().render_to_response(context, **response_kwargs)
-        response.add_post_render_callback(lambda _response: self._mark_notifications_as_seen())
-        return response
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)

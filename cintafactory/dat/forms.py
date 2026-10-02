@@ -405,6 +405,10 @@ class DATForm(forms.ModelForm):
             "owner",
             "secure_export_requires_dual_admin_approval",
         ]
+        labels = {
+            "reference": "Référence",
+            "title": "Titre",
+        }
 
 
 def build_dat_part_field(entry: DATPart) -> forms.Field:

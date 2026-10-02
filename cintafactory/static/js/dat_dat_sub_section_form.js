@@ -272,6 +272,7 @@
     }
     const initialValues = {
       nom_schema: diagram.title || "",
+      schema_systeme: "drawio",
       diagramme_id: String(diagram.id),
     };
     const row = window.CintaDatRepeater.appendRow(repeater, initialValues);
@@ -279,8 +280,8 @@
       return null;
     }
     const toolInput = row.querySelector('[data-column-key="schema_systeme"]');
-    if (toolInput && String(toolInput.value || "").trim().toLowerCase() !== "likec4") {
-      toolInput.value = "likec4";
+    if (toolInput && String(toolInput.value || "").trim().toLowerCase() !== "drawio") {
+      toolInput.value = "drawio";
       toolInput.dispatchEvent(new Event("change", { bubbles: true }));
     }
     const drawioWrapper = row.querySelector("[data-drawio-control=\"true\"]");

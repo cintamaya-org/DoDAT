@@ -330,8 +330,8 @@ class NotificationType(models.Model):
         db_table = "workflow_notification_type"
         unique_together = ("title", "level")
         ordering = ["title", "level", "pk"]
-        verbose_name = _("Notification type")
-        verbose_name_plural = _("Notification types")
+        verbose_name = _("Type de notification")
+        verbose_name_plural = _("Types de notification")
 
     def __str__(self) -> str:  # pragma: no cover - human readable helper
         return f"{self.title} ({self.get_level_display()})"
@@ -348,8 +348,8 @@ class NotificationMessage(models.Model):
     class Meta:
         db_table = "workflow_notification_message"
         ordering = ["pk"]
-        verbose_name = _("Notification message")
-        verbose_name_plural = _("Notification messages")
+        verbose_name = _("Message de notification")
+        verbose_name_plural = _("Messages de notification")
 
     def __str__(self) -> str:  # pragma: no cover - human readable helper
         preview = (self.content or "").strip()
@@ -407,6 +407,8 @@ class UserNotification(models.Model):
     class Meta:
         db_table = "workflow_user_notification"
         ordering = ["-created_at", "-pk"]
+        verbose_name = _("Notification utilisateur")
+        verbose_name_plural = _("Notifications utilisateur")
 
     def __str__(self) -> str:  # pragma: no cover - human readable helper
         return f"{self.title} → {self.user}"
@@ -479,8 +481,8 @@ class HistoryNotificationSeen(models.Model):
         db_table = "workflow_history_notification_seen"
         ordering = ["-seen_at", "-pk"]
         unique_together = ("user", "history")
-        verbose_name = _("Workflow history seen")
-        verbose_name_plural = _("Workflow history seen")
+        verbose_name = _("Consultation d’historique de workflow")
+        verbose_name_plural = _("Consultations d’historique de workflow")
 
     def __str__(self) -> str:  # pragma: no cover - human readable helper
         return f"{self.history} → {self.user}"
