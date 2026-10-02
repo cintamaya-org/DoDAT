@@ -433,16 +433,6 @@ OAUTH_PROVIDERS = {
         "userinfo_url": f"{OKTA_OAUTH_DOMAIN}/oauth2/default/v1/userinfo" if OKTA_OAUTH_DOMAIN else "",
         "scopes": ("openid", "email", "profile"),
         "extra_authorize_params": {},
-    },
-    "cintamaya": {
-        "label": "Cintamaya",
-        "client_id": os.getenv("CINTAMAYA_OAUTH_CLIENT_ID", ""),
-        "client_secret": os.getenv("CINTAMAYA_OAUTH_CLIENT_SECRET", ""),
-        "authorize_url": "https://auth.CINTAMAYA.com/authorize",
-        "token_url": "https://auth.CINTAMAYA.com/token",
-        "userinfo_url": "https://auth.CINTAMAYA.com/userinfo",
-        "scopes": ("openid", "email", "profile"),
-        "extra_authorize_params": {},
     }
 }
 

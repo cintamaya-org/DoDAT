@@ -2,11 +2,16 @@
 # SPDX-FileCopyrightText: 2026 Baptiste COQUELET <github.com/BaptisteCoquelet>
 # SPDX-License-Identifier: AGPL-3.0-only
 
-from django.contrib.auth import get_user_model
+from importlib import import_module
 from io import BytesIO
+from types import SimpleNamespace
 
+from django.apps import apps as django_apps
+from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import connection
 from django.test import TestCase
 from django.urls import reverse
 
@@ -307,6 +312,65 @@ class UserModelConstraintTests(TestCase):
 
 
 class OAuthProviderTests(TestCase):
+    def test_cintamaya_provider_is_not_configured(self):
+        self.assertNotIn("cintamaya", settings.OAUTH_PROVIDERS)
+
+    def test_cintamaya_login_and_callback_routes_return_404(self):
+        login_response = self.client.get(reverse("oauth_login", kwargs={"provider": "cintamaya"}))
+        callback_response = self.client.get(reverse("oauth_callback", kwargs={"provider": "cintamaya"}))
+
+        self.assertEqual(login_response.status_code, 404)
+        self.assertEqual(callback_response.status_code, 404)
+
+    def test_login_page_omits_cintamaya_provider(self):
+        response = self.client.get(reverse("login"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("cintamaya", {provider["slug"] for provider in response.context["oauth_providers"]})
+
+    def test_profile_page_omits_cintamaya_provider(self):
+        user = get_user_model().objects.create_user(
+            username="oauth-profile-user",
+            email="oauth-profile-user@example.com",
+            password="pwd",
+        )
+        self.client.force_login(user)
+
+        response = self.client.get(reverse("account:profile"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("cintamaya", {provider["slug"] for provider in response.context["oauth_providers"]})
+
+    def test_migration_removes_only_cintamaya_oauth_accounts(self):
+        user = get_user_model().objects.create_user(
+            username="oauth-migration-user",
+            email="oauth-migration-user@example.com",
+            password="pwd",
+        )
+        cintamaya_account = user.oauth_accounts.create(
+            provider="cintamaya",
+            provider_user_id="cintamaya-user",
+            email=user.email,
+            access_token="cintamaya-access-token",
+            refresh_token="cintamaya-refresh-token",
+        )
+        other_account = user.oauth_accounts.create(
+            provider="google",
+            provider_user_id="google-user",
+            email=user.email,
+            access_token="google-access-token",
+        )
+        migration = import_module("users.migrations.0002_remove_cintamaya_oauth_accounts")
+
+        migration.remove_cintamaya_oauth_accounts(
+            django_apps,
+            SimpleNamespace(connection=connection),
+        )
+
+        self.assertFalse(user.oauth_accounts.filter(pk=cintamaya_account.pk).exists())
+        self.assertTrue(user.oauth_accounts.filter(pk=other_account.pk).exists())
+        self.assertTrue(get_user_model().objects.filter(pk=user.pk).exists())
+
     def test_list_enabled_oauth_providers_filters_missing_credentials(self):
         self.assertEqual(list_enabled_oauth_providers(), [])
         with self.settings(

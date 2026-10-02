@@ -198,7 +198,7 @@ Tokens `LIKEC4_METADATA_TOKEN` et `LIKEC4_API_TOKEN` doivent être identiques da
 
 ### État de validation
 
-Google est actuellement le seul fournisseur OAuth testé de bout en bout. Les configurations Microsoft, Amazon, Okta et Cintamaya sont présentes, mais doivent être considérées comme expérimentales tant que leur parcours complet n'a pas été validé dans l'environnement cible.
+Google est actuellement le seul fournisseur OAuth testé de bout en bout. Les configurations Microsoft, Amazon et Okta sont présentes, mais doivent être considérées comme expérimentales tant que leur parcours complet n'a pas été validé dans l'environnement cible.
 
 Un autre fournisseur peut être ajouté sans créer un nouveau parcours de connexion s'il respecte le contrat OAuth 2.0/OIDC utilisé par l'application :
 
@@ -225,7 +225,6 @@ Fournisseurs préconfigurés :
 | Microsoft | `MICROSOFT_OAUTH_TENANT_ID`, `MICROSOFT_OAUTH_CLIENT_ID`, `MICROSOFT_OAUTH_CLIENT_SECRET` | À valider |
 | Amazon | `AMAZON_OAUTH_CLIENT_ID`, `AMAZON_OAUTH_CLIENT_SECRET` | À valider |
 | Okta | `OKTA_OAUTH_DOMAIN`, `OKTA_OAUTH_CLIENT_ID`, `OKTA_OAUTH_CLIENT_SECRET` | À valider |
-| Cintamaya | `CINTAMAYA_OAUTH_CLIENT_ID`, `CINTAMAYA_OAUTH_CLIENT_SECRET` | À valider |
 
 Un fournisseur sans identifiant et secret complets reste désactivé.
 
