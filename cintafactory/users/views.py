@@ -81,6 +81,32 @@ class ModuleAwareDetailView(ModuleContextMixin, DetailModelView):
     pass
 
 
+class UserCrudListView(ModuleAwareListView):
+    """Add active-status filtering to the user CRUD list."""
+
+    template_name = "users/user_crud_list.html"
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        status = self.request.GET.get("status")
+        if status == "active":
+            return queryset.filter(is_active=True)
+        if status == "inactive":
+            return queryset.filter(is_active=False)
+        return queryset
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        status = self.request.GET.get("status", "all")
+        context["user_status_filter"] = (
+            status if status in {"active", "inactive"} else "all"
+        )
+        query_params = self.request.GET.copy()
+        query_params.pop("page", None)
+        context["base_querystring"] = query_params.urlencode()
+        return context
+
+
 class UserGraphContextMixin:
     """Provide the dependency graph payload for templates."""
 
@@ -200,6 +226,7 @@ class BusinessGroupViewSet(BaseSecuredViewSet):
 
 
 class UserViewSet(BaseSecuredViewSet):
+    list_view_class = UserCrudListView
     model = User
     queryset = User.objects.select_related(
         "business_group",

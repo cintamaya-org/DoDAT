@@ -169,6 +169,48 @@ class ManagementListPaginationTests(TestCase):
             expected_total=self.initial_totals["users"] + 30,
         )
 
+    def test_user_crud_filters_by_active_status(self):
+        self.UserModel.objects.create_user(
+            username="status-filter-active",
+            password="pwd",
+            is_active=True,
+        )
+        self.UserModel.objects.create_user(
+            username="status-filter-inactive",
+            password="pwd",
+            is_active=False,
+        )
+
+        active_response = self.client.get(
+            "/users/manage/users/crud/",
+            {"status": "active"},
+        )
+        inactive_response = self.client.get(
+            "/users/manage/users/crud/",
+            {"status": "inactive"},
+        )
+
+        self.assertEqual(active_response.status_code, 200)
+        self.assertTrue(
+            all(user.is_active for user in active_response.context["object_list"])
+        )
+        self.assertEqual(
+            active_response.context["paginator"].count,
+            self.UserModel.objects.filter(is_active=True).count(),
+        )
+        self.assertContains(active_response, 'value="active" selected')
+        self.assertContains(active_response, '?status=active&page=2')
+
+        self.assertEqual(inactive_response.status_code, 200)
+        self.assertTrue(
+            all(not user.is_active for user in inactive_response.context["object_list"])
+        )
+        self.assertEqual(
+            inactive_response.context["paginator"].count,
+            self.UserModel.objects.filter(is_active=False).count(),
+        )
+        self.assertContains(inactive_response, 'value="inactive" selected')
+
     def test_group_list_is_paginated(self):
         self.assert_second_page_is_bounded(
             reverse("users:group_list"),
