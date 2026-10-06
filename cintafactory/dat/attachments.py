@@ -294,7 +294,7 @@ def _probe_clamav(host: str, port: int, timeout: int) -> None:
 def _scan_file_with_scan_command(uploaded_file, host: str, port: int, timeout: int) -> bytes:
     scan_dir = getattr(settings, "CLAMAV_SCAN_DIR", "") or ""
     if not scan_dir:
-        raise ValidationError("Le scan antivirus n'est pas configure (CLAMAV_SCAN_DIR manquant).")
+        raise ValidationError("Le scan antivirus n'est pas configuré (CLAMAV_SCAN_DIR manquant).")
     os.makedirs(scan_dir, exist_ok=True)
     try:
         os.chmod(scan_dir, 0o700)
@@ -387,7 +387,7 @@ def scan_file_with_clamav(uploaded_file) -> None:
         outcome = "scanner_unavailable"
         _emit(False, outcome)
         raise AttachmentSecurityError(
-            "Impossible de verifier le fichier (antivirus indisponible).",
+            "Impossible de vérifier le fichier (antivirus indisponible).",
             failure_state=outcome,
         ) from last_error
 
@@ -406,7 +406,7 @@ def scan_file_with_clamav(uploaded_file) -> None:
         outcome = "infected"
         _emit(False, outcome)
         raise AttachmentSecurityError(
-            "Le fichier est infecte et a ete refuse.",
+            "Le fichier est infecté et a été refusé.",
             failure_state=outcome,
         )
     if "OK" not in response_text:
@@ -415,7 +415,7 @@ def scan_file_with_clamav(uploaded_file) -> None:
         outcome = "unexpected_response"
         _emit(False, outcome)
         raise AttachmentSecurityError(
-            "La verification antivirus a echoue.",
+            "La vérification antivirus a échoué.",
             failure_state=outcome,
         )
     print(f"[ClamAV] scan OK: {response_text.strip()}", flush=True)
@@ -450,7 +450,7 @@ def create_section_attachment(section, uploaded_file, *, uploaded_by=None):
         ) from exc
     dat_id = getattr(section, "dat_id", None)
     if dat_id is None:
-        raise ValidationError("Section invalide pour la piece jointe.")
+        raise ValidationError("Section invalide pour la pièce jointe.")
     storage_name = build_attachment_storage_name(dat_id, section.slug, metadata.display_name)
     storage = get_attachment_storage()
     stored_name = storage.save(storage_name, uploaded_file)

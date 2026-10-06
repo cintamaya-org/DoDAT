@@ -631,6 +631,23 @@ class DatCreationNotificationTest(SimpleTestCase):
         )
 
 
+class FrenchMaterialCrudMessagesTest(SimpleTestCase):
+    def test_generic_material_create_and_update_toasts_are_french(self):
+        cases = (
+            (dat_views.ApplicationCreateView, "Enregistrement créé avec succès."),
+            (dat_views.ApplicationUpdateView, "Enregistrement mis à jour avec succès."),
+            (dat_views.DATUpdateView, "Enregistrement mis à jour avec succès."),
+        )
+        for view_class, expected_message in cases:
+            with self.subTest(view=view_class.__name__):
+                request = SimpleNamespace()
+                view = view_class()
+                view.request = request
+                with mock.patch("cintafactory.french_messages.messages.success") as add_success:
+                    view.message_user()
+                add_success.assert_called_once_with(request, expected_message)
+
+
 class ApplicationManagementPaginationTest(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_superuser(
@@ -769,6 +786,11 @@ class DatImportViewTest(TestCase):
         self.client.force_login(self.admin)
         response = self.client.post(self.url, {"data_file": upload})
         self.assertEqual(response.status_code, 302)
+        notification_text = [str(message) for message in get_messages(response.wsgi_request)]
+        self.assertEqual(
+            notification_text[0],
+            "Le DAT « DAT-IMPORT-001 - DAT importé » a été importé avec succès.",
+        )
         imported = DAT.objects.get(reference=payload["dat"]["reference"])
         self.assertEqual(imported.title, payload["dat"]["title"])
         self.assertEqual(imported.application, self.application)

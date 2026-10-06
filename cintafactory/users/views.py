@@ -20,6 +20,7 @@ from cintafactory.pagination import (
     PaginatedMaterialListMixin,
     PaginatedModelViewSetMixin,
 )
+from cintafactory.french_messages import FrenchCreateMessageMixin, FrenchUpdateMessageMixin
 from cintafactory.select_options import MAX_REMOTE_SELECT_RESULTS, normalize_remote_select_query
 
 from .forms import BusinessDirectionForm, BusinessGroupForm, RoleForm, TechnicalDirectionForm, UserForm
@@ -65,7 +66,7 @@ class ModuleContextMixin:
         return context
 
 
-class ModuleAwareCreateView(ModuleContextMixin, CreateModelView):
+class ModuleAwareCreateView(FrenchCreateMessageMixin, ModuleContextMixin, CreateModelView):
     pass
 
 
@@ -73,7 +74,7 @@ class ModuleAwareListView(ModuleContextMixin, PaginatedMaterialListMixin, ListMo
     pass
 
 
-class ModuleAwareUpdateView(ModuleContextMixin, UpdateModelView):
+class ModuleAwareUpdateView(FrenchUpdateMessageMixin, ModuleContextMixin, UpdateModelView):
     pass
 
 

@@ -17,12 +17,13 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import SuspiciousOperation, ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connection
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 
 from .models import BusinessDirection, BusinessGroup, OAuthAccount, TechnicalDirection, Role
 from .forms import BusinessGroupForm, UserForm
 from . import oauth_views
+from .views import ModuleAwareCreateView, ModuleAwareUpdateView
 from .oauth_providers import OAuthProvider, get_oauth_provider, list_enabled_oauth_providers
 from .oauth_service import OAuthError, build_authorize_url, resolve_oauth_user
 from .oauth_views import SESSION_NEXT_KEY, SESSION_PROVIDER_KEY, SESSION_STATE_KEY
@@ -34,6 +35,22 @@ from .profile_pictures import (
 )
 
 from PIL import Image
+
+
+class FrenchUserCrudMessagesTest(SimpleTestCase):
+    def test_generic_user_create_and_update_toasts_are_french(self):
+        cases = (
+            (ModuleAwareCreateView, "Enregistrement créé avec succès."),
+            (ModuleAwareUpdateView, "Enregistrement mis à jour avec succès."),
+        )
+        for view_class, expected_message in cases:
+            with self.subTest(view=view_class.__name__):
+                request = SimpleNamespace()
+                view = view_class()
+                view.request = request
+                with mock.patch("cintafactory.french_messages.messages.success") as add_success:
+                    view.message_user()
+                add_success.assert_called_once_with(request, expected_message)
 
 
 class _OAuthHTTPResponse:
