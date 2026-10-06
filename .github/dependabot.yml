@@ -1,0 +1,113 @@
+# Mises à jour de versions proposées par Dependabot, vers la branche dev.
+# Les mises à jour de sécurité restent gérées par GitHub sur la branche par
+# défaut (main) : target-branch et les options ci-dessous ne s'y appliquent pas.
+version: 2
+
+updates:
+  # Actions des workflows (.github/workflows). Les actions épinglées par SHA
+  # avec un commentaire de version sur la même ligne gardent ce format.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "dev"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "Europe/Paris"
+    cooldown:
+      default-days: 5
+    groups:
+      github-actions-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci"
+
+  # Dépendances Python déclarées dans pyproject.toml (projet géré avec uv).
+  - package-ecosystem: "uv"
+    directory: "/"
+    target-branch: "dev"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "Europe/Paris"
+    cooldown:
+      default-days: 5
+    groups:
+      uv-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "uv"
+    commit-message:
+      prefix: "deps"
+
+  # Images de base des Dockerfiles : dockerfile (racine),
+  # cintafactory/dockerfile et likec4/Dockerfile.
+  - package-ecosystem: "docker"
+    directories:
+      - "/"
+      - "/cintafactory"
+      - "/likec4"
+    target-branch: "dev"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "Europe/Paris"
+    cooldown:
+      default-days: 5
+    groups:
+      docker-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "deps"
+
+  # Images des fichiers docker-compose.
+  - package-ecosystem: "docker-compose"
+    directories:
+      - "/"
+      - "/deploy"
+      - "/likec4"
+    target-branch: "dev"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "Europe/Paris"
+    cooldown:
+      default-days: 5
+    groups:
+      docker-compose-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "docker-compose"
+    commit-message:
+      prefix: "deps"
