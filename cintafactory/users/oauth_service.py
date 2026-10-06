@@ -65,7 +65,7 @@ def exchange_code_for_token(provider: OAuthProvider, code: str, redirect_uri: st
         payload["client_id"] = provider.client_id
         payload["client_secret"] = provider.client_secret
     else:
-        raise OAuthError("Methode d'authentification OAuth non prise en charge.")
+        raise OAuthError("Méthode d'authentification OAuth non prise en charge.")
     return _request_json(provider.token_url, headers=headers, data=payload)
 
 
@@ -84,7 +84,7 @@ def resolve_oauth_user(
     mapping = provider.userinfo_mapping
     provider_user_id = _string_claim(userinfo, mapping.get("user_id"))
     if not provider_user_id:
-        raise OAuthError("Identifiant utilisateur manquant dans la reponse du fournisseur.")
+        raise OAuthError("Identifiant utilisateur manquant dans la réponse du fournisseur.")
     email = _string_claim(userinfo, mapping.get("email"))
     email_verified = _extract_value(userinfo, mapping.get("email_verified"))
     first_name = _string_claim(userinfo, mapping.get("first_name"))
@@ -121,14 +121,14 @@ def resolve_oauth_user(
     if not provider.allow_user_creation:
         if email and allow_email_linking:
             if _is_explicitly_false(email_verified):
-                raise OAuthError("L'adresse e-mail fournie par le fournisseur n'est pas verifiee.")
+                raise OAuthError("L'adresse e-mail fournie par le fournisseur n'est pas vérifiée.")
             matches = list(
                 get_user_model()
                 .objects.filter(email__iexact=email)
                 .order_by("id")[:2]
             )
             if len(matches) > 1:
-                raise OAuthError("Plusieurs comptes locaux correspondent a l'adresse fournie.")
+                raise OAuthError("Plusieurs comptes locaux correspondent à l'adresse fournie.")
             if matches:
                 existing = matches[0]
                 _ensure_active_user(existing)
@@ -141,7 +141,7 @@ def resolve_oauth_user(
                 )
                 _update_account_tokens(account, token_data, userinfo, save=True)
                 return existing, account
-        raise OAuthError("Aucun compte local unique ne correspond a l'identite OAuth.")
+        raise OAuthError("Aucun compte local unique ne correspond à l'identité OAuth.")
 
     if email and allow_email_linking and email_verified is not False:
         existing = (
@@ -210,7 +210,7 @@ def _request_json(url: str, *, headers: dict[str, str] | None = None, data: dict
         return json.loads(payload)
     except json.JSONDecodeError as exc:
         logger.warning("OAuth JSON error: %s", exc)
-        raise OAuthError("Reponse OAuth invalide.", details=payload) from exc
+        raise OAuthError("Réponse OAuth invalide.", details=payload) from exc
 
 
 def _build_unique_username(user_model, base: str, provider_slug: str) -> str:
@@ -245,7 +245,7 @@ def _is_explicitly_false(value: Any) -> bool:
 
 def _ensure_active_user(user) -> None:
     if not getattr(user, "is_active", True):
-        raise OAuthError("Ce compte local est desactive.")
+        raise OAuthError("Ce compte local est désactivé.")
 
 
 def _update_account_tokens(

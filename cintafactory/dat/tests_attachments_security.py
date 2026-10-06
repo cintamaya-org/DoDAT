@@ -10,6 +10,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.contrib.messages import get_messages
+from django.contrib.messages.storage.fallback import FallbackStorage
 from django.test import RequestFactory, SimpleTestCase, override_settings
 
 from .attachments import (
@@ -112,3 +114,45 @@ class UploadAttachmentFailureStateViewTests(SimpleTestCase):
         self.assertFalse(payload["success"])
         self.assertEqual(payload["failure_states"][0]["state"], "scanner_unavailable")
         self.assertIn("quarantine_path", payload["failure_states"][0])
+
+    @mock.patch("dat.views.render_section_attachments_snippet", return_value="<div>attachments</div>")
+    @mock.patch("dat.views.create_section_attachment")
+    @mock.patch("dat.views.section_has_attachments", return_value=True)
+    @mock.patch("dat.views.filter_dat_queryset_for_user")
+    @mock.patch("dat.views.workflow_has_capability", return_value=False)
+    @mock.patch("dat.views.get_object_or_404")
+    def test_upload_success_toast_uses_french_singular(
+        self,
+        get_object_or_404,
+        _workflow_has_capability,
+        _filter_queryset,
+        _has_attachments,
+        create_attachment,
+        _render_snippet,
+    ):
+        dat_uuid = "11111111-1111-1111-1111-111111111111"
+        dat = SimpleNamespace(pk=dat_uuid, status="draft")
+        section = SimpleNamespace(
+            slug="general",
+            metadata=SimpleNamespace(slug="general"),
+            can_user_edit=lambda _user: True,
+        )
+        get_object_or_404.side_effect = [dat, section]
+        create_attachment.return_value = None
+
+        uploaded = SimpleUploadedFile("doc.txt", b"content", content_type="text/plain")
+        request = self.factory.post(
+            "/dat/my/dat-1/sections/general/attachments/upload/",
+            data={"attachments": uploaded},
+        )
+        request.user = SimpleNamespace(is_authenticated=True)
+        request.session = {}
+        request._messages = FallbackStorage(request)
+
+        response = views.upload_section_attachment(request, dat_pk=dat_uuid, section_slug="general")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            [str(message) for message in get_messages(request)],
+            ["1 pièce jointe ajoutée."],
+        )

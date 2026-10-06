@@ -7,6 +7,7 @@ import json
 from importlib import import_module
 from io import BytesIO
 from types import SimpleNamespace
+from unittest import mock
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
@@ -16,12 +17,13 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import SuspiciousOperation, ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connection
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 
 from .models import BusinessDirection, BusinessGroup, OAuthAccount, TechnicalDirection, Role
 from .forms import BusinessGroupForm, UserForm
 from . import oauth_views
+from .views import ModuleAwareCreateView, ModuleAwareUpdateView
 from .oauth_providers import OAuthProvider, get_oauth_provider, list_enabled_oauth_providers
 from .oauth_service import OAuthError, build_authorize_url, resolve_oauth_user
 from .oauth_views import SESSION_NEXT_KEY, SESSION_PROVIDER_KEY, SESSION_STATE_KEY
@@ -33,6 +35,22 @@ from .profile_pictures import (
 )
 
 from PIL import Image
+
+
+class FrenchUserCrudMessagesTest(SimpleTestCase):
+    def test_generic_user_create_and_update_toasts_are_french(self):
+        cases = (
+            (ModuleAwareCreateView, "Enregistrement créé avec succès."),
+            (ModuleAwareUpdateView, "Enregistrement mis à jour avec succès."),
+        )
+        for view_class, expected_message in cases:
+            with self.subTest(view=view_class.__name__):
+                request = SimpleNamespace()
+                view = view_class()
+                view.request = request
+                with mock.patch("cintafactory.french_messages.messages.success") as add_success:
+                    view.message_user()
+                add_success.assert_called_once_with(request, expected_message)
 
 
 class _OAuthHTTPResponse:
@@ -167,6 +185,48 @@ class ManagementListPaginationTests(TestCase):
             "/users/manage/users/crud/",
             expected_total=self.initial_totals["users"] + 30,
         )
+
+    def test_user_crud_filters_by_active_status(self):
+        self.UserModel.objects.create_user(
+            username="status-filter-active",
+            password="pwd",
+            is_active=True,
+        )
+        self.UserModel.objects.create_user(
+            username="status-filter-inactive",
+            password="pwd",
+            is_active=False,
+        )
+
+        active_response = self.client.get(
+            "/users/manage/users/crud/",
+            {"status": "active"},
+        )
+        inactive_response = self.client.get(
+            "/users/manage/users/crud/",
+            {"status": "inactive"},
+        )
+
+        self.assertEqual(active_response.status_code, 200)
+        self.assertTrue(
+            all(user.is_active for user in active_response.context["object_list"])
+        )
+        self.assertEqual(
+            active_response.context["paginator"].count,
+            self.UserModel.objects.filter(is_active=True).count(),
+        )
+        self.assertContains(active_response, 'value="active" selected')
+        self.assertContains(active_response, '?status=active&page=2')
+
+        self.assertEqual(inactive_response.status_code, 200)
+        self.assertTrue(
+            all(not user.is_active for user in inactive_response.context["object_list"])
+        )
+        self.assertEqual(
+            inactive_response.context["paginator"].count,
+            self.UserModel.objects.filter(is_active=False).count(),
+        )
+        self.assertContains(inactive_response, 'value="inactive" selected')
 
     def test_group_list_is_paginated(self):
         self.assert_second_page_is_bounded(
@@ -992,8 +1052,11 @@ class UserFormCoverageTests(TestCase):
         self.assertTrue(saved.check_password("Long-passphrase-493!"))
 
     def test_profile_picture_cleaner_processes_uploaded_files(self):
-        upload = SimpleUploadedFile("avatar.png", b"fake image", content_type="image/png")
-        processed = SimpleUploadedFile("processed.png", b"processed", content_type="image/png")
+        image_buffer = BytesIO()
+        Image.new("RGB", (1, 1)).save(image_buffer, format="PNG")
+        image_bytes = image_buffer.getvalue()
+        upload = SimpleUploadedFile("avatar.png", image_bytes, content_type="image/png")
+        processed = SimpleUploadedFile("processed.png", image_bytes, content_type="image/png")
         form = UserForm(data=self._data(role=self.role_a, group=self.group_a), files={"profile_picture": upload})
         with mock.patch("users.forms.process_profile_picture_upload", return_value=processed) as process:
             self.assertTrue(form.is_valid(), form.errors)

@@ -74,7 +74,7 @@ def oauth_login(request: HttpRequest, provider: str) -> HttpResponse:
         raise Http404("Fournisseur OAuth introuvable.")
     if not provider_config.enabled:
         logger.warning("OAuth provider not configured: %s", provider_config.slug)
-        messages.error(request, "Le fournisseur OAuth n'est pas configure.")
+        messages.error(request, "Le fournisseur OAuth n'est pas configuré.")
         return redirect("login")
     state = build_oauth_state()
     request.session[SESSION_STATE_KEY] = state
@@ -94,7 +94,7 @@ def oauth_callback(request: HttpRequest, provider: str) -> HttpResponse:
         raise Http404("Fournisseur OAuth introuvable.")
     if not provider_config.enabled:
         logger.warning("OAuth callback provider not configured: %s", provider_config.slug)
-        messages.error(request, "Le fournisseur OAuth n'est pas configure.")
+        messages.error(request, "Le fournisseur OAuth n'est pas configuré.")
         return redirect("login")
     state = request.GET.get("state")
     expected_state = request.session.get(SESSION_STATE_KEY)
@@ -109,7 +109,7 @@ def oauth_callback(request: HttpRequest, provider: str) -> HttpResponse:
     request.session.pop(SESSION_PROVIDER_KEY, None)
     if request.GET.get("error"):
         logger.warning("OAuth callback error: provider=%s", provider_config.slug)
-        messages.error(request, "Authentification OAuth refusee.")
+        messages.error(request, "Authentification OAuth refusée.")
         request.session.pop(SESSION_NEXT_KEY, None)
         return redirect("login")
     code = request.GET.get("code")
@@ -123,7 +123,7 @@ def oauth_callback(request: HttpRequest, provider: str) -> HttpResponse:
         token_data = exchange_code_for_token(provider_config, code, redirect_uri)
         access_token = token_data.get("access_token")
         if not access_token:
-            raise OAuthError("Le fournisseur OAuth n'a pas renvoye de jeton d'acces.")
+            raise OAuthError("Le fournisseur OAuth n'a pas renvoyé de jeton d'accès.")
         userinfo = fetch_userinfo(provider_config, access_token)
         user, _account = resolve_oauth_user(
             provider_config,

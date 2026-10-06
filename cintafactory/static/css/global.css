@@ -399,6 +399,25 @@ textarea {
     justify-self: start;
 }
 
+.topbar-toggle-slot .sidenav-toggle {
+    width: auto;
+    margin-bottom: 0;
+}
+
+.topbar-toggle-slot .sidenav-toggle__button {
+    width: auto;
+    height: 36px;
+    min-height: 36px;
+    padding: 0 0.625rem;
+    gap: 0.3rem;
+    font-size: 0.75rem;
+    white-space: nowrap;
+}
+
+.topbar-toggle-slot .sidenav-toggle__button .material-icons {
+    font-size: 18px;
+}
+
 .topbar .nav-wrapper > #nav-mobile {
     grid-column: 3;
     justify-self: end;

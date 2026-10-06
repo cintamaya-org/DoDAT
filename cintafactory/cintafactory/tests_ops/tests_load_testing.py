@@ -8,9 +8,14 @@ import json
 from io import StringIO
 from unittest import mock
 
+from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.models import ContentType
+from django.contrib.auth.hashers import make_password
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import SimpleTestCase, TransactionTestCase, override_settings
+from users.models import BusinessDirection, BusinessGroup, Role, TechnicalDirection
+from workflows.sync import sync_workflow_definitions
 
 from ..operations.load_testing import (
     LoadTestError,
@@ -25,6 +30,104 @@ from ..operations.load_testing import (
     seed_database,
     validate_run_id,
 )
+
+
+def restore_reference_test_data():
+    """Restore shared rows that TransactionTestCase's flush removes."""
+
+    User = get_user_model()
+    # Remove rows from the earlier fixture so kept test databases return to
+    # the same reference data that the users migration seeds.
+    BusinessGroup.objects.filter(direction__slug="test-suite-direction").delete()
+    TechnicalDirection.objects.filter(slug="test-suite-direction").delete()
+    User.objects.filter(username="test-suite-admin").delete()
+    Role.objects.filter(slug="test-suite-admin").delete()
+
+    role_data = (
+        ("Porteur de la demande", "porteur-demande"),
+        ("Architecte Référent", "architecte-referent"),
+        ("Architecte Technique", "architecte-technique"),
+        ("Urbaniste", "urbaniste"),
+        ("Analyste Sécu", "analyste-secu"),
+        ("RSSI", "rssi"),
+        ("Comité de validation", "comite-validation"),
+        ("Infra / Exploitation", "infra-exploitation"),
+    )
+    roles = []
+    for name, slug in role_data:
+        role, _ = Role.objects.get_or_create(slug=slug, defaults={"name": name})
+        updates = {}
+        if role.name != name:
+            updates["name"] = name
+        if role.technical_direction_id:
+            updates["technical_direction"] = None
+        if updates:
+            Role.objects.filter(pk=role.pk).update(**updates)
+            role.refresh_from_db()
+        roles.append(role)
+
+    responsible, _ = User.objects.get_or_create(
+        username="super_admin",
+        defaults={
+            "email": "super_admin@example.com",
+            "is_active": True,
+            "is_staff": True,
+            "is_superuser": True,
+            "password": make_password("123+Aze"),
+        },
+    )
+    User.objects.filter(pk=responsible.pk).update(role=None)
+
+    direction_data = (
+        ("urbanisme", "Urbanisme"),
+        ("architecture-technique", "Architecture technique"),
+        ("cybersecurite", "Cybersécurité"),
+        ("exploitations", "Exploitations"),
+        ("besoins", "Besoins"),
+    )
+    business_direction, _ = BusinessDirection.objects.get_or_create(
+        slug="direction-metier-defaut",
+        defaults={"name": "Direction métier par défaut"},
+    )
+    for slug, name in direction_data:
+        direction, _ = TechnicalDirection.objects.get_or_create(
+            slug=slug,
+            defaults={"name": name},
+        )
+        if direction.name != name:
+            direction.name = name
+            direction.save(update_fields=["name"])
+        group, _ = BusinessGroup.objects.get_or_create(
+            direction=direction,
+            is_default=True,
+            defaults={
+                "name": f"{name} - Groupe par défaut",
+                "responsible": responsible,
+                "business_direction": business_direction,
+            },
+        )
+        updates = {}
+        if group.responsible_id != responsible.pk:
+            updates["responsible"] = responsible
+        if group.business_direction_id != business_direction.pk:
+            updates["business_direction"] = business_direction
+        if updates:
+            BusinessGroup.objects.filter(pk=group.pk).update(**updates)
+
+    for role in roles:
+        username = f"{role.slug.replace('-', '_')}_user"
+        User.objects.get_or_create(
+            username=username,
+            defaults={
+                "email": f"{username}@example.com",
+                "role": role,
+                "is_active": True,
+                "password": make_password("123+Aze"),
+            },
+        )
+
+    ContentType.objects.clear_cache()
+    sync_workflow_definitions()
 
 
 class LoadTestingConfigurationTests(SimpleTestCase):
@@ -129,6 +232,13 @@ class LoadTestingHttpTests(SimpleTestCase):
 
 @override_settings(DEBUG=True)
 class LoadTestingDatabaseTests(TransactionTestCase):
+    def setUp(self):
+        restore_reference_test_data()
+
+    def _fixture_teardown(self):
+        super()._fixture_teardown()
+        restore_reference_test_data()
+
     def _seed(self, run_id: str, *, dats: int = 1):
         return seed_database(
             SeedConfig(

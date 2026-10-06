@@ -6,10 +6,22 @@
     <div class="page-header">
       <h5 class="page-header__title">Utilisateurs</h5>
 
-      {# Bouton reserve aux super administrateurs #}
-      {% if request.user.is_superuser %}
-        <a href="{% url 'users:user_add' %}" class="btn waves-effect waves-light cinta-btn-primary">+ Ajouter un utilisateur</a>
-      {% endif %}
+      <div class="page-header__actions">
+        <form method="get" action="{{ request.path }}" class="page-header__actions">
+          <label for="user-status-filter">Statut</label>
+          <select id="user-status-filter" name="status" class="browser-default">
+            <option value="all"{% if user_status_filter == "all" %} selected{% endif %}>Tous</option>
+            <option value="active"{% if user_status_filter == "active" %} selected{% endif %}>Actifs</option>
+            <option value="inactive"{% if user_status_filter == "inactive" %} selected{% endif %}>Inactifs</option>
+          </select>
+          <button type="submit" class="btn waves-effect">Filtrer</button>
+        </form>
+
+        {# Bouton reserve aux super administrateurs #}
+        {% if request.user.is_superuser %}
+          <a href="add/" class="btn waves-effect waves-light cinta-btn-primary">+ Ajouter un utilisateur</a>
+        {% endif %}
+      </div>
     </div>
 
     <div class="table-wrapper">

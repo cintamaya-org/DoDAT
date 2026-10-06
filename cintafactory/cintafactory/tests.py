@@ -11,6 +11,7 @@ from unittest import mock
 from urllib.error import HTTPError
 
 from django.conf import settings
+from django.contrib.auth.forms import AuthenticationForm
 from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured
 from django.core.exceptions import RequestDataTooBig
@@ -19,6 +20,7 @@ from django.core import mail
 from django.contrib.staticfiles import finders
 from django.http import HttpResponse
 from django.test import RequestFactory, SimpleTestCase, override_settings
+from django.urls import reverse
 from PIL import Image
 
 from . import admin_config, context_processors, rate_limit, url_safety
@@ -42,6 +44,23 @@ OTHER_TEST_CLIENT_IP = "192.0.2.2"
 APP_TEST_CLIENT_IP = "192.0.2.3"
 OTHER_APP_TEST_CLIENT_IP = "192.0.2.4"
 SENSITIVE_ENDPOINT_TEST_CLIENT_IP = "192.0.2.5"
+
+
+class FrenchNotificationLanguageTests(SimpleTestCase):
+    def test_english_browser_preference_does_not_override_french(self):
+        response = self.client.get(
+            reverse("login"),
+            HTTP_ACCEPT_LANGUAGE="en-US,en;q=0.9",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '<html lang="fr-fr">')
+
+    def test_django_auth_validation_message_uses_french_catalog(self):
+        message = str(AuthenticationForm.error_messages["invalid_login"])
+
+        self.assertIn("mot de passe", message.lower())
+        self.assertNotIn("please enter", message.lower())
 
 
 class ConfigFileTests(SimpleTestCase):

@@ -42,6 +42,7 @@ from material.frontend.views import CreateModelView, DetailModelView, ListModelV
 
 from diagrams.models import DrawIODiagram
 from diagrams.validation import sanitize_diagram_title
+from cintafactory.french_messages import FrenchCreateMessageMixin, FrenchUpdateMessageMixin
 from cintafactory.url_safety import is_http_url
 from cintafactory.pagination import PaginatedMaterialListMixin, PaginatedModelViewSetMixin
 from cintafactory.select_options import MAX_REMOTE_SELECT_RESULTS, normalize_remote_select_query
@@ -1592,7 +1593,7 @@ def upload_section_attachment(request, dat_pk: int, section_slug: str):
             return JsonResponse(
                 {
                     "success": False,
-                    "messages": ["Les pieces jointes sont desactivees pour cette section."],
+                    "messages": ["Les pièces jointes sont désactivées pour cette section."],
                     "attachments_html": render_section_attachments_snippet(
                         request,
                         dat,
@@ -1602,7 +1603,7 @@ def upload_section_attachment(request, dat_pk: int, section_slug: str):
                     ),
                 }
             )
-        messages.error(request, "Les pieces jointes sont desactivees pour cette section.")
+        messages.error(request, "Les pièces jointes sont désactivées pour cette section.")
         return redirect(redirect_url)
     files = request.FILES.getlist("attachments")
     if not files:
@@ -1610,7 +1611,7 @@ def upload_section_attachment(request, dat_pk: int, section_slug: str):
             return JsonResponse(
                 {
                     "success": False,
-                    "messages": ["Aucun fichier selectionne."],
+                    "messages": ["Aucun fichier sélectionné."],
                     "attachments_html": render_section_attachments_snippet(
                         request,
                         dat,
@@ -1620,7 +1621,7 @@ def upload_section_attachment(request, dat_pk: int, section_slug: str):
                     ),
                 }
             )
-        messages.error(request, "Aucun fichier selectionne.")
+        messages.error(request, "Aucun fichier sélectionné.")
         return redirect(redirect_url)
     saved_count = 0
     message_list = []
@@ -1648,16 +1649,18 @@ def upload_section_attachment(request, dat_pk: int, section_slug: str):
             else:
                 messages.error(request, f"{uploaded_file.name}: {error_msg}")
         except Exception:
-            logger.exception("Erreur lors de l'upload de piece jointe (dat=%s, section=%s).", dat.pk, section.slug)
+            logger.exception("Erreur lors de l'upload de pièce jointe (dat=%s, section=%s).", dat.pk, section.slug)
             if is_ajax:
                 message_list.append(f"{uploaded_file.name}: erreur lors de l'envoi du fichier.")
             else:
                 messages.error(request, f"{uploaded_file.name}: erreur lors de l'envoi du fichier.")
     if saved_count:
+        attachment_label = "pièce jointe ajoutée" if saved_count == 1 else "pièces jointes ajoutées"
+        success_message = f"{saved_count} {attachment_label}."
         if is_ajax:
-            message_list.append(f"{saved_count} piece(s) jointe(s) ajoutee(s).")
+            message_list.append(success_message)
         else:
-            messages.success(request, f"{saved_count} piece(s) jointe(s) ajoutee(s).")
+            messages.success(request, success_message)
     if is_ajax:
         return JsonResponse(
             {
@@ -1690,7 +1693,7 @@ def download_section_attachment(request, dat_pk: int, attachment_pk: int):
         file_handle = storage.open(attachment.storage_path, "rb")
     except FileNotFoundError:
         redirect_url = f"{reverse('dat:my_detail', args=[dat.pk])}?section={attachment.section.slug}"
-        messages.error(request, "Le fichier demande est introuvable.")
+        messages.error(request, "Le fichier demandé est introuvable.")
         return redirect(redirect_url)
     download_name = build_download_filename(attachment.display_name, attachment.extension)
     response = FileResponse(
@@ -1727,7 +1730,7 @@ def remove_section_attachment(request, dat_pk: int, attachment_pk: int):
             return JsonResponse(
                 {
                     "success": False,
-                    "messages": ["Impossible de supprimer la piece jointe."],
+                    "messages": ["Impossible de supprimer la pièce jointe."],
                     "attachments_html": render_section_attachments_snippet(
                         request,
                         dat,
@@ -1737,13 +1740,13 @@ def remove_section_attachment(request, dat_pk: int, attachment_pk: int):
                     ),
                 }
             )
-        messages.error(request, "Impossible de supprimer la piece jointe.")
+        messages.error(request, "Impossible de supprimer la pièce jointe.")
         return redirect(redirect_url)
     if is_ajax:
         return JsonResponse(
-            {
-                "success": True,
-                "messages": ["Piece jointe supprimee."],
+                {
+                    "success": True,
+                    "messages": ["Pièce jointe supprimée."],
                 "attachments_html": render_section_attachments_snippet(
                     request,
                     dat,
@@ -1753,7 +1756,7 @@ def remove_section_attachment(request, dat_pk: int, attachment_pk: int):
                 ),
             }
         )
-    messages.success(request, "Piece jointe supprimee.")
+    messages.success(request, "Pièce jointe supprimée.")
     return redirect(redirect_url)
 
 
@@ -2664,7 +2667,7 @@ class DATCreateView(ModuleContextMixin, CreateModelView):
         return super().get_success_url()
 
 
-class DATUpdateView(ModuleContextMixin, UpdateModelView):
+class DATUpdateView(FrenchUpdateMessageMixin, ModuleContextMixin, UpdateModelView):
     template_name = "dat/dat_form.html"
 
     def get_form_kwargs(self):
@@ -2789,14 +2792,14 @@ class DATViewSet(BaseSecuredViewSet):
         return filter_dat_queryset_for_user(base_queryset, request.user)
 
 
-class ApplicationCreateView(ModuleContextMixin, CreateModelView):
+class ApplicationCreateView(FrenchCreateMessageMixin, ModuleContextMixin, CreateModelView):
     def dispatch(self, request, *args, **kwargs):
         if not user_can_create_dat_entities(request.user):
             raise PermissionDenied
         return super().dispatch(request, *args, **kwargs)
 
 
-class ApplicationUpdateView(ModuleContextMixin, UpdateModelView):
+class ApplicationUpdateView(FrenchUpdateMessageMixin, ModuleContextMixin, UpdateModelView):
     pass
 
 
