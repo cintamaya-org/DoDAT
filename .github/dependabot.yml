@@ -1,11 +1,6 @@
-# Mises à jour de versions proposées par Dependabot, vers la branche dev.
-# Les mises à jour de sécurité restent gérées par GitHub sur la branche par
-# défaut (main) : target-branch et les options ci-dessous ne s'y appliquent pas.
 version: 2
 
 updates:
-  # Actions des workflows (.github/workflows). Les actions épinglées par SHA
-  # avec un commentaire de version sur la même ligne gardent ce format.
   - package-ecosystem: "github-actions"
     directory: "/"
     target-branch: "dev"
@@ -30,7 +25,7 @@ updates:
     commit-message:
       prefix: "ci"
 
-  # Dépendances Python déclarées dans pyproject.toml (projet géré avec uv).
+
   - package-ecosystem: "uv"
     directory: "/"
     target-branch: "dev"
