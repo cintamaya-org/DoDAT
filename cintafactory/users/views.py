@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from django.core.exceptions import PermissionDenied
 from django.db.models import Count, Q
 from django.http import JsonResponse
+from django.urls import reverse_lazy
 from django.views.decorators.http import require_safe
 
 from cintafactory.pagination import (
@@ -187,6 +188,11 @@ class TechnicalDirectionViewSet(BaseSecuredViewSet):
     layout = Layout(Row("name", "slug"))
 
 
+class BusinessDirectionCreateView(ModuleAwareCreateView):
+    template_name = "users/business_direction_create.html"
+    success_url = reverse_lazy("users:business_direction_list")
+
+
 class BusinessDirectionViewSet(BaseSecuredViewSet):
     model = BusinessDirection
     queryset = BusinessDirection.objects.all()
@@ -195,7 +201,7 @@ class BusinessDirectionViewSet(BaseSecuredViewSet):
     ordering = ("name",)
     search_fields = ("name", "slug")
     form_class = BusinessDirectionForm
-    create_view_class = ModuleAwareCreateView
+    create_view_class = BusinessDirectionCreateView
     update_view_class = ModuleAwareUpdateView
     detail_view_class = ModuleAwareDetailView
     layout = Layout(Row("name", "slug"))
