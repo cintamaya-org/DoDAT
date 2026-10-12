@@ -1,86 +1,109 @@
-/* global document */
+/* global document, window */
 (function () {
   "use strict";
 
   var collapsedClass = "is-collapsed";
-  var initFlag = "sidenavToggleBound";
+  var bodyCollapsedClass = "sidenav-collapsed";
+  var mobileQuery = window.matchMedia ? window.matchMedia("(max-width: 850px)") : null;
 
-  function resolveSidenav(toggle) {
-    var targetId = toggle.getAttribute("aria-controls");
-    if (targetId) {
-      var target = document.getElementById(targetId);
-      if (target) {
-        var rootFromTarget = target.closest("dmc-sidenav");
-        if (rootFromTarget) {
-          return rootFromTarget;
-        }
-      }
-    }
-
-    return toggle.closest("dmc-sidenav") || document.querySelector("dmc-sidenav");
+  function getSidenav() {
+    return document.querySelector("dmc-sidenav.app-sidebar");
   }
 
-  function initSidenavToggle(source) {
-    var toggle = document.querySelector("[data-sidenav-width-toggle]");
-    if (!toggle) {
-      console.warn("[sidenav-toggle] toggle button not found", source);
+  function getToggles() {
+    return document.querySelectorAll("[data-sidenav-width-toggle]");
+  }
+
+  function sync() {
+    var sidenav = getSidenav();
+    var toggles = getToggles();
+    if (!sidenav || !toggles.length) {
       return;
     }
 
-    var sidenav = resolveSidenav(toggle);
-    if (!sidenav) {
-      console.warn("[sidenav-toggle] dmc-sidenav not found", {
-        source: source,
-        ariaControls: toggle.getAttribute("aria-controls"),
-      });
-      return;
-    }
+    var collapsed = sidenav.classList.contains(collapsedClass);
+    document.body.classList.toggle(bodyCollapsedClass, collapsed);
+    for (var i = 0; i < toggles.length; i += 1) {
+      var toggle = toggles[i];
+      var labelText = collapsed ? toggle.dataset.labelCollapsed : toggle.dataset.labelExpanded;
+      var icon = toggle.querySelector(".material-icons");
+      var label = toggle.querySelector(".sr-only");
 
-    var label = toggle.querySelector("span");
-    var icon = toggle.querySelector(".material-icons");
-
-    function sync() {
-      var collapsed = sidenav.classList.contains(collapsedClass);
       toggle.setAttribute("aria-expanded", String(!collapsed));
+      if (labelText) {
+        toggle.setAttribute("aria-label", labelText);
+        if (label) {
+          label.textContent = labelText;
+        }
+      }
       if (icon) {
-        icon.textContent = collapsed
-          ? "keyboard_double_arrow_right"
-          : "keyboard_double_arrow_left";
+        icon.textContent = collapsed ? "menu" : "menu_open";
       }
-      if (label) {
-        label.textContent = collapsed ? "Etendre le menu" : "Reduire le menu";
-      }
-      console.debug("[sidenav-toggle] sync", {
-        collapsed: collapsed,
-        expanded: !collapsed,
-        source: source,
-      });
     }
+  }
 
-    if (toggle.dataset[initFlag] !== "1") {
-      toggle.addEventListener("click", function () {
-        sidenav.classList.toggle(collapsedClass);
-        console.info("[sidenav-toggle] click", {
-          collapsed: sidenav.classList.contains(collapsedClass),
-        });
-        sync();
-      });
-      toggle.dataset[initFlag] = "1";
-      console.info("[sidenav-toggle] listener attached", source);
+  function setCollapsed(collapsed) {
+    var sidenav = getSidenav();
+    if (!sidenav) {
+      return;
     }
-
+    sidenav.classList.toggle(collapsedClass, collapsed);
     sync();
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", function () {
-      initSidenavToggle("DOMContentLoaded");
+  function initSidenavToggle() {
+    var sidenav = getSidenav();
+    if (!sidenav || !getToggles().length) {
+      return;
+    }
+
+    if (mobileQuery) {
+      sidenav.classList.toggle(collapsedClass, mobileQuery.matches);
+    }
+    sync();
+
+    if (window.__cintaSidenavEventsBound) {
+      return;
+    }
+    window.__cintaSidenavEventsBound = true;
+
+    document.addEventListener("click", function (event) {
+      var target = event.target;
+      if (!target || typeof target.closest !== "function") {
+        return;
+      }
+      if (target.closest("[data-sidenav-width-toggle]")) {
+        var currentSidenav = getSidenav();
+        if (currentSidenav) {
+          setCollapsed(!currentSidenav.classList.contains(collapsedClass));
+        }
+      } else if (target.closest("[data-sidebar-backdrop]")) {
+        setCollapsed(true);
+      }
     });
-  } else {
-    initSidenavToggle("immediate");
+
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && mobileQuery && mobileQuery.matches) {
+        setCollapsed(true);
+      }
+    });
+
+    if (mobileQuery) {
+      var handleViewportChange = function (event) {
+        setCollapsed(event.matches);
+      };
+      if (mobileQuery.addEventListener) {
+        mobileQuery.addEventListener("change", handleViewportChange);
+      } else if (mobileQuery.addListener) {
+        mobileQuery.addListener(handleViewportChange);
+      }
+    }
   }
 
-  document.addEventListener("turbolinks:load", function () {
-    initSidenavToggle("turbolinks:load");
-  });
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initSidenavToggle);
+  } else {
+    initSidenavToggle();
+  }
+  document.addEventListener("turbolinks:load", initSidenavToggle);
 })();

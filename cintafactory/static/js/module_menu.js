@@ -136,6 +136,35 @@
     var menus = document.querySelectorAll("[data-module-menu]");
     Array.prototype.forEach.call(menus, initMenu);
     applyMenuIconClass();
+    markCurrentMenuLink();
+  }
+
+  function markCurrentMenuLink() {
+    if (typeof window === "undefined") {
+      return;
+    }
+    var currentPath = normalizePath(window.location.pathname);
+    var links = document.querySelectorAll(".module-menu a[href]");
+    var activeLink = null;
+    var activeLength = -1;
+
+    Array.prototype.forEach.call(links, function (link) {
+      link.removeAttribute("aria-current");
+      var candidatePath = normalizePath(link.getAttribute("href"));
+      var isMenuItem = Boolean(link.closest(".module-menu__items"));
+      var activeIsMenuItem = activeLink && Boolean(activeLink.closest(".module-menu__items"));
+      if (
+        pathsMatch(currentPath, candidatePath) &&
+        (candidatePath.length > activeLength || (candidatePath.length === activeLength && isMenuItem && !activeIsMenuItem))
+      ) {
+        activeLink = link;
+        activeLength = candidatePath.length;
+      }
+    });
+
+    if (activeLink) {
+      activeLink.setAttribute("aria-current", "page");
+    }
   }
 
   if (document.readyState === "loading") {

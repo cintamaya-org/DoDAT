@@ -1,6 +1,10 @@
 {% extends "material/frontend/views/detail.html" %}
 {% load dat_extras static %}
 
+{% block page_eyebrow %}Dossier d'Architecture Technique{% endblock %}
+{% block page_title %}DAT — {{ object.title|default:object.reference }}{% endblock %}
+{% block page_title_meta %}{% include "dat/partials/dat_topbar_meta.html" with dat=object dat_header_version=dat_header_version only %}{% endblock %}
+
 {% block extrahead %}
 {{ block.super }}
 {# SRI is intentionally omitted: Google Fonts CSS is generated per request/user agent. CSP limits this external stylesheet to fonts.googleapis.com and fonts to fonts.gstatic.com. #}

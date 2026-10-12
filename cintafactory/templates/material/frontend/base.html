@@ -1,192 +1,188 @@
 {% load i18n static dat_extras %}
 {% get_current_language as LANGUAGE_CODE %}
 <!DOCTYPE html>
-<html lang="{{ LANGUAGE_CODE|default:"fr" }}">
-    <head>
-        {% block head %}
-        <meta charset="utf-8">
-        <meta http-equiv="X-UA-Compatible" content="IE=edge">
-        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0"/>
-        {% block turbolinks-cache-control %}<meta name="turbolinks-cache-control" content="no-cache">{% endblock %}
-        <title>{% block title %}{% endblock %}</title>
-        {% block favicon %}<link href="{% static 'imgs/logo.ico' %}" rel="icon" type="image/x-icon">{% endblock %}
-        <link rel="preconnect" href="https://fonts.googleapis.com">
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
-        {% block css %}
+<html lang="{{ LANGUAGE_CODE|default:'fr' }}">
+  <head>
+    {% block head %}
+      <meta charset="utf-8">
+      <meta http-equiv="X-UA-Compatible" content="IE=edge">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      {% block turbolinks-cache-control %}<meta name="turbolinks-cache-control" content="no-cache">{% endblock %}
+      <title>{% block title %}{{ current_module.verbose_name|default:'Cintafactory' }}{% endblock %}</title>
+      {% block favicon %}<link href="{% static 'imgs/logo.ico' %}" rel="icon" type="image/x-icon">{% endblock %}
+      {% block css %}
         {% include 'material/frontend/includes/material_css.html' %}
         <link rel="stylesheet" href="{% static 'css/global.css' %}">
-        {% endblock css %}
-        {% block js %}{% include 'material/frontend/includes/material_js.html' %}{% endblock js %}
-        <script src="{% static 'js/user_form.js' %}" defer></script>
-        <script src="{% static 'js/topbar_search.js' %}" defer></script>
-        <script src="{% static 'js/remote_select.js' %}" defer></script>
-        <script src="{% static 'js/attachment_download.js' %}" defer></script>
-        <script src="{% static 'js/sidenav_toggle.js' %}" defer></script>
-        {% if frontend_dev_logger_enabled %}
+        <link rel="stylesheet" href="{% static 'css/design-system.css' %}">
+      {% endblock css %}
+      {% block js %}{% include 'material/frontend/includes/material_js.html' %}{% endblock js %}
+      <script src="{% static 'js/user_form.js' %}" defer></script>
+      <script src="{% static 'js/topbar_search.js' %}" defer></script>
+      <script src="{% static 'js/remote_select.js' %}" defer></script>
+      <script src="{% static 'js/attachment_download.js' %}" defer></script>
+      <script src="{% static 'js/sidenav_toggle.js' %}" defer></script>
+      {% if frontend_dev_logger_enabled %}
         <script src="{% static 'js/dev_front_logger.js' %}" defer></script>
-        {% endif %}
-        {% block extrahead %}{% endblock %}
-        {% endblock head %}
-    </head>
-    <body class="{%block bodyclass %}with-sidebar{% endblock %}"><dmc-turbolinks/>
-        {% block body %}
-        <header>
-            {% block header %}{% endblock %}
-        </header>
-        <div class="global">
+      {% endif %}
+      {% block extrahead %}{% endblock %}
+    {% endblock head %}
+  </head>
+  <body class="{% block bodyclass %}with-sidebar{% endblock %}">
+    <dmc-turbolinks></dmc-turbolinks>
+    {% block body %}
+      <a class="app-skip-link" href="#main-content">{% trans "Aller au contenu" %}</a>
+      <header>{% block header %}{% endblock %}</header>
+      <div class="global">
+        {% block main %}
+          {% block main_content %}
+            <dmc-sidenav id="app-sidebar" class="app-sidebar" aria-label="{% trans 'Navigation principale' %}">
+              <div class="app-brand">
+                <a class="app-brand__link" href="{% url 'dat:my_list' %}">
+                  <span class="app-brand__mark" aria-hidden="true">C</span>
+                  <span class="app-brand__copy">
+                    <strong>DoDat</strong>
+                    <small>by Cintamaya · Open Source</small>
+                  </span>
+                </a>
+                <button
+                  type="button"
+                  class="topbar__toggle app-brand__toggle"
+                  data-sidenav-width-toggle
+                  aria-expanded="true"
+                  aria-controls="app-sidebar"
+                  aria-label="{% trans 'Réduire le menu' %}"
+                  data-label-collapsed="{% trans 'Afficher le menu' %}"
+                  data-label-expanded="{% trans 'Réduire le menu' %}"
+                  title="{% trans 'Réduire le menu' %}"
+                >
+                  <i class="material-icons" aria-hidden="true">menu_open</i>
+                  <span class="sr-only">{% trans "Réduire le menu" %}</span>
+                </button>
+              </div>
+              <nav class="app-sidebar__nav" aria-label="{% trans 'Modules' %}">
+                <ul id="slide-out" class="sidenav sidenav-fixed">
+                  {% block sidenav_header %}{% endblock %}
+                  <li class="sidenav-modules">
+                    <ul class="sidenav-modules__list">
+                      {% block sidenav_items %}
+                        {% for module in modules %}
+                          {% if module.menu %}
+                            <li>{% include module.menu with module=module %}</li>
+                          {% endif %}
+                        {% endfor %}
+                      {% endblock sidenav_items %}
+                    </ul>
+                  </li>
+                  {% block sidenav_global_actions %}{% endblock sidenav_global_actions %}
+                </ul>
+              </nav>
+              {% block sidenav_footer %}
+                {% if request.user.is_authenticated %}
+                  <div class="app-sidebar__footer">
+                    <a class="app-sidebar__user" href="{% url 'account:profile' %}" data-turbolinks="false">
+                      {% if request.user.profile_picture %}
+                        <img class="app-sidebar__avatar" src="{{ request.user.profile_picture.url }}" alt="">
+                      {% else %}
+                        <span class="app-sidebar__avatar app-sidebar__avatar--initials" aria-hidden="true">{{ request.user.get_full_name|default:request.user.get_username|slice:":2"|upper }}</span>
+                      {% endif %}
+                      <span class="app-sidebar__user-copy">
+                        <strong>{{ request.user.get_full_name|default:request.user.get_username }}</strong>
+                        <small>{% trans "Mon compte" %}</small>
+                      </span>
+                      <i class="material-icons" aria-hidden="true">settings</i>
+                    </a>
+                    <a class="app-sidebar__logout" href="{% url 'logout' %}" data-turbolinks="false">
+                      <i class="material-icons" aria-hidden="true">logout</i>{% trans "Déconnexion" %}
+                    </a>
+                  </div>
+                {% endif %}
+              {% endblock sidenav_footer %}
+            </dmc-sidenav>
+            <button class="app-sidebar-backdrop" type="button" data-sidebar-backdrop aria-label="{% trans 'Fermer le menu' %}"></button>
+
             {% block topbar %}
-            <nav class="topbar">
-                <div class="nav-wrapper">
-                    <div class="brand-logo">
-                        <img src="{% static 'imgs/logo.svg' %}" alt="Cintamaya logo">
+              <nav class="topbar" aria-label="{% trans 'Barre supérieure' %}">
+                <div class="topbar__context">
+                  <button
+                    type="button"
+                    class="topbar__toggle topbar__toggle--reopen"
+                    data-sidenav-width-toggle
+                    aria-expanded="false"
+                    aria-controls="app-sidebar"
+                    aria-label="{% trans 'Afficher le menu' %}"
+                    data-label-collapsed="{% trans 'Afficher le menu' %}"
+                    data-label-expanded="{% trans 'Réduire le menu' %}"
+                    title="{% trans 'Afficher ou réduire le menu' %}"
+                  >
+                    <i class="material-icons" aria-hidden="true">menu</i>
+                    <span class="sr-only">{% trans "Afficher le menu" %}</span>
+                  </button>
+                  <div class="topbar__heading">
+                    <p class="topbar__eyebrow">{% block page_eyebrow %}{{ current_module.verbose_name|default:'Cintafactory' }}{% endblock %}</p>
+                    <div class="topbar__title-line">
+                      <h1 class="topbar__title">{% block page_title %}{{ current_module.verbose_name|default:'Espace de travail' }}{% endblock %}</h1>
+                      {% block page_title_meta %}{% endblock %}
                     </div>
-                    <div class="topbar-toggle-slot">
-                                            <li class="sidenav-toggle">
-                            <button
-                                type="button"
-                                class="btn cinta-btn-secondary cinta-btn-secondary--block sidenav-toggle__button"
-                                data-sidenav-width-toggle
-                                aria-expanded="true"
-                                aria-controls="slide-out"
-                            >
-                                <i class="material-icons icon--no-margin" aria-hidden="true">keyboard_double_arrow_left</i>
-                                <span>{% trans "Etendre / Réduire le menu" %}</span>
-                            </button>
-                        </li>
-                    </div>
-                    <ul id="nav-mobile" class="right hide-on-med-and-down">
-                        <li class="topbar-search"> 
-                            <form class="topbar-search__form" role="search" method="get" action="{% url 'dat:search_page' %}">
-                                 <input
-                                  id="topbar-search"
-                                  type="search"
-                                  name="q"
-                                  placeholder="Rechercher"
-                                  aria-label="Rechercher"
-                                  autocomplete="off"
-                                  data-search-url="{% url 'dat:topbar_search' %}"
-                                >
-                            </form>
-                            <div id="topbar-search-results" class="topbar-search__results" hidden></div>
-                        </li>
-                        {% block topbar_links %}
-                        {% if user.is_authenticated %}
-                        <li class="topbar-avatar">
-                            {% if request.user.is_authenticated and request.user.profile_picture %}
-                                <img class="u-inline-flex circle user-view__avatar" src="{{ request.user.profile_picture.url }}" alt="Photo de profil">
-                            {% else %}
-                                <img class="u-inline-flex circle user-view__avatar" src="{% static 'material/imgs/user.png' %}" alt="Photo de profil">
-                            {% endif %}
-                        </li>
-                        <li class="topbar-notifications">
-                            <a href="{% url 'workflows:notifications' %}"
-                               class="btn cinta-btn-secondary cinta-btn-secondary--block"
-                               data-turbolinks="false">
-                                <i class="material-icons icon--no-margin" aria-hidden="true">notifications</i>
-                                <span class="chip red darken-1 white-text sidenav-notifications__badge" role="status">
-                                    {{ workflow_unread_notification_count|default:0 }}
-                                </span>
-                            </a>
-                        </li>
-                        <li>
-                             <a href="{% url 'account:profile' %}"
-                                class="btn waves-effect waves-light cinta-btn-primary u-inline-flex u-items-center btn-side-margin"
-                                data-turbolinks="false"
-                                >
-                                 <i class="material-icons icon--no-margin">person</i>
-                             </a>
-                         </li>
-                         <li>
-                             <a href="{% url 'logout' %}"
-                                class="btn waves-effect waves-light cinta-btn-primary u-inline-flex u-items-center btn-side-margin"
-                                data-turbolinks="false"
-                                >
-                                 <i class="material-icons icon--no-margin">exit_to_app</i>
-                             </a>
-                         </li>
-                        {% else %}
-                        <li><a href="{% url 'login' %}" data-turbolinks="false"><i class="material-icons right">lock_open</i>Connexion</a></li>
-                        {% endif %}
-                        {% endblock %}
-                    </ul>
+                  </div>
                 </div>
-            </nav>
+                <div class="topbar__actions">
+                  <div class="topbar-search">
+                    <form class="topbar-search__form" role="search" method="get" action="{% url 'dat:search_page' %}">
+                      <i class="material-icons topbar-search__icon" aria-hidden="true">search</i>
+                      <label class="sr-only" for="topbar-search">{% trans "Rechercher un DAT, un flux ou une application" %}</label>
+                      <input
+                        id="topbar-search"
+                        type="search"
+                        name="q"
+                        placeholder="{% trans 'Rechercher un DAT, un flux...' %}"
+                        autocomplete="off"
+                        data-search-url="{% url 'dat:topbar_search' %}"
+                      >
+                    </form>
+                    <div id="topbar-search-results" class="topbar-search__results" hidden></div>
+                  </div>
+                  {% block topbar_links %}
+                    {% if user.is_authenticated %}
+                      <a
+                        href="{% url 'workflows:notifications' %}"
+                        class="topbar-action topbar-action--notifications"
+                        data-turbolinks="false"
+                        aria-label="{% trans 'Notifications' %} ({{ workflow_unread_notification_count|default:0 }})"
+                        title="{% trans 'Notifications' %}"
+                      >
+                        <i class="material-icons" aria-hidden="true">notifications_none</i>
+                        {% if workflow_unread_notification_count %}
+                          <span class="topbar-notification-count" role="status">{{ workflow_unread_notification_count }}</span>
+                        {% endif %}
+                      </a>
+                    {% else %}
+                      <a href="{% url 'login' %}" class="topbar-action" data-turbolinks="false">{% trans "Connexion" %}</a>
+                    {% endif %}
+                  {% endblock topbar_links %}
+                </div>
+              </nav>
             {% endblock topbar %}
-            <main>
-                {% block main %}
-                {% block main_content %}
-                <dmc-sidenav>
-                    <ul id="slide-out" class="sidenav sidenav-fixed">
-                        {% block sidenav_header %}
 
-                        {% endblock %}
-                        <li class="sidenav-modules">
-                            <ul class="sidenav-modules__list">
-                                {% block sidenav_items %}
-                                {% for module in modules %}
-                                {% if module.menu %}
-                                {% if current_module == module and forloop.last %}
-                                <li class="last">ff
-                                    {% include module.menu with module=module %}
-                                </li>
-                                {% elif current_module == module %}
-                                <li>
-                                    {% include module.menu with module=module %}
-                                </li>
-                                {% elif forloop.last %}
-
-                                {% else %}
-                                <li>
-                                    {% include module.menu with module=module %}
-                                </li>
-                                {% endif %}
-                                {% endif %}
-                                {% endfor %}
-                                {% endblock sidenav_items %}
-                            </ul>
-                       <!-- </li>
-                        {% block sidenav_global_actions %}
-                        {% if request.user.is_authenticated %}
-                        <li class="sidenav-notifications">
-                            <a href="{% url 'workflows:notifications' %}"
-                               class="btn cinta-btn-secondary cinta-btn-secondary--block"
-                               data-turbolinks="false">
-                                <i class="material-icons icon--no-margin" aria-hidden="true">notifications</i>
-                                <span class="sidenav-notifications__text">{% trans "Notifications" %}</span>
-                                <span class="chip red darken-1 white-text sidenav-notifications__badge" role="status">
-                                    {{ workflow_unread_notification_count|default:0 }}
-                                </span>
-                            </a>
-                        </li>-->
-                        {% endif %}
-                        {% endblock sidenav_global_actions %}
-                        {% block sidenav_footer %}
-                        <li class="sidenav-footer">
-                            <img src="{% static 'imgs/cintamata_logo_typogramme_signature.png' %}" alt="Logo CINTAMATA">
-                        </li>
-                        {% endblock sidenav_footer %}
-                    </ul>
-                </dmc-sidenav>
-                <div class="content">
-                    {% block content %}{% endblock %}
-                </div>
-                {% endblock main_content %}
-                {% endblock main %}
+            <main class="app-main" id="main-content">
+              <div class="content">
+                {% block module-content %}
+                  {% block content %}{% endblock %}
+                {% endblock module-content %}
+              </div>
             </main>
-        </div>
-        <footer>
-            {% block footer %}{% endblock footer %}
-        </footer>
-        {% endblock %}
-        {% block messages %}
-        <dmc-snackbar>
-            {% with messages|unique_messages as unique_messages %}
-                {% for message in unique_messages %}
-                <p class="alert-{{ message.tags }}">{{ message|capfirst }}</p>
-                {% endfor %}
-            {% endwith %}
-        </dmc-snackbar>
-        {% endblock messages %}
-    </body>
+          {% endblock main_content %}
+        {% endblock main %}
+      </div>
+      <footer class="app-footer">{% block footer %}{% endblock footer %}</footer>
+    {% endblock body %}
+    {% block messages %}
+      <dmc-snackbar>
+        {% with messages|unique_messages as unique_messages %}
+          {% for message in unique_messages %}
+            <p class="alert-{{ message.tags }}">{{ message|capfirst }}</p>
+          {% endfor %}
+        {% endwith %}
+      </dmc-snackbar>
+    {% endblock messages %}
+  </body>
 </html>

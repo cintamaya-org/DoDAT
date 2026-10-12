@@ -861,6 +861,37 @@ def build_dat_admin_editor(dat: DAT, user):
     }
 
 
+def build_dat_header_version(dat: DAT) -> str:
+    version_part = (
+        DATPart.objects.filter(
+            sub_section__section__dat=dat,
+            sub_section__section__metadata__slug="informations-generales",
+            key="historique_versions",
+        )
+        .order_by("order", "id")
+        .prefetch_related(
+            Prefetch(
+                "entries",
+                queryset=DATPartEntry.objects.select_related("payload").order_by("-updated_at", "-id"),
+            )
+        )
+        .first()
+    )
+    rows = version_part.value if version_part is not None else None
+    if not isinstance(rows, (list, tuple)):
+        return ""
+    for row in reversed(rows):
+        if not isinstance(row, dict):
+            continue
+        raw_version = row.get("version")
+        if not isinstance(raw_version, (str, int, float)):
+            continue
+        version = str(raw_version).strip()
+        if version:
+            return f"v{version[1:]}" if version[:1].lower() == "v" else f"v{version}"
+    return ""
+
+
 def build_dat_overview_context(dat: DAT, user):
     return {
         "dat": dat,
@@ -1517,6 +1548,221 @@ def build_section_payload(
         if sub_section_slug:
             break
     return sections_payload
+
+
+def _validation_value_is_filled(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, dict, set)):
+        return bool(value)
+    return True
+
+
+def build_validation_section_rows(
+    dat: DAT,
+    user,
+    status_map: dict[str, dict],
+    history_entries: list,
+    reserve_history_entries: list,
+    *,
+    is_terminal: bool = False,
+) -> list[dict[str, object]]:
+    entry_prefetch = Prefetch(
+        "entries",
+        queryset=DATPartEntry.objects.select_related("payload").order_by("-updated_at", "-id"),
+    )
+    part_prefetch = Prefetch(
+        "parts",
+        queryset=DATPart.objects.order_by("order", "id").prefetch_related(entry_prefetch),
+    )
+    sub_section_prefetch = Prefetch(
+        "sub_sections",
+        queryset=DATSubSection.objects.order_by("order", "id").prefetch_related(part_prefetch),
+    )
+    sections = list(
+        dat.sections.exclude(metadata__slug="validation")
+        .select_related(
+            "metadata",
+            "responsible_assignment__user",
+            "participant_assignment__user",
+        )
+        .prefetch_related("allowed_roles", sub_section_prefetch)
+        .order_by("order", "id")
+    )
+    participants = list(
+        dat.participants.select_related("role", "user__business_group__responsible")
+    )
+    for section in sections:
+        section._allowed_role_ids_cache = {role.pk for role in section.allowed_roles.all()}
+    responsible_users = _build_section_responsible_user_map(dat, sections, participants)
+
+    latest_activity_by_section: dict[str, object] = {}
+    for entry in history_entries:
+        details = entry.details if isinstance(entry.details, dict) else {}
+        section_details = details.get("section")
+        slug = section_details.get("slug") if isinstance(section_details, dict) else None
+        if slug:
+            key = str(slug)
+            current_activity = latest_activity_by_section.get(key)
+            if current_activity is None or entry.performed_at > current_activity:
+                latest_activity_by_section[key] = entry.performed_at
+    for entry in reserve_history_entries:
+        slug = getattr(entry, "section_slug", "")
+        if slug:
+            key = str(slug)
+            current_activity = latest_activity_by_section.get(key)
+            if current_activity is None or entry.reserved_at > current_activity:
+                latest_activity_by_section[key] = entry.reserved_at
+
+    rows = []
+    user_id = getattr(user, "pk", None)
+    for section in sections:
+        if not section_has_status(section.slug):
+            continue
+
+        parts = [
+            part
+            for sub_section in section.sub_sections.all()
+            for part in sub_section.parts.all()
+        ]
+        required_parts = [part for part in parts if part.required]
+        measured_parts = required_parts or parts
+        filled_count = sum(_validation_value_is_filled(part.value) for part in measured_parts)
+        progress = round((filled_count / len(measured_parts)) * 100) if measured_parts else None
+        progress_basis = "champs obligatoires" if required_parts else "champs renseignés"
+        progress_detail = (
+            f"{filled_count}/{len(measured_parts)} {progress_basis}"
+            if measured_parts
+            else "Aucun champ configuré"
+        )
+
+        info = status_map.get(section.slug) or {}
+        status_value = info.get("value")
+        if status_value == SECTION_STATUS_VALIDATED_VALUE:
+            status_tone = "validated"
+        elif status_value == SECTION_STATUS_BLOCKED_VALUE:
+            status_tone = "blocked"
+        elif info.get("has_status"):
+            status_tone = "in-progress"
+        else:
+            status_tone = "neutral"
+
+        section_responsible = responsible_users.get(section.slug)
+        responsible_status_value = info.get("responsable_value")
+        reserve_message = str(info.get("reserve_message") or "").strip()
+        can_manage_section = bool(not is_terminal and section.can_user_edit(user))
+        latest_candidates = [section.updated_at, latest_activity_by_section.get(section.slug)]
+        for part in parts:
+            latest_entry = part._get_current_entry()
+            if latest_entry is not None:
+                latest_candidates.append(latest_entry.updated_at)
+        latest_activity = max((value for value in latest_candidates if value is not None), default=None)
+
+        rows.append(
+            {
+                "slug": section.slug,
+                "title": section.title or section.slug,
+                "status_value": status_value,
+                "status_label": info.get("label") or "Non renseigné",
+                "status_tone": status_tone,
+                "validated_value": SECTION_STATUS_VALIDATED_VALUE,
+                "responsible_status_value": responsible_status_value,
+                "responsible_status_label": info.get("responsable_label"),
+                "responsible_display": format_user_display(section_responsible) or "Non affecté",
+                "progress": progress,
+                "progress_detail": progress_detail,
+                "last_activity": latest_activity,
+                "comment": str(info.get("commentaire") or "").strip(),
+                "reserve_message": reserve_message,
+                "reserve_by_display": str(info.get("reserve_by_display") or "").strip(),
+                "can_validate_responsible": bool(
+                    can_manage_section
+                    and status_value == SECTION_STATUS_VALIDATED_VALUE
+                    and responsible_status_value != SECTION_STATUS_VALIDATED_VALUE
+                ),
+                "can_create_reserve": bool(can_manage_section and not reserve_message),
+                "can_clear_reserve": bool(
+                    can_manage_section
+                    and reserve_message
+                    and user_id is not None
+                    and str(info.get("reserve_by_id")) == str(user_id)
+                ),
+            }
+        )
+    return rows
+
+
+def build_validation_workflow_steps(
+    workflow_template: dict,
+    workflow_node_statuses: dict[str, dict],
+    section_status_map: dict[str, dict],
+    *,
+    dat_status_label: str = "",
+) -> list[dict[str, object]]:
+    steps = []
+    for node in (workflow_template or {}).get("nodes") or ():
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("id") or "")
+        scope = str(node.get("scope") or "display")
+        status = workflow_node_statuses.get(node_id) or {}
+        tone = str(status.get("tone") or "unknown")
+        section_info = section_status_map.get(str(node.get("section") or "")) or {}
+
+        if scope == "workflow":
+            if tone == "validated":
+                state_label = "Validé"
+            elif tone == "blocked":
+                state_label = dat_status_label or "Clôturé"
+            elif tone == "review":
+                state_label = "En attente de revue"
+            else:
+                state_label = "À venir"
+        elif scope == "section":
+            state_label = section_info.get("label") or {
+                "validated": "Validée",
+                "blocked": "Bloquée",
+                "in_progress": "En cours",
+            }.get(tone, "À venir")
+        else:
+            state_label = "Étape"
+
+        steps.append(
+            {
+                "id": node_id,
+                "title": str(node.get("title") or node_id),
+                "description": str(status.get("message") or node.get("content") or ""),
+                "scope": scope,
+                "tone": tone,
+                "state_label": state_label,
+                "is_current": scope == "workflow" and tone == "review",
+            }
+        )
+    return steps
+
+
+def build_validation_traceability_entries(history_entries: list, reserve_history_entries: list):
+    entries = [
+        {
+            "kind": "history",
+            "entry": entry,
+            "timestamp": entry.performed_at,
+            "actor": entry.actor_name(),
+        }
+        for entry in history_entries
+    ]
+    entries.extend(
+        {
+            "kind": "reserve",
+            "entry": entry,
+            "timestamp": entry.reserved_at,
+            "actor": entry.actor_name(),
+        }
+        for entry in reserve_history_entries
+    )
+    return sorted(entries, key=lambda item: (item["timestamp"], str(item["entry"].pk)), reverse=True)
 
 
 def render_sub_section_snippet(dat: DAT, user, section_slug: str, sub_section_slug: str) -> str:
@@ -2703,6 +2949,7 @@ class DATDetailView(LoginRequiredMixin, ModuleContextMixin, DetailModelView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         section_status_map, section_status_choices = build_section_status_map(self.object)
+        context["dat_header_version"] = build_dat_header_version(self.object)
         try:
             from dat_viewflow.services import ensure_dat_viewflow_process
             from dat_viewflow.config import build_dat_viewflow_template
@@ -2997,6 +3244,7 @@ class DatDetail(ModuleContextMixin, LoginRequiredMixin, DetailView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         section_status_map, section_status_choices = build_section_status_map(self.object)
+        context["dat_header_version"] = build_dat_header_version(self.object)
         try:
             from dat_viewflow.services import ensure_dat_viewflow_process
             from dat_viewflow.config import build_dat_viewflow_template
@@ -3083,9 +3331,28 @@ class DatDetail(ModuleContextMixin, LoginRequiredMixin, DetailView):
                 section_status_map=section_status_map,
                 section_status_choices=section_status_choices,
             )
-            if selected_slug
+            if selected_slug and selected_slug != "validation"
             else []
         )
+        if selected_slug == "validation":
+            context["validation_section_rows"] = build_validation_section_rows(
+                self.object,
+                self.request.user,
+                section_status_map,
+                context["history_entries"],
+                context["reserve_history_entries"],
+                is_terminal=context["dat_is_terminal"],
+            )
+            context["validation_workflow_steps"] = build_validation_workflow_steps(
+                context["viewflow_workflow_template"],
+                context["workflow_node_statuses"],
+                section_status_map,
+                dat_status_label=self.object.get_status_display(),
+            )
+            context["validation_traceability_entries"] = build_validation_traceability_entries(
+                context["history_entries"],
+                context["reserve_history_entries"],
+            )
         return context
 
 
@@ -3616,6 +3883,7 @@ class DatDashboardView(ModuleContextMixin, DatManagerAccessMixin, TemplateView):
         context.update(
             {
                 "total_dats": total,
+                "current_month_count": monthly_data[-1]["count"] if monthly_data else 0,
                 "status_summary": status_summary,
                 "monthly_activity": monthly_data,
                 "monthly_chart_points": line_points,

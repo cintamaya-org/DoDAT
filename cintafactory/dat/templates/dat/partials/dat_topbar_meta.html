@@ -1,0 +1,9 @@
+{% if dat.status %}
+  <span
+    class="topbar__title-meta topbar__title-meta--{{ dat.status }}"
+    aria-label="{% if dat_header_version %}Version {{ dat_header_version }}, {% endif %}statut {{ dat.get_status_display }}"
+    title="{% if dat_header_version %}Version {{ dat_header_version }} · {% endif %}{{ dat.get_status_display }}"
+  >
+    {% if dat_header_version %}{{ dat_header_version }} · {% endif %}{{ dat.get_status_display|lower }}
+  </span>
+{% endif %}
