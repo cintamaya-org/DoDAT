@@ -107,6 +107,17 @@ def dat_has_drawio_columns(config) -> bool:
     return False
 
 
+@register.filter
+def dat_repeater_full_width(entry, section_slug) -> bool:
+    return entry.data_type == "repeater" and (
+        dat_has_drawio_columns(entry.config)
+        or (section_slug, entry.key) in {
+            ("validation", "suivi_sections"),
+            ("architecture", "flux"),
+        }
+    )
+
+
 def _normalise_icon_config(icon_config):
     if not icon_config:
         return None

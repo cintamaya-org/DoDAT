@@ -73,27 +73,17 @@
       <table class="highlight">
         <tbody>
           {% for entry in part.entries %}
-            {% with value=entry.formatted_value has_drawio_columns=entry.config|dat_has_drawio_columns %}
+            {% with value=entry.formatted_value full_width=entry|dat_repeater_full_width:container_section.metadata.slug %}
               <tr>
-                {% if entry.data_type != "repeater" %}
+                {% if not full_width %}
                   <th scope="row" class="dat-sub-section__label-col">
                     {{ entry.label }}
                     {% if entry.required %}
                       <span class="chip amber lighten-4 dat-sub-section__chip-spaced">Obligatoire</span>
                     {% endif %}
                   </th>
-                {% elif not has_drawio_columns %}
-                  {% if container_section.metadata.slug == "validation" and entry.key == "suivi_sections" %}
-                  {% else %}
-                    <th scope="row" class="dat-sub-section__label-col">
-                      {{ entry.label }}
-                      {% if entry.required %}
-                        <span class="chip amber lighten-4 dat-sub-section__chip-spaced">Obligatoire</span>
-                      {% endif %}
-                    </th>
-                  {% endif %}
                 {% endif %}
-                <td {% if entry.data_type == "repeater" and has_drawio_columns %}colspan="2"{% elif entry.data_type == "repeater" and container_section.metadata.slug == "validation" and entry.key == "suivi_sections" %}colspan="2"{% endif %}>
+                <td {% if full_width %}colspan="2"{% endif %}>
                   {% if entry.data_type == "repeater" %}
                     {% with columns=entry.config|dat_columns %}
                       {% if value %}
