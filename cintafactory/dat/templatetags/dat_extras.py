@@ -114,6 +114,7 @@ def dat_repeater_full_width(entry, section_slug) -> bool:
         or (section_slug, entry.key) in {
             ("validation", "suivi_sections"),
             ("architecture", "flux"),
+            ("exploitation", "ressources"),
         }
     )
 

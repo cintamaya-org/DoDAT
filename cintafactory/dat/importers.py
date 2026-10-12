@@ -15,6 +15,13 @@ from workflows.services import workflow_initial_state, workflow_states
 
 from .constants import DAT_PORTEUR_ROLE_SLUG
 from .models import Application, DAT, DATParticipant, DATStatus
+from .resources import (
+    LEGACY_RESOURCE_TYPES,
+    RESOURCE_ENTRY_KEY,
+    RESOURCE_SECTION_SLUG,
+    RESOURCE_SUB_SECTION_SLUG,
+    group_resource_rows,
+)
 from .sections import sync_dat_sections_if_needed
 
 
@@ -230,7 +237,29 @@ class DATImportService:
                         )
                     continue
                 part_map = sub_entry["parts"]
-                for part_payload in sub_payload.get("parts") or []:
+                parts_payload = sub_payload.get("parts") or []
+                if (
+                    section_slug == RESOURCE_SECTION_SLUG
+                    and sub_slug == RESOURCE_SUB_SECTION_SLUG
+                    and RESOURCE_ENTRY_KEY in part_map
+                ):
+                    resource_keys = {*LEGACY_RESOURCE_TYPES, RESOURCE_ENTRY_KEY}
+                    values = {
+                        part["key"]: part.get("value")
+                        for part in parts_payload
+                        if isinstance(part, dict) and part.get("key") in resource_keys
+                    }
+                    if any(key in values for key in LEGACY_RESOURCE_TYPES):
+                        try:
+                            rows = group_resource_rows(values)
+                        except ValueError as exc:
+                            raise DATImportError("Les ressources du fichier importé sont invalides.") from exc
+                        parts_payload = [
+                            part for part in parts_payload
+                            if not isinstance(part, dict) or part.get("key") not in resource_keys
+                        ]
+                        parts_payload.append({"key": RESOURCE_ENTRY_KEY, "value": rows})
+                for part_payload in parts_payload:
                     if not isinstance(part_payload, dict):
                         continue
                     part_key = part_payload.get("key")

@@ -12,6 +12,8 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
+from .resources import RESOURCE_ENTRY_KEY, RESOURCE_SECTION_SLUG, RESOURCE_SUB_SECTION_SLUG, RESOURCE_TYPE_KEY
+
 
 class DATStatus(models.TextChoices):
     NOUVELLE_DEMANDE = "nouvelle_demande", "Nouvelle demande"
@@ -888,6 +890,24 @@ class DATPart(models.Model):
             return str(value)
         if self.data_type == DATPartEntryType.REPEATER:
             if isinstance(value, list):
+                if (
+                    self.key == RESOURCE_ENTRY_KEY
+                    and self.sub_section.slug == RESOURCE_SUB_SECTION_SLUG
+                    and self.sub_section.section.slug == RESOURCE_SECTION_SLUG
+                ):
+                    type_column = next(
+                        (column for column in config.get("columns", []) if column.get("key") == RESOURCE_TYPE_KEY),
+                        {},
+                    )
+                    type_labels = {
+                        choice["value"]: choice.get("label", choice["value"])
+                        for choice in type_column.get("choices", [])
+                    }
+                    return [
+                        {**row, RESOURCE_TYPE_KEY: type_labels.get(row.get(RESOURCE_TYPE_KEY), row.get(RESOURCE_TYPE_KEY))}
+                        if isinstance(row, dict) else row
+                        for row in value
+                    ]
                 return value
             if isinstance(value, str):
                 try:
