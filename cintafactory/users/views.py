@@ -174,6 +174,14 @@ class RoleViewSet(BaseSecuredViewSet):
     layout = Layout(Row("name", "slug"), Row("technical_direction", "is_admin_role"))
 
 
+class DirectionCreateView(ModuleAwareCreateView):
+    template_name = "users/direction_create.html"
+
+
+class TechnicalDirectionCreateView(DirectionCreateView):
+    success_url = reverse_lazy("users:technical_direction_list")
+
+
 class TechnicalDirectionViewSet(BaseSecuredViewSet):
     model = TechnicalDirection
     queryset = TechnicalDirection.objects.all()
@@ -182,14 +190,13 @@ class TechnicalDirectionViewSet(BaseSecuredViewSet):
     ordering = ("name",)
     search_fields = ("name", "slug")
     form_class = TechnicalDirectionForm
-    create_view_class = ModuleAwareCreateView
+    create_view_class = TechnicalDirectionCreateView
     update_view_class = ModuleAwareUpdateView
     detail_view_class = ModuleAwareDetailView
     layout = Layout(Row("name", "slug"))
 
 
-class BusinessDirectionCreateView(ModuleAwareCreateView):
-    template_name = "users/business_direction_create.html"
+class BusinessDirectionCreateView(DirectionCreateView):
     success_url = reverse_lazy("users:business_direction_list")
 
 
