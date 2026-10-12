@@ -10,7 +10,7 @@ on:
       - "pyproject.toml"
       - "uv.lock"
       - ".coveragerc"
-      - ".github/workflows/tests.yml"
+      - ".github/workflows/tests_unitaire.yml"
   pull_request:
     branches:
       - main
@@ -68,7 +68,7 @@ jobs:
 
       - name: Installation des dépendances
         run: |
-          uv sync --locked
+          uv sync
           uv pip install "coverage[toml]>=7.6"
 
       - name: Vérification de la configuration Django

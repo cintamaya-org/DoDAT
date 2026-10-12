@@ -6,7 +6,7 @@
     <div class="page-header">
       <h5 class="page-header__title">Directions métier</h5>
       {% if request.user.is_superuser %}
-        <a href="crud/add/" class="btn waves-effect waves-light cinta-btn-primary">+ Ajouter une direction</a>
+        <a href="{% url 'users:businessdirection_add' %}" class="btn waves-effect waves-light cinta-btn-primary">+ Ajouter une direction</a>
       {% endif %}
     </div>
     <div class="table-wrapper">

@@ -1,0 +1,143 @@
+name: Contrôle DEMO (VPS OVH)
+
+# Bouton "Run workflow" pour piloter la démo sans accès SSH :
+#   etat      : affiche l'état des conteneurs
+#   arreter   : met la démo en pause (données conservées)
+#   rallumer  : relance une démo mise en pause
+#   supprimer : supprime conteneurs ET données (base, fichiers) ; demande de taper SUPPRIMER
+# Après "supprimer", la démo se recrée en relançant le workflow "Déploiement DEMO".
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Action à effectuer sur la démo"
+        type: choice
+        required: true
+        default: etat
+        options:
+          - etat
+          - arreter
+          - rallumer
+          - supprimer
+      confirmation:
+        description: "Uniquement pour 'supprimer' : taper SUPPRIMER (efface définitivement les données de la démo)"
+        type: string
+        required: false
+        default: ""
+
+run-name: "Démo : ${{ inputs.action }} (par ${{ github.actor }})"
+
+permissions:
+  contents: read
+
+# Même groupe que le déploiement : jamais d'arrêt pendant un déploiement en cours.
+concurrency:
+  group: deploy-demo
+  cancel-in-progress: false
+
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: demo
+    env:
+      ACTION: ${{ inputs.action }}
+      CONFIRMATION: ${{ inputs.confirmation }}
+      DEMO_VPS_HOST: ${{ secrets.DEMO_VPS_HOST }}
+      DEMO_VPS_USER: ${{ secrets.DEMO_VPS_USER }}
+      DEMO_DOMAIN: ${{ vars.DEMO_DOMAIN }}
+
+    steps:
+      - name: Vérification de la demande
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${ACTION}" = "supprimer" ] && [ "${CONFIRMATION}" != "SUPPRIMER" ]; then
+            echo "::error::Suppression refusée : taper SUPPRIMER dans le champ de confirmation."
+            exit 1
+          fi
+
+      - name: Configuration de la connexion SSH
+        shell: bash
+        env:
+          DEMO_VPS_SSH_KEY: ${{ secrets.DEMO_VPS_SSH_KEY }}
+          DEMO_VPS_KNOWN_HOSTS: ${{ secrets.DEMO_VPS_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${DEMO_VPS_SSH_KEY}" > ~/.ssh/demo_key
+          chmod 600 ~/.ssh/demo_key
+          printf '%s\n' "${DEMO_VPS_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host demo-vps
+            HostName ${DEMO_VPS_HOST}
+            User ${DEMO_VPS_USER}
+            IdentityFile ~/.ssh/demo_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            BatchMode yes
+          EOF
+
+      - name: "Exécution sur le VPS : ${{ inputs.action }}"
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh demo-vps "ACTION='${ACTION}' bash -s" <<'REMOTE'
+          set -euo pipefail
+          # Lancé hors du dossier du dépôt : compose pilote le projet par son nom,
+          # sans relire docker-compose.yml (qui exigerait tous les secrets).
+          cd ~
+          PROJECT=demo_factory
+          LABEL="com.docker.compose.project=${PROJECT}"
+
+          case "${ACTION}" in
+            etat)
+              ;;
+            arreter)
+              docker compose -p "${PROJECT}" stop
+              ;;
+            rallumer)
+              if [ -z "$(docker ps -aq --filter "label=${LABEL}")" ]; then
+                echo "::error::Aucun conteneur de démo : relancer le workflow 'Déploiement DEMO' pour la recréer."
+                exit 1
+              fi
+              docker compose -p "${PROJECT}" start
+              ;;
+            supprimer)
+              docker compose -p "${PROJECT}" down -v
+              # Filet de sécurité : volumes du projet encore présents.
+              docker volume ls -q --filter "label=${LABEL}" | xargs -r docker volume rm
+              ;;
+            *)
+              echo "::error::Action inconnue : ${ACTION}"
+              exit 1
+              ;;
+          esac
+
+          echo "Conteneurs de la démo :"
+          docker ps -a --filter "label=${LABEL}" --format 'table {{.Names}}\t{{.Status}}'
+          REMOTE
+
+      - name: État public
+        if: always()
+        shell: bash
+        run: |
+          code="$(curl -s -o /dev/null -m 15 -w '%{http_code}' "https://${DEMO_DOMAIN}/" || true)"
+          case "${code}" in
+            2??|3??) state="en ligne" ;;
+            *)       state="hors ligne" ;;
+          esac
+          echo "https://${DEMO_DOMAIN} : ${state} (HTTP ${code})"
+          {
+            echo "### Démo : ${ACTION}"
+            echo ""
+            echo "- Demandé par : ${GITHUB_ACTOR}"
+            echo "- https://${DEMO_DOMAIN} : **${state}** (HTTP ${code})"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Nettoyage de la clé SSH locale
+        if: always()
+        shell: bash
+        run: rm -f ~/.ssh/demo_key
