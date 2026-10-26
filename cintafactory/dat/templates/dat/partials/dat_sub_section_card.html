@@ -87,7 +87,8 @@
                   {% if entry.data_type == "repeater" %}
                     {% with columns=entry.config|dat_columns %}
                       {% if value %}
-                        <div class="responsive-table">
+                        {% dat_repeater_pagination entry container_section.metadata.slug value as pagination %}
+                        <div class="responsive-table"{% if pagination %} data-dat-table-pagination data-page-size="{{ pagination.page_size }}" data-page="1"{% endif %}>
                           <table class="highlight">
                             <thead>
                               <tr>
@@ -98,7 +99,7 @@
                             </thead>
                             <tbody>
                               {% for row in value %}
-                                <tr>
+                                <tr{% if pagination and forloop.counter > pagination.page_size %} hidden{% endif %}>
                                   {% for column in columns %}
                                     <td>
                                       {% with cell=row|get_item:column.key %}
@@ -172,6 +173,15 @@
                               {% endfor %}
                             </tbody>
                           </table>
+                          {% if pagination.num_pages > 1 %}
+                            <nav class="dat-list__pagination" aria-label="Pagination {{ entry.label }}">
+                              <div data-table-page-status aria-live="polite">Page 1 sur {{ pagination.num_pages }} · {{ pagination.total }} ligne{{ pagination.total|pluralize }}</div>
+                              <div class="dat-list__pagination-actions">
+                                <button type="button" class="btn-flat waves-effect" data-table-page-step="-1" disabled>Précédent</button>
+                                <button type="button" class="btn-flat waves-effect" data-table-page-step="1">Suivant</button>
+                              </div>
+                            </nav>
+                          {% endif %}
                         </div>
                       {% else %}
                         <span class="chip grey lighten-3">Aucune ligne</span>
