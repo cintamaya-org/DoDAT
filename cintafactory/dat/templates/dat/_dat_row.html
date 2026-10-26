@@ -1,6 +1,23 @@
 <tr>
   <td><a href="{% url 'dat:my_detail' obj.pk %}">{{ obj.reference }}</a></td>
-  <td>{{ obj.title }}</td>
+  <td>
+    {{ obj.title }}
+    {% if show_technical_architect_assignment %}
+      <div>
+        {% if obj.has_technical_architect %}
+          <span class="chip dat-list__architect-assignment dat-list__architect-assignment--assigned">
+            <i class="material-icons" aria-hidden="true">person</i>
+            Architecte technique affecté
+          </span>
+        {% else %}
+          <span class="chip dat-list__architect-assignment dat-list__architect-assignment--unassigned">
+            <i class="material-icons" aria-hidden="true">person_outline</i>
+            Architecte technique non affecté
+          </span>
+        {% endif %}
+      </div>
+    {% endif %}
+  </td>
   <td>{{ obj.application|default:"—" }}</td>
   <td>{{ obj.business_direction|default:"—" }}</td>
   <td>{{ obj.workflow_state_display }}</td>

@@ -22,7 +22,7 @@ from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.paginator import Paginator
 from django.db import IntegrityError, transaction
-from django.db.models import Count, F, Prefetch, Q
+from django.db.models import Count, Exists, F, OuterRef, Prefetch, Q
 from django.db.models.functions import TruncMonth
 from django.http import FileResponse, Http404, HttpResponse, JsonResponse
 from django.utils import timezone
@@ -2883,10 +2883,18 @@ class DatList(ModuleContextMixin, LoginRequiredMixin, ListView):
             )
         if self.application_filter_id:
             queryset = queryset.filter(application_id=self.application_filter_id)
+        self.show_technical_architect_assignment = self.request.user.is_role("architecte-referent")
+        if self.show_technical_architect_assignment:
+            queryset = queryset.annotate(
+                has_technical_architect=Exists(
+                    DATParticipant.objects.filter(dat_id=OuterRef("pk"), role__slug="architecte-technique")
+                )
+            )
         return queryset
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
+        context["show_technical_architect_assignment"] = self.show_technical_architect_assignment
         for dat in context.get("object_list") or ():
             dat.can_change = user_can_change_dat(dat, self.request.user)  # type: ignore[attr-defined]
             dat.workflow_state_display = workflow_state_label(dat)  # type: ignore[attr-defined]
