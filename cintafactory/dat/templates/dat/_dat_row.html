@@ -8,14 +8,10 @@
   <td>{{ obj.created_at|date:"Y-m-d H:i" }}</td>
   <td>
     <a href="{% url 'dat:my_detail' obj.pk %}" class="btn-flat waves-effect">Détails</a>
-    {% if request.user.is_superuser or request.user.is_staff or owner_can_edit %}
+    {% if obj.can_change %}
       <a href="/dat/manage/dats/crud/{{ obj.pk }}/change/" class="btn-flat waves-effect">Modifier</a>
     {% else %}
-      {% if obj.owner_id == request.user.id and obj.workflow_owner_editable %}
-        <a href="/dat/manage/dats/crud/{{ obj.pk }}/change/" class="btn-flat waves-effect">Modifier</a>
-      {% else %}
-        <span class="text-muted-faint">—</span>
-      {% endif %}
+      <span class="text-muted-faint">—</span>
     {% endif %}
   </td>
 </tr>

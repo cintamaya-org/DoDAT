@@ -2618,6 +2618,18 @@ def user_can_manage_dat(user):
     )
 
 
+def user_can_change_dat(dat: DAT | None, user) -> bool:
+    if user is None or not getattr(user, "is_authenticated", False):
+        return False
+    if user_can_manage_dat(user):
+        return True
+    return bool(
+        dat is not None
+        and dat.owner_id == user.pk
+        and workflow_has_capability(dat, "owner_editable")
+    )
+
+
 def user_can_progress_dat(dat: DAT, user) -> bool:
     # Manual progression is disabled; status changes are automatic or handled via the validation section.
     return False
@@ -2766,6 +2778,9 @@ class DATViewSet(BaseSecuredViewSet):
     def _can_add(self, request):
         return user_can_create_dat_entities(request.user)
 
+    def has_change_permission(self, request, obj=None):
+        return user_can_change_dat(obj, request.user)
+
     list_display = ("reference", "title", "application", "business_direction", "status", "owner", "created_at")
     list_display_links = ("reference",)
     ordering = ("-created_at",)
@@ -2873,9 +2888,7 @@ class DatList(ModuleContextMixin, LoginRequiredMixin, ListView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         for dat in context.get("object_list") or ():
-            dat.workflow_owner_editable = workflow_has_capability(  # type: ignore[attr-defined]
-                dat, "owner_editable"
-            )
+            dat.can_change = user_can_change_dat(dat, self.request.user)  # type: ignore[attr-defined]
             dat.workflow_state_display = workflow_state_label(dat)  # type: ignore[attr-defined]
         user = self.request.user
         context["owner_can_edit"] = user_is_dat_admin(user)
