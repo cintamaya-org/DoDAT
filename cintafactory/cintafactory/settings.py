@@ -378,8 +378,6 @@ CLAMAV_PORT = int(os.getenv("CLAMAV_PORT", "3310"))
 CLAMAV_TIMEOUT = int(os.getenv("CLAMAV_TIMEOUT", "30"))
 CLAMAV_RETRY_COUNT = int(os.getenv("CLAMAV_RETRY_COUNT", "5"))
 CLAMAV_RETRY_DELAY = float(os.getenv("CLAMAV_RETRY_DELAY", "1.0"))
-CLAMAV_SCAN_DIR = os.getenv("CLAMAV_SCAN_DIR", "/clamav_scan")
-
 OAUTH_HTTP_TIMEOUT = int(os.getenv("OAUTH_HTTP_TIMEOUT", "10"))
 OAUTH_ALLOW_EMAIL_LINKING = os.getenv("OAUTH_ALLOW_EMAIL_LINKING", "1").lower() in {"1", "true", "yes", "on"}
 ENDPOINT_RATE_LIMIT_PER_IP_PER_MINUTE = int(os.getenv("ENDPOINT_RATE_LIMIT_PER_IP_PER_MINUTE", "30"))

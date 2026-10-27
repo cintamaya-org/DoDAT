@@ -37,7 +37,6 @@ services:
       CLAMAV_HOST: ${CLAMAV_HOST:-clamav}
       CLAMAV_PORT: ${CLAMAV_PORT:-3310}
       CLAMAV_TIMEOUT: ${CLAMAV_TIMEOUT:-30}
-      CLAMAV_SCAN_DIR: ${CLAMAV_SCAN_DIR:-/clamav_scan}
       # DRAWIO
       DRAWIO_BASE_URL: ${DRAWIO_BASE_URL:-http://drawio:8080}
       DRAWIO_PUBLIC_URL: ${DRAWIO_PUBLIC_URL:-http://drawio:8080}
@@ -71,8 +70,6 @@ services:
       - swag-network
       - app-internal
     command: ["/entrypoint.sh"]
-    volumes:
-      - clamav_scan:/clamav_scan
 
   db:
     image: postgres:16
@@ -193,8 +190,6 @@ services:
     restart: unless-stopped
     expose:
       - "3310"
-    volumes:
-      - clamav_scan:/clamav_scan
     networks:
       - app-internal
       - service-egress
@@ -229,8 +224,6 @@ volumes:
     name: "${APP_NAME}_pgdata"
   seaweedfs_data:
     name: "${APP_NAME}_seaweedfs_data"
-  clamav_scan:
-    name: "${APP_NAME}_clamav_scan"
   likec4_exports_data:
     name: "${APP_NAME}_likec4_exports"
 

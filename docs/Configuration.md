@@ -153,7 +153,8 @@ Compose configure aussi clés volume `SEAWEEDFS_VOLUME_JWT_*`, ports et origines
 | `CLAMAV_TIMEOUT` | `30` | Timeout d'une commande. |
 | `CLAMAV_RETRY_COUNT` | `5` | Nouvelles tentatives après échec. |
 | `CLAMAV_RETRY_DELAY` | `1.0` | Pause entre tentatives. |
-| `CLAMAV_SCAN_DIR` | `/clamav_scan` | Répertoire partagé utilisé par commande `SCAN`. |
+
+Les fichiers sont transmis directement à `clamd` avec `INSTREAM`; aucun répertoire temporaire partagé n'est requis. `StreamMaxLength` de ClamAV doit être supérieur ou égal à la taille maximale des pièces jointes configurée.
 
 Deux limites existent :
 

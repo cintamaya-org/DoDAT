@@ -37,7 +37,6 @@ services:
       CLAMAV_HOST: ${CLAMAV_HOST:-clamav}
       CLAMAV_PORT: ${CLAMAV_PORT:-3310}
       CLAMAV_TIMEOUT: ${CLAMAV_TIMEOUT:-30}
-      CLAMAV_SCAN_DIR: ${CLAMAV_SCAN_DIR:-/clamav_scan}
       DRAWIO_BASE_URL: ${DRAWIO_BASE_URL:-http://drawio:8080}
       DRAWIO_PUBLIC_URL: ${DRAWIO_PUBLIC_URL:-http://localhost:8102}
       DRAWIO_LIBS: ${DRAWIO_LIBS:-general}
@@ -67,7 +66,6 @@ services:
     volumes:
       # IMPORTANT: mount your app folder (which contains manage.py AND templates/)
       - ./cintafactory:/app
-      - clamav_scan:/clamav_scan
     ports:
       - "${DEV_BIND_ADDRESS:-127.0.0.1}:8101:8000"
     command: python manage.py runserver 0.0.0.0:8000
@@ -175,8 +173,6 @@ services:
     container_name: test_factory_clamav
     ports:
       - "${DEV_BIND_ADDRESS:-127.0.0.1}:${CLAMAV_HOST_PORT:-3310}:3310"
-    volumes:
-      - clamav_scan:/clamav_scan
 
   seaweedfs:
     image: chrislusf/seaweedfs:latest
@@ -209,4 +205,3 @@ volumes:
   pgdata_dev:
   seaweedfs_data:
   likec4_exports_dev:
-  clamav_scan:
