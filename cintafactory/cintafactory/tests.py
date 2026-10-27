@@ -18,7 +18,7 @@ from django.core.exceptions import RequestDataTooBig
 from django.core.checks import Tags, run_checks
 from django.core import mail
 from django.contrib.staticfiles import finders
-from django.http import HttpResponse
+from django.http import Http404, HttpResponse
 from django.test import RequestFactory, SimpleTestCase, override_settings
 from django.urls import reverse
 from PIL import Image
@@ -28,6 +28,7 @@ from .upload import upload_limit
 from .middleware import (
     AppSecurityHeadersMiddleware,
     DynamicCsrfTrustedOriginsMiddleware,
+    HideDisabledApiBrowserPagesMiddleware,
     LoggingContextMiddleware,
     RateLimitMiddleware,
     SLOBaselineMiddleware,
@@ -47,6 +48,7 @@ SENSITIVE_ENDPOINT_TEST_CLIENT_IP = "192.0.2.5"
 
 
 class FrenchNotificationLanguageTests(SimpleTestCase):
+    @override_settings(SESSION_ENGINE="django.contrib.sessions.backends.signed_cookies")
     def test_english_browser_preference_does_not_override_french(self):
         response = self.client.get(
             reverse("login"),
@@ -338,6 +340,47 @@ class SeaweedFSStorageTests(SimpleTestCase):
 class MiddlewareTests(SimpleTestCase):
     def setUp(self) -> None:
         self.factory = RequestFactory()
+
+    def test_disabled_api_access_hides_browser_pages_with_404(self):
+        middleware = HideDisabledApiBrowserPagesMiddleware(lambda request: HttpResponse("ok"))
+        for path in ("/api/", "/api/schema/", "/api/docs/", "/api/redoc/", "/api/auth/login/", "/api/dats/"):
+            with self.subTest(path=path):
+                request = self.factory.get(
+                    path,
+                    HTTP_ACCEPT="text/html,application/xhtml+xml",
+                    HTTP_SEC_FETCH_MODE="navigate",
+                )
+                request.user = type("User", (), {"is_authenticated": True, "can_use_api": False})()
+
+                with self.assertRaises(Http404):
+                    middleware(request)
+
+    def test_api_json_clients_keep_api_permission_response(self):
+        middleware = HideDisabledApiBrowserPagesMiddleware(lambda request: HttpResponse("API response"))
+        request = self.factory.get("/api/dats/", HTTP_ACCEPT="application/json")
+        request.user = type("User", (), {"is_authenticated": True, "can_use_api": False})()
+
+        response = middleware(request)
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_disabled_api_access_does_not_hide_account_ui(self):
+        middleware = HideDisabledApiBrowserPagesMiddleware(lambda request: HttpResponse("account UI"))
+        request = self.factory.get("/account/profile/", HTTP_ACCEPT="text/html")
+        request.user = type("User", (), {"is_authenticated": True, "can_use_api": False})()
+
+        response = middleware(request)
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_api_enabled_user_can_open_browser_pages(self):
+        middleware = HideDisabledApiBrowserPagesMiddleware(lambda request: HttpResponse("ok"))
+        request = self.factory.get("/api/dats/", HTTP_ACCEPT="text/html", HTTP_SEC_FETCH_MODE="navigate")
+        request.user = type("User", (), {"is_authenticated": True, "can_use_api": True})()
+
+        response = middleware(request)
+
+        self.assertEqual(response.status_code, 200)
 
     def test_logging_context_uses_request_id_header(self):
         def get_response(request):

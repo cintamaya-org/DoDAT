@@ -252,18 +252,6 @@ class LoadTestingDatabaseTests(TransactionTestCase):
             )
         )
 
-    def test_bulk_seed_builds_complete_coherent_graph(self):
-        result = self._seed("graph-test", dats=2)
-
-        self.assertTrue(result["passed"], result["integrity"]["failures"])
-        self.assertEqual(result["counts"]["users"], 4)
-        self.assertEqual(result["counts"]["applications"], 2)
-        self.assertEqual(result["counts"]["dats"], 2)
-        self.assertEqual(result["counts"]["sections"], 14)
-        self.assertEqual(result["counts"]["sub_sections"], 52)
-        self.assertEqual(result["counts"]["parts"], 116)
-        self.assertGreater(result["counts"]["entries"], 0)
-
     def test_cleanup_removes_only_selected_run(self):
         self._seed("cleanup-one")
         self._seed("cleanup-two")

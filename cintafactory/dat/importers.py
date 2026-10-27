@@ -8,13 +8,23 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.db import transaction
+
+from diagrams.references import prepare_diagram_references
 
 from users.models import Role
 from workflows.services import workflow_initial_state, workflow_states
 
 from .constants import DAT_PORTEUR_ROLE_SLUG
 from .models import Application, DAT, DATParticipant, DATStatus
+from .resources import (
+    LEGACY_RESOURCE_TYPES,
+    RESOURCE_ENTRY_KEY,
+    RESOURCE_SECTION_SLUG,
+    RESOURCE_SUB_SECTION_SLUG,
+    group_resource_rows,
+)
 from .sections import sync_dat_sections_if_needed
 
 
@@ -205,6 +215,7 @@ class DATImportService:
             return
         sync_dat_sections_if_needed(dat)
         section_map = self._build_section_map(dat)
+        pending = []
         for section_payload in payload:
             if not isinstance(section_payload, dict):
                 continue
@@ -230,7 +241,29 @@ class DATImportService:
                         )
                     continue
                 part_map = sub_entry["parts"]
-                for part_payload in sub_payload.get("parts") or []:
+                parts_payload = sub_payload.get("parts") or []
+                if (
+                    section_slug == RESOURCE_SECTION_SLUG
+                    and sub_slug == RESOURCE_SUB_SECTION_SLUG
+                    and RESOURCE_ENTRY_KEY in part_map
+                ):
+                    resource_keys = {*LEGACY_RESOURCE_TYPES, RESOURCE_ENTRY_KEY}
+                    values = {
+                        part["key"]: part.get("value")
+                        for part in parts_payload
+                        if isinstance(part, dict) and part.get("key") in resource_keys
+                    }
+                    if any(key in values for key in LEGACY_RESOURCE_TYPES):
+                        try:
+                            rows = group_resource_rows(values)
+                        except ValueError as exc:
+                            raise DATImportError("Les ressources du fichier importé sont invalides.") from exc
+                        parts_payload = [
+                            part for part in parts_payload
+                            if not isinstance(part, dict) or part.get("key") not in resource_keys
+                        ]
+                        parts_payload.append({"key": RESOURCE_ENTRY_KEY, "value": rows})
+                for part_payload in parts_payload:
                     if not isinstance(part_payload, dict):
                         continue
                     part_key = part_payload.get("key")
@@ -248,7 +281,19 @@ class DATImportService:
                     # Skip empty values to avoid creating useless entries
                     if prepared in (None, "", [], {}):
                         continue
-                    part.update_value(prepared)
+                    pending.append((part, prepared))
+        # An invalid later reference must not cause an earlier source to be read.
+        try:
+            for part, prepared in pending:
+                prepare_diagram_references(part, prepared, self.actor)
+            copies = {}
+            for part, prepared in pending:
+                prepared = prepare_diagram_references(
+                    part, prepared, self.actor, attach=True, copies=copies,
+                )
+                part.update_value(prepared)
+        except ValidationError as exc:
+            raise DATImportError("Les références de diagrammes du fichier sont invalides ou inaccessibles.") from exc
 
     def _build_section_map(self, dat: DAT):
         section_map: Dict[str, Dict[str, Any]] = {}

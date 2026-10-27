@@ -25,6 +25,7 @@ urlpatterns = [
     path("<uuid:pk>/import/", views.diagram_import_xml, name="import_xml"),
     path("<uuid:pk>/export/", views.diagram_export_xml, name="export_xml"),
     path("likec4/metadata/", views.likec4_metadata, name="likec4_metadata"),
+    path("likec4/new/", views.likec4_create, name="likec4_create"),
     path("likec4/import/", views.likec4_import, name="likec4_import"),
     path("likec4/png/", views.likec4_png, name="likec4_png"),
     path("likec4/views/", views.likec4_views, name="likec4_views"),

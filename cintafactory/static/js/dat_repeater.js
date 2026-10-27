@@ -1,5 +1,4 @@
 window.CintaDatRepeater = window.CintaDatRepeater || (function () {
-  const decoder = document.createElement("textarea");
   const runtime = {
     drawioModal: null,
     drawioState: null,
@@ -25,26 +24,25 @@ window.CintaDatRepeater = window.CintaDatRepeater || (function () {
   }
 
 
-  function decodeEntities(value) {
-    if (!value) {
-      return "";
-    }
-    decoder.innerHTML = value;
-    return decoder.value;
-  }
-
   function parseJSON(value) {
     if (!value) {
       return [];
     }
     try {
-      const decoded = typeof value === "string" ? decodeEntities(value) : value;
-      const parsed = typeof decoded === "string" ? JSON.parse(decoded) : decoded;
+      const parsed = typeof value === "string" ? JSON.parse(value) : value;
       return Array.isArray(parsed) ? parsed : [];
     } catch (error) {
       console.warn("Impossible de parser la valeur du tableau dynamique:", error);
       return [];
     }
+  }
+
+  function setIconLabel(button, iconName, label) {
+    const icon = document.createElement("i");
+    icon.className = "material-icons left";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = iconName;
+    button.replaceChildren(icon, document.createTextNode(String(label ?? "")));
   }
 
   function isRenderOnlyColumn(column) {
@@ -304,7 +302,7 @@ window.CintaDatRepeater = window.CintaDatRepeater || (function () {
     viewBtn.className = "btn btn-flat waves-effect cinta-btn-secondary";
     viewBtn.target = "_blank";
     viewBtn.rel = "noopener";
-    viewBtn.innerHTML = '<i class="material-icons left" aria-hidden="true">visibility</i>Voir';
+    setIconLabel(viewBtn, "visibility", "Voir");
     viewBtn.dataset.action = "view";
     viewBtn.disabled = true;
 
@@ -483,7 +481,7 @@ window.CintaDatRepeater = window.CintaDatRepeater || (function () {
       const viewBtn = document.createElement("button");
       viewBtn.type = "button";
       viewBtn.className = "btn btn-flat waves-effect cinta-btn-secondary dat-repeater-drawio-view";
-      viewBtn.innerHTML = '<i class="material-icons left" aria-hidden="true">visibility</i>Voir';
+      setIconLabel(viewBtn, "visibility", "Voir");
       if (initialDiagramId) {
         viewBtn.dataset.diagramId = initialDiagramId;
       } else {
@@ -498,12 +496,12 @@ window.CintaDatRepeater = window.CintaDatRepeater || (function () {
         editBtn = document.createElement("button");
         editBtn.type = "button";
         editBtn.className = "btn waves-effect waves-light cinta-btn-primary dat-repeater-drawio-button";
-        editBtn.innerHTML = '<i class="material-icons left" aria-hidden="true">edit</i>' + (column.button_label || "Éditer");
+        setIconLabel(editBtn, "edit", column.button_label || "Éditer");
 
         importBtn = document.createElement("button");
         importBtn.type = "button";
         importBtn.className = "btn waves-effect waves-light cinta-btn-primary dat-drawio-import-button dat-repeater-drawio-button";
-        importBtn.innerHTML = '<i class="material-icons left" aria-hidden="true">file_upload</i><span class="dat-drawio-button-label">Importer</span>';
+        setIconLabel(importBtn, "file_upload", "Importer");
         if (initialDiagramId) {
           importBtn.dataset.diagramId = initialDiagramId;
         }
@@ -511,7 +509,7 @@ window.CintaDatRepeater = window.CintaDatRepeater || (function () {
         exportBtn = document.createElement("button");
         exportBtn.type = "button";
         exportBtn.className = "btn btn-flat waves-effect cinta-btn-secondary dat-drawio-export-button dat-repeater-drawio-view";
-        exportBtn.innerHTML = '<i class="material-icons left" aria-hidden="true">file_download</i>Exporter';
+        setIconLabel(exportBtn, "file_download", "Exporter");
         if (initialDiagramId) {
           exportBtn.dataset.diagramId = initialDiagramId;
         }
@@ -1158,34 +1156,31 @@ window.CintaDatRepeater = window.CintaDatRepeater || (function () {
     return slug;
   }
 
-  function generateLikeC4ReferenceId() {
-    const cryptoApi = window.crypto || window.msCrypto;
-    if (cryptoApi && typeof cryptoApi.randomUUID === "function") {
-      return cryptoApi.randomUUID();
-    }
-    if (cryptoApi && typeof cryptoApi.getRandomValues === "function") {
-      const values = new Uint32Array(4);
-      cryptoApi.getRandomValues(values);
-      return Array.from(values, (value) => value.toString(16).padStart(8, "0")).join("-");
-    }
-    throw new Error("Web Crypto API indisponible pour générer une référence LikeC4.");
-  }
-
-  function ensureLikeC4Reference(row, column) {
-    if (!row) {
-      return "";
-    }
+  async function ensureLikeC4Reference(row, column, container, title) {
+    if (!row) return "";
     const referenceKey = column.diagram_reference_key || column.diagramReferenceKey || "schema_reference";
     const referenceInput = row.querySelector(`[data-column-key="${referenceKey}"]`);
-    if (!referenceInput) {
-      return "";
-    }
+    if (!referenceInput) return "";
     let referenceValue = String(referenceInput.value || referenceInput.textContent || "").trim();
-    if (referenceValue) {
-      return referenceValue;
+    if (referenceValue) return referenceValue;
+    const createUrl = container && container.getAttribute("data-likec4-create-url");
+    if (!createUrl) throw new Error("Création LikeC4 indisponible.");
+    const payload = {
+      title: title || "",
+      dat_id: container.getAttribute("data-dat-id") || "",
+      section_id: container.getAttribute("data-diagram-section-id") || "",
+    };
+    const headers = { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" };
+    const csrfToken = getCsrfToken();
+    if (csrfToken) headers["X-CSRFToken"] = csrfToken;
+    const response = await fetch(createUrl, {
+      method: "POST", credentials: "same-origin", headers, body: JSON.stringify(payload),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.path) {
+      throw new Error(result.message || result.error || `Erreur ${response.status}`);
     }
-    const uniqueId = generateLikeC4ReferenceId();
-    referenceValue = `diagrams/${uniqueId}/likec4.c4`;
+    referenceValue = result.path;
     referenceInput.value = referenceValue;
     referenceInput.dispatchEvent(new Event("change", { bubbles: true }));
     return referenceValue;
@@ -1274,21 +1269,24 @@ window.CintaDatRepeater = window.CintaDatRepeater || (function () {
       });
   }
 
-  function handleDrawioEdit({ container, wrapper, hiddenInput, column }) {
+  async function handleDrawioEdit({ container, wrapper, hiddenInput, column }) {
     const row = hiddenInput.closest("tr");
     const tool = resolveDiagramTool(column, row);
     if (tool && tool !== "drawio") {
       if (tool === "likec4") {
-        const filePath = ensureLikeC4Reference(row, column);
         let title = "";
         if (row) {
           const titleKey = column.drawio_name_key || column.drawioNameKey || "nom_schema";
           const titleInput = row.querySelector(`[data-column-key="${titleKey}"]`);
-          if (titleInput) {
-            title = String(titleInput.value || titleInput.textContent || "").trim();
-          }
+          if (titleInput) title = String(titleInput.value || titleInput.textContent || "").trim();
         }
-        openLikeC4Editor(filePath, title, { row, column, container });
+        try {
+          const filePath = await ensureLikeC4Reference(row, column, container, title);
+          openLikeC4Editor(filePath, title, { row, column, container });
+        } catch (error) {
+          console.error("Impossible de créer le diagramme LikeC4:", error);
+          alert("Création du diagramme LikeC4 impossible. Merci de réessayer.");
+        }
       } else {
         alert("Cet outil de diagramme n'est pas intégré. Merci d'utiliser la référence externe.");
       }

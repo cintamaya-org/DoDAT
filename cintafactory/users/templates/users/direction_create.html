@@ -1,0 +1,8 @@
+{% extends "material/frontend/views/form.html" %}
+
+{% block submit_row %}
+<a href="{{ view.success_url }}" class="btn-flat waves-effect">
+    <i class="material-icons left">arrow_back</i>Retour à la liste
+</a>
+{{ block.super }}
+{% endblock %}

@@ -80,6 +80,7 @@ from .drawio_parser import MAX_XML_CHARS
 from .tasks import _run_pdf_generation
 from .utils import dat_pdf_export_exists, dat_pdf_export_modified_at, format_user_display, open_dat_pdf_export
 from workflows.models import UserNotification
+from workflows.services import ensure_workflow_instance
 
 def get_default_business_direction():
     direction, _ = BusinessDirection.objects.get_or_create(
@@ -596,6 +597,119 @@ class DatCreationPermissionTest(TestCase):
         self.client.force_login(self.porteur)
         response = self.client.get(self.application_add_url)
         self.assertEqual(response.status_code, 200)
+
+
+class DatUpdatePermissionTest(TestCase):
+    def setUp(self) -> None:
+        self.role = create_role(DAT_PORTEUR_ROLE_SLUG, "Porteur de la demande")
+        self.owner = get_user_model().objects.create_user(
+            username="update-owner", password="pwd", role=self.role,
+        )
+        self.other = get_user_model().objects.create_user(
+            username="update-other", password="pwd", role=self.role,
+        )
+        self.admin = get_user_model().objects.create_user(
+            username="update-admin", password="pwd", is_staff=True,
+        )
+        self.referent = get_user_model().objects.create_user(
+            username="update-referent",
+            password="pwd",
+            role=create_role("architecte-referent", "Architecte référent"),
+        )
+        self.application = Application.objects.create(
+            code="update-app",
+            name="Update App",
+            business_direction=get_default_business_direction(),
+        )
+        self.dat = DAT.objects.create(
+            reference="DAT-UPDATE-1",
+            title="Original title",
+            application=self.application,
+            owner=self.owner,
+        )
+        DATParticipant.objects.create(dat=self.dat, role=self.role, user=self.owner)
+        self.url = reverse("dat:dat_change", args=[self.dat.pk])
+        self.data = {
+            "reference": self.dat.reference,
+            "title": "Updated title",
+            "application": self.application.pk,
+            "description": "Updated description",
+            "secure_export_requires_dual_admin_approval": "on",
+            DATForm.participant_field_name(DAT_PORTEUR_ROLE_SLUG): self.owner.pk,
+            DATForm.participant_field_name("architecte-referent"): self.referent.pk,
+        }
+
+    def _set_status(self, status):
+        instance = ensure_workflow_instance(self.dat)
+        instance.current_state = status
+        instance.save(update_fields=["current_state"])
+        DAT.objects.filter(pk=self.dat.pk).update(status=status, title="Original title")
+
+    def test_owner_can_open_edit_form_in_owner_editable_states(self):
+        self.client.force_login(self.owner)
+        for status in (DATStatus.NOUVELLE_DEMANDE, DATStatus.EN_COURS, DATStatus.RESERVE):
+            with self.subTest(status=status):
+                self._set_status(status)
+                response = self.client.get(self.url)
+                self.assertEqual(response.status_code, 200)
+                self.assertTemplateUsed(response, "dat/dat_form.html")
+                self.assertContains(self.client.get(reverse("dat:my_list")), self.url)
+
+    def test_owner_can_save_changes_in_owner_editable_states(self):
+        self.client.force_login(self.owner)
+        for status in (DATStatus.NOUVELLE_DEMANDE, DATStatus.EN_COURS, DATStatus.RESERVE):
+            with self.subTest(status=status):
+                self._set_status(status)
+                response = self.client.post(self.url, self.data)
+                self.assertEqual(response.status_code, 302)
+                self.dat.refresh_from_db()
+                self.assertEqual(self.dat.title, "Updated title")
+                self.assertEqual(self.dat.description, "Updated description")
+                self.assertEqual(self.dat.owner, self.owner)
+                self.assertEqual(self.dat.status, status)
+
+    def test_owner_cannot_edit_during_review_or_after_closure(self):
+        self.client.force_login(self.owner)
+        for status in (DATStatus.EN_ATTENTE_DE_REVUE, DATStatus.VALIDER, DATStatus.REFUSE):
+            with self.subTest(status=status):
+                self._set_status(status)
+                self.assertEqual(self.client.get(self.url).status_code, 403)
+                self.assertEqual(self.client.post(self.url, self.data).status_code, 403)
+                self.dat.refresh_from_db()
+                self.assertEqual(self.dat.title, "Original title")
+                self.assertNotContains(self.client.get(reverse("dat:my_list")), self.url)
+
+    def test_other_porteur_cannot_edit_unassigned_dat(self):
+        self.client.force_login(self.other)
+        self.assertEqual(self.client.get(self.url).status_code, 404)
+        self.assertEqual(self.client.post(self.url, self.data).status_code, 404)
+        self.dat.refresh_from_db()
+        self.assertEqual(self.dat.title, "Original title")
+
+    def test_participant_who_is_not_owner_cannot_edit_dat(self):
+        DATParticipant.objects.filter(dat=self.dat, role=self.role).update(user=self.other)
+        self.client.force_login(self.other)
+        self.assertEqual(self.client.get(self.url).status_code, 403)
+        self.assertEqual(self.client.post(self.url, self.data).status_code, 403)
+        self.dat.refresh_from_db()
+        self.assertEqual(self.dat.title, "Original title")
+        self.assertNotContains(self.client.get(reverse("dat:my_list")), self.url)
+
+    def test_admin_can_still_edit_closed_dat(self):
+        self._set_status(DATStatus.VALIDER)
+        self.client.force_login(self.admin)
+        self.assertEqual(self.client.get(self.url).status_code, 200)
+        response = self.client.post(self.url, self.data)
+        self.assertEqual(response.status_code, 302)
+        self.dat.refresh_from_db()
+        self.assertEqual(self.dat.title, "Updated title")
+
+    def test_owner_cannot_delete_dat_or_edit_application(self):
+        self.client.force_login(self.owner)
+        delete_url = reverse("dat:dat_delete", args=[self.dat.pk])
+        self.assertEqual(self.client.post(delete_url).status_code, 403)
+        application_url = reverse("dat:application_change", args=[self.application.pk])
+        self.assertEqual(self.client.get(application_url).status_code, 403)
 
 
 class DatCreationNotificationTest(SimpleTestCase):
@@ -1992,6 +2106,7 @@ class DatPdfExportNotificationTest(TestCase):
             application=self.application,
             status=DATStatus.NOUVELLE_DEMANDE,
             owner=self.user,
+            secure_export_requires_dual_admin_approval=False,
         )
         self.client.force_login(self.user)
 
@@ -2507,7 +2622,7 @@ class DatSectionsSyncTests(TestCase):
         self.assertFalse(dat_sections_need_sync(self.dat))
 
 
-class DatPartFieldCoverageTests(SimpleTestCase):
+class DatPartFieldCoverageTests(TestCase):
     @staticmethod
     def _part(data_type, config=None, *, required=False):
         return SimpleNamespace(
@@ -2892,7 +3007,7 @@ class DatViewHelperCoverageTests(SimpleTestCase):
             [first, second],
         )
         self.assertEqual(dat_views._normalize_diagram_ids("not-a-list"), [])
-        self.assertEqual(dat_views._normalize_likec4_path(" /models/context.c4 "), "models/context.c4")
+        self.assertEqual(dat_views._normalize_likec4_path(" /models/context.c4 "), "")
         self.assertEqual(dat_views._normalize_likec4_path("../outside.c4"), "")
         self.assertEqual(dat_views._normalize_likec4_path("model.txt"), "")
         self.assertEqual(
@@ -2934,10 +3049,14 @@ class DatViewHelperCoverageTests(SimpleTestCase):
         self.assertEqual(dat_views._likec4_rows_from_flow_matrix([]), ([], []))
 
     def test_flow_matrix_fetch_handles_configuration_responses_and_network_errors(self):
+        diagram = SimpleNamespace(
+            pk=uuid.UUID("21cf4380-3a36-4885-a4d7-fb56ebf04c7f"),
+            storage_path="diagrams/likec4/21cf4380-3a36-4885-a4d7-fb56ebf04c7f/source.c4",
+        )
         with override_settings(LIKEC4_EDITOR_URL=""):
-            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("model.c4"))
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix(diagram))
         with override_settings(LIKEC4_EDITOR_URL="file:///tmp/editor"):
-            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("model.c4"))
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix(diagram))
 
         response = mock.MagicMock()
         response.status = 200
@@ -2945,19 +3064,21 @@ class DatViewHelperCoverageTests(SimpleTestCase):
         with override_settings(
             LIKEC4_EDITOR_URL="https://editor.example/",
             LIKEC4_API_TOKEN="test-token",
-        ), mock.patch("dat.views.urlopen") as urlopen:
+        ), mock.patch("dat.views.refresh_revision", return_value="a" * 64), mock.patch(
+            "dat.views.urlopen"
+        ) as urlopen:
             urlopen.return_value.__enter__.return_value = response
-            self.assertEqual(dat_views._fetch_likec4_flow_matrix("models/one.c4"), {"flows": []})
+            self.assertEqual(dat_views._fetch_likec4_flow_matrix(diagram), {"flows": []})
             request = urlopen.call_args.args[0]
             self.assertEqual(urlsplit(request.full_url).path, "/flow-matrix")
-            self.assertEqual(parse_qs(urlsplit(request.full_url).query), {"file": ["models/one.c4"]})
+            self.assertEqual(parse_qs(urlsplit(request.full_url).query), {"file": [diagram.storage_path]})
             self.assertEqual(request.get_header("X-likec4-token"), "test-token")
 
             response.status = 503
-            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("models/one.c4"))
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix(diagram))
             response.status = 200
             response.read.return_value = b"not-json"
-            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("models/one.c4"))
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix(diagram))
 
             urlopen.side_effect = HTTPError(
                 "https://editor.example/flow-matrix",
@@ -2966,9 +3087,9 @@ class DatViewHelperCoverageTests(SimpleTestCase):
                 hdrs=None,
                 fp=BytesIO(b"error body"),
             )
-            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("models/one.c4"))
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix(diagram))
             urlopen.side_effect = OSError("network unavailable")
-            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("models/one.c4"))
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix(diagram))
 
     def test_drawio_repeater_detection_and_repeater_update_report_changes(self):
         sub_section = SimpleNamespace(
@@ -3318,6 +3439,7 @@ class DatImportServiceCoverageTests(SimpleTestCase):
 
         part = SimpleNamespace(
             key="field",
+            config={},
             prepare_value=mock.Mock(side_effect=lambda value: value),
             update_value=mock.Mock(),
         )

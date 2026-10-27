@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from django.core.exceptions import PermissionDenied
 from django.db.models import Count, Q
 from django.http import JsonResponse
+from django.urls import reverse_lazy
 from django.views.decorators.http import require_safe
 
 from cintafactory.pagination import (
@@ -173,6 +174,14 @@ class RoleViewSet(BaseSecuredViewSet):
     layout = Layout(Row("name", "slug"), Row("technical_direction", "is_admin_role"))
 
 
+class DirectionCreateView(ModuleAwareCreateView):
+    template_name = "users/direction_create.html"
+
+
+class TechnicalDirectionCreateView(DirectionCreateView):
+    success_url = reverse_lazy("users:technical_direction_list")
+
+
 class TechnicalDirectionViewSet(BaseSecuredViewSet):
     model = TechnicalDirection
     queryset = TechnicalDirection.objects.all()
@@ -181,10 +190,14 @@ class TechnicalDirectionViewSet(BaseSecuredViewSet):
     ordering = ("name",)
     search_fields = ("name", "slug")
     form_class = TechnicalDirectionForm
-    create_view_class = ModuleAwareCreateView
+    create_view_class = TechnicalDirectionCreateView
     update_view_class = ModuleAwareUpdateView
     detail_view_class = ModuleAwareDetailView
     layout = Layout(Row("name", "slug"))
+
+
+class BusinessDirectionCreateView(DirectionCreateView):
+    success_url = reverse_lazy("users:business_direction_list")
 
 
 class BusinessDirectionViewSet(BaseSecuredViewSet):
@@ -195,7 +208,7 @@ class BusinessDirectionViewSet(BaseSecuredViewSet):
     ordering = ("name",)
     search_fields = ("name", "slug")
     form_class = BusinessDirectionForm
-    create_view_class = ModuleAwareCreateView
+    create_view_class = BusinessDirectionCreateView
     update_view_class = ModuleAwareUpdateView
     detail_view_class = ModuleAwareDetailView
     layout = Layout(Row("name", "slug"))
@@ -262,7 +275,7 @@ class UserViewSet(BaseSecuredViewSet):
         Fieldset("Profil", Row("first_name", "last_name"), Row("profile_picture")),
         Fieldset("Organisation", Row("business_group", "role")),
         Fieldset("Securite", Row("password1", "password2")),
-        Fieldset("Roles et droits", Row("is_active", "is_staff", "is_superuser")),
+        Fieldset("Roles et droits", Row("is_active", "is_staff", "is_superuser"), Row("can_use_api")),
     )
 
     def role_direction(self, obj):

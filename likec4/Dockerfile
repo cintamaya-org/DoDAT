@@ -8,6 +8,13 @@ ENV PATH=${PNPM_HOME}/bin:/usr/local/bin:${PATH}
 
 ARG LIKEC4_VER=latest
 ARG PNPM_VERSION=12.6.0
+ARG NODE_VERSION=22.23.4
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends "nodejs=${NODE_VERSION}-1nodesource1"; \
+    test "$(node --version)" = "v${NODE_VERSION}"; \
+    rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
     curl -fsSL --retry 3 https://get.pnpm.io/install.sh -o /tmp/install-pnpm.sh; \

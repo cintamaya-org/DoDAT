@@ -4,6 +4,8 @@
 
 import base64
 import hashlib
+import hmac
+import re
 import json
 import logging
 from time import time
@@ -17,7 +19,8 @@ from django.apps import apps as django_apps
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.core.exceptions import ValidationError
+from django.core.exceptions import PermissionDenied, ValidationError
+from django.db import transaction
 from django.core.files.base import ContentFile
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
@@ -35,11 +38,17 @@ from types import SimpleNamespace
 from cintafactory.async_jobs import enqueue_drawio_export_job, enqueue_likec4_export_job
 from cintafactory.operations.slo_baseline import emit_baseline_metric
 from .forms import DiagramForm
-from .models import DrawIODiagram, LikeC4Diagram, likec4_png_path_for
-from .validation import validate_drawio_xml
+from .models import DrawIODiagram, LikeC4Diagram, likec4_png_path_for, valid_drawio_png_path
+from .validation import validate_drawio_xml, sanitize_diagram_title
+from .access import diagram_queryset_for_user, get_diagram_for_user, require_diagram_write, bind_diagram
+from .likec4_scope import (
+    REVISION_RE, png_prefix, valid_png_path, read_source, refresh_revision,
+    scope_headers, source_limit, source_revision,
+)
 from dat.drawio_parser import extract_drawio_pages
 from cintafactory.storage.seaweedfs_storage import SeaweedFSStorage
 from cintafactory.url_safety import is_http_url
+from .images import normalize_png_bytes as _normalize_png_bytes
 
 
 DRAWIO_DEFAULT_LIBS = "general"
@@ -114,7 +123,7 @@ class DiagramListView(ModuleContextMixin, LoginRequiredMixin, ListView):
     context_object_name = "diagrams"
 
     def get_queryset(self):
-        return DrawIODiagram.objects.filter(owner=self.request.user)
+        return diagram_queryset_for_user(DrawIODiagram, self.request.user)
 
 
 class DiagramCreateView(ModuleContextMixin, LoginRequiredMixin, CreateView):
@@ -134,7 +143,7 @@ class DiagramDetailView(ModuleContextMixin, LoginRequiredMixin, DetailView):
     model = DrawIODiagram
 
     def get_queryset(self):
-        return DrawIODiagram.objects.filter(owner=self.request.user)
+        return diagram_queryset_for_user(DrawIODiagram, self.request.user)
 
 
 def _discover_static_library_urls(request=None) -> list[str]:
@@ -263,6 +272,10 @@ def _normalize_asset_path(raw_path: str | None) -> str:
     return cleaned
 
 
+def _valid_drawio_png_path(diagram: DrawIODiagram, storage_path: str) -> bool:
+    return valid_drawio_png_path(diagram, storage_path)
+
+
 def _split_csv(value: str | None) -> list[str]:
     if value is None:
         return []
@@ -337,7 +350,7 @@ def _likec4_png_url(request, storage_path: str) -> str:
     return request.build_absolute_uri(url) if request else url
 
 
-def _current_thumbnail_url(diagram: DrawIODiagram) -> str | None:
+def _current_thumbnail_url(diagram: DrawIODiagram, request=None) -> str | None:
     field = getattr(diagram, "thumbnail", None)
     if not field or not getattr(field, "name", None):
         return None
@@ -353,21 +366,24 @@ def _current_thumbnail_url(diagram: DrawIODiagram) -> str | None:
         return None
     if not exists:
         return None
-    try:
-        return field.url
-    except Exception as exc:  # pragma: no cover - storage failure best-effort
-        logger.warning("diagram %s: unable to build thumbnail URL: %s", diagram.pk, exc)
-        return None
+    return _diagram_asset_url(request, diagram, field.name)
 
 
 def _save_thumbnail_from_data_uri(diagram: DrawIODiagram, data_uri: str) -> bool:
     if not (isinstance(data_uri, str) and data_uri.startswith("data:image/png;base64,")):
         return False
     b64 = data_uri.split(",", 1)[1]
+    byte_limit = int(getattr(settings, "DIAGRAM_PNG_MAX_BYTES", 5 * 1024 * 1024))
+    if len(b64) > ((byte_limit + 2) // 3) * 4:
+        return False
     try:
-        raw = base64.b64decode(b64)
+        raw = base64.b64decode(b64, validate=True)
     except (ValueError, TypeError):
         return False
+    normalized = _normalize_png_bytes(raw)
+    if normalized is None:
+        return False
+    raw = normalized
     new_hash = hashlib.sha256(raw).hexdigest()
     current_hash = None
     field = getattr(diagram, "thumbnail", None)
@@ -479,7 +495,7 @@ def _export_drawio_png_bytes(xml_payload: str) -> bytes | None:
             continue
         if payload_base64:
             try:
-                return base64.b64decode(payload_base64)
+                return _normalize_png_bytes(base64.b64decode(payload_base64, validate=True))
             except (ValueError, TypeError):
                 return None
     return None
@@ -491,7 +507,10 @@ def _export_drawio_views(diagram: DrawIODiagram, xml_payload: str) -> bool:
         return False
     storage = SeaweedFSStorage()
     views_dir = f"diagrams/{diagram.pk}/views"
-    old_paths = set(getattr(diagram, "png_paths", []) or [])
+    old_paths = {
+        path for path in (getattr(diagram, "png_paths", []) or [])
+        if _valid_drawio_png_path(diagram, path)
+    }
     new_paths: list[str] = []
     thumb_bytes = None
     for page in pages:
@@ -567,7 +586,8 @@ class DiagramEditView(ModuleContextMixin, LoginRequiredMixin, TemplateView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        diagram = get_object_or_404(DrawIODiagram, pk=kwargs["pk"], owner=self.request.user)
+        diagram = get_diagram_for_user(DrawIODiagram, self.request.user, pk=kwargs["pk"])
+        require_diagram_write(diagram, self.request.user)
         context["diagram"] = diagram
         context["diagram_xml"] = diagram.read_xml()
         library_urls = _collect_library_urls(self.request)
@@ -580,7 +600,8 @@ class DiagramEditView(ModuleContextMixin, LoginRequiredMixin, TemplateView):
 @login_required
 @require_POST
 def diagram_save_xml(request, pk: int):
-    diagram = get_object_or_404(DrawIODiagram, pk=pk, owner=request.user)
+    diagram = get_diagram_for_user(DrawIODiagram, request.user, pk=pk)
+    require_diagram_write(diagram, request.user)
     try:
         data = json.loads(request.body.decode("utf-8") or "{}")
     except json.JSONDecodeError:
@@ -605,165 +626,210 @@ def diagram_save_xml(request, pk: int):
     )
 
 
-@csrf_exempt
-@require_POST
-def likec4_metadata(request):
-    try:
-        data = json.loads(request.body.decode("utf-8") or "{}")
-    except json.JSONDecodeError:
-        logger.warning("likec4_metadata invalid payload (json decode error)")
-        return JsonResponse({"ok": False, "error": "invalid payload"}, status=400)
-    if not isinstance(data, dict):
-        logger.warning("likec4_metadata invalid payload (json type)")
-        return JsonResponse({"ok": False, "error": "invalid payload"}, status=400)
-
-    token = getattr(settings, "LIKEC4_METADATA_TOKEN", "")
-    user = getattr(request, "user", None)
-    is_authenticated = bool(getattr(user, "is_authenticated", False))
-    provided = request.headers.get("X-LikeC4-Token", "") or request.GET.get("token", "") or data.get("token", "")
-    token_valid = bool(token) and str(provided or "").strip() == str(token or "").strip()
-    if not (is_authenticated or token_valid):
-        emit_baseline_metric(
-            "auth.token_validation",
-            duration_ms=0.0,
-            success=False,
-            dimensions={
-                "surface": "likec4_metadata",
-                "outcome": "unauthorized",
-            },
-        )
-        logger.warning(
-            "likec4_metadata unauthorized: auth=%s has_header=%s has_query=%s has_body=%s user_agent=%s",
-            is_authenticated,
-            bool(request.headers.get("X-LikeC4-Token", "")),
-            bool(request.GET.get("token", "")),
-            bool(data.get("token")),
-            request.headers.get("User-Agent", ""),
-        )
-        return JsonResponse({"ok": False, "error": "unauthorized"}, status=403)
-    if is_authenticated and not token_valid:
-        csrf_response = _reject_unsafe_session_request(request, "likec4_metadata")
-        if csrf_response is not None:
-            return csrf_response
-    path = data.get("path")
-    storage_path = _normalize_likec4_path(path if isinstance(path, str) else None)
-    if not storage_path:
-        logger.warning("likec4_metadata missing/invalid path: %s", path)
-        return JsonResponse({"ok": False, "error": "missing path"}, status=400)
-    size = data.get("size") or 0
-    try:
-        size_value = int(size)
-    except (TypeError, ValueError):
-        size_value = 0
-    content_type = data.get("content_type") or ""
-    defaults = {
-        "content_type": str(content_type or ""),
-        "size": max(size_value, 0),
-        "updated_at": timezone.now(),
-    }
-
-    png_path_raw = data.get("png_path")
-    png_path = _normalize_likec4_asset_path(png_path_raw if isinstance(png_path_raw, str) else None, ".png")
-    if png_path_raw and not png_path:
-        logger.warning("likec4_metadata invalid png path: %s", png_path_raw)
-        return JsonResponse({"ok": False, "error": "invalid png path"}, status=400)
-    if png_path:
-        png_size = data.get("png_size") or 0
-        try:
-            png_size_value = int(png_size)
-        except (TypeError, ValueError):
-            png_size_value = 0
-        png_content_type = data.get("png_content_type") or "image/png"
-        defaults.update(
-            {
-                "png_path": png_path,
-                "png_size": max(png_size_value, 0),
-                "png_content_type": str(png_content_type or "image/png"),
-                "png_updated_at": timezone.now(),
-            }
-        )
-
-    png_paths_raw = data.get("png_paths")
-    if isinstance(png_paths_raw, list):
-        normalized_paths = []
-        seen = set()
-        for item in png_paths_raw:
-            normalized = _normalize_likec4_asset_path(item if isinstance(item, str) else None, ".png")
-            if not normalized or normalized in seen:
-                continue
-            seen.add(normalized)
-            normalized_paths.append(normalized)
-        defaults["png_paths"] = normalized_paths
-
-    existing = LikeC4Diagram.objects.filter(storage_path=storage_path).only("png_path", "png_paths").first()
-    old_paths = set()
-    if existing and existing.png_path:
-        old_paths.add(existing.png_path)
-    if existing and isinstance(existing.png_paths, list):
-        for entry in existing.png_paths:
-            if isinstance(entry, str) and entry:
-                old_paths.add(entry)
-
-    LikeC4Diagram.objects.update_or_create(storage_path=storage_path, defaults=defaults)
-    logger.info(
-        "likec4_metadata updated: path=%s size=%s png_path=%s",
-        storage_path,
-        defaults.get("size"),
-        defaults.get("png_path"),
-    )
-    new_paths = set()
-    if png_path:
-        new_paths.add(png_path)
-    if isinstance(png_paths_raw, list):
-        normalized_paths = defaults.get("png_paths") or []
-        for entry in normalized_paths:
-            if isinstance(entry, str) and entry:
-                new_paths.add(entry)
-    if new_paths and getattr(settings, "LIKEC4_EXPORT_DELETE_OLD", True):
-        to_delete = old_paths - new_paths
-        if to_delete:
-            storage = SeaweedFSStorage()
-            for path in sorted(to_delete):
-                try:
-                    storage.delete(path)
-                except Exception as exc:  # pragma: no cover - best effort cleanup
-                    logger.warning("likec4_metadata failed to delete old png %s: %s", path, exc)
-
-    job_payload = None
-    if not png_path:
-        job = enqueue_likec4_export_job(
-            storage_path,
-            requested_by=user if is_authenticated else None,
-            source="metadata",
-        )
-        status_path = reverse("api:async-job-detail", args=[job.id])
-        job_payload = {
-            "job_id": str(job.id),
-            "status": job.status,
-            "status_url": request.build_absolute_uri(status_path),
-        }
-    response = {"ok": True}
-    if job_payload:
-        response["job"] = job_payload
-    return JsonResponse(response)
-
-
 def _normalize_likec4_path(raw_path: str | None) -> str:
-    return _normalize_likec4_asset_path(raw_path, ".c4")
+    if not isinstance(raw_path, str) or not raw_path or raw_path != raw_path.strip():
+        return ""
+    cleaned = raw_path
+    if (
+        not cleaned.lower().endswith(".c4")
+        or cleaned.startswith("/")
+        or "\\" in cleaned
+        or any(ord(character) < 32 or character in ":%?#" for character in cleaned)
+        or any(part in {"", ".", ".."} for part in cleaned.split("/"))
+    ):
+        return ""
+    return cleaned
 
 
 def _normalize_likec4_asset_path(raw_path: str | None, suffix: str) -> str:
-    if not raw_path:
+    if not isinstance(raw_path, str) or not raw_path or raw_path != raw_path.strip():
         return ""
-    cleaned = str(raw_path).strip().lstrip("/")
-    if not cleaned:
+    if (
+        not raw_path.lower().endswith(suffix)
+        or raw_path.startswith("/")
+        or "\\" in raw_path
+        or any(ord(character) < 32 or character in ":%?#" for character in raw_path)
+        or any(part in {"", ".", ".."} for part in raw_path.split("/"))
+    ):
         return ""
-    parts = Path(cleaned).parts
-    if any(part in (".", "..") for part in parts):
-        return ""
-    if suffix and not cleaned.lower().endswith(suffix):
-        return ""
-    return cleaned
+    return raw_path
+
+
+def _resolve_likec4_read(request, storage_path):
+    storage_path = _normalize_likec4_path(storage_path)
+    if not storage_path:
+        raise Http404("LikeC4 diagram not found.")
+    return get_diagram_for_user(LikeC4Diagram, request.user, storage_path=storage_path)
+
+
+def _owned_png_paths(diagram):
+    paths = []
+    candidates = [diagram.png_path]
+    if isinstance(diagram.png_paths, list):
+        candidates.extend(diagram.png_paths)
+    seen = set()
+    for path in candidates:
+        if path and path not in seen and valid_png_path(diagram, path):
+            seen.add(path)
+            paths.append(path)
+    return paths
+
+
+def _is_diagram_png_path(diagram, path):
+    return bool(path in _owned_png_paths(diagram) and valid_png_path(diagram, path))
+
+
+def _read_normalized_png(storage_path: str) -> bytes:
+    handle = None
+    try:
+        handle = SeaweedFSStorage().open(storage_path, "rb")
+        byte_limit = int(getattr(settings, "DIAGRAM_PNG_MAX_BYTES", 5 * 1024 * 1024))
+        raw = handle.read(byte_limit + 1)
+    except (FileNotFoundError, OSError):
+        raise Http404("Diagram PNG not found.") from None
+    finally:
+        if handle:
+            try:
+                handle.close()
+            except Exception:
+                pass
+    normalized = _normalize_png_bytes(raw)
+    if normalized is None:
+        raise Http404("Diagram PNG not found.")
+    return normalized
+
+
+def _likec4_context(request, payload):
+    dat_id = payload.get("dat_id") or payload.get("dat") or ""
+    section_id = payload.get("section_id") or payload.get("section") or ""
+    if not dat_id and not section_id:
+        return None, None
+    if not dat_id or not section_id:
+        raise ValidationError("DAT et section doivent être fournis ensemble.")
+    from dat.models import DAT, DATSection
+    from dat.permissions import filter_dat_queryset_for_user
+
+    dat = get_object_or_404(filter_dat_queryset_for_user(DAT.objects.all(), request.user), pk=dat_id)
+    section = get_object_or_404(DATSection.objects.filter(dat=dat), pk=section_id)
+    return dat, section
+
+
+@login_required
+@require_POST
+def likec4_create(request):
+    try:
+        payload = json.loads(request.body.decode("utf-8") or "{}")
+        if not isinstance(payload, dict):
+            raise ValueError
+        dat, section = _likec4_context(request, payload)
+        title = sanitize_diagram_title(str(payload.get("title") or ""))
+        if section is not None:
+            from .access import require_section_write
+
+            require_section_write(section, request.user)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, ValidationError):
+        return JsonResponse({"ok": False, "error": "invalid_payload"}, status=400)
+    diagram_id = uuid4()
+    storage_path = f"diagrams/likec4/{diagram_id}/source.c4"
+    content = ContentFile(b"", name="source.c4")
+    content.content_type = "text/plain"
+    storage = SeaweedFSStorage()
+    try:
+        storage.save(storage_path, content)
+        diagram = LikeC4Diagram.objects.create(
+            id=diagram_id, title=title, owner=request.user, dat=dat,
+            storage_path=storage_path, revision=source_revision(b""),
+            content_type="text/plain", size=0,
+        )
+        if section is not None:
+            diagram.sections.add(section)
+    except Exception:
+        try:
+            storage.delete(storage_path)
+        except Exception:
+            pass
+        logger.exception("LikeC4 creation failed for user %s", request.user.pk)
+        return JsonResponse({"ok": False, "error": "create_failed"}, status=502)
+    editor_url = f"{reverse('diagrams:likec4_proxy_root')}?{urlencode({'file': storage_path})}"
+    return JsonResponse({
+        "ok": True, "id": str(diagram.pk), "path": storage_path, "editor_url": editor_url,
+        "diagram": {"id": str(diagram.pk), "path": storage_path, "title": diagram.title},
+    }, status=201)
+
+
+@csrf_exempt
+@transaction.atomic
+@require_POST
+def likec4_metadata(request):
+    token = str(getattr(settings, "LIKEC4_METADATA_TOKEN", "") or "")
+    provided = str(request.headers.get("X-LikeC4-Token", "") or "")
+    if not token or not provided or not hmac.compare_digest(provided, token):
+        return JsonResponse({"ok": False, "error": "unauthorized"}, status=403)
+    try:
+        if int(request.META.get("CONTENT_LENGTH") or 0) > 128 * 1024:
+            return JsonResponse({"ok": False, "error": "payload_too_large"}, status=413)
+        data = json.loads(request.body.decode("utf-8") or "{}")
+        if not isinstance(data, dict):
+            raise ValueError
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
+        return JsonResponse({"ok": False, "error": "invalid_payload"}, status=400)
+    diagram_id = data.get("diagram_id")
+    storage_path = _normalize_likec4_path(data.get("path"))
+    revision = data.get("revision")
+    if not diagram_id or not storage_path or not isinstance(revision, str) or not REVISION_RE.fullmatch(revision):
+        return JsonResponse({"ok": False, "error": "invalid_scope"}, status=400)
+    try:
+        diagram = LikeC4Diagram.objects.select_for_update().get(pk=diagram_id, storage_path=storage_path)
+    except (LikeC4Diagram.DoesNotExist, ValueError, TypeError, ValidationError):
+        raise Http404("LikeC4 diagram not found.") from None
+    try:
+        current_revision = refresh_revision(diagram)
+    except (OSError, ValidationError, ValueError):
+        return JsonResponse({"ok": False, "error": "source_unavailable"}, status=409)
+    if current_revision != revision:
+        return JsonResponse({"ok": False, "error": "stale_revision"}, status=409)
+    raw_paths = data.get("png_paths")
+    if not isinstance(raw_paths, list) or not 1 <= len(raw_paths) <= 128:
+        return JsonResponse({"ok": False, "error": "invalid_png_paths"}, status=400)
+    paths = []
+    for path in raw_paths:
+        if not _normalize_likec4_asset_path(path, ".png") or not valid_png_path(diagram, path, revision):
+            return JsonResponse({"ok": False, "error": "invalid_png_path"}, status=400)
+        if path not in paths:
+            paths.append(path)
+    primary = data.get("png_path")
+    if primary not in paths:
+        return JsonResponse({"ok": False, "error": "invalid_png_path"}, status=400)
+    size = data.get("size")
+    png_size = data.get("png_size")
+    try:
+        size, png_size = int(size), int(png_size)
+    except (ValueError, TypeError):
+        return JsonResponse({"ok": False, "error": "invalid_size"}, status=400)
+    if not 0 <= size <= source_limit() or not 0 <= png_size <= 32 * 1024 * 1024:
+        return JsonResponse({"ok": False, "error": "invalid_size"}, status=400)
+    old_paths = set(_owned_png_paths(diagram))
+    if size != diagram.size:
+        return JsonResponse({"ok": False, "error": "source_size_mismatch"}, status=409)
+    diagram.png_path = primary
+    diagram.png_paths = paths
+    diagram.png_size = png_size
+    diagram.png_content_type = "image/png"
+    diagram.png_updated_at = timezone.now()
+    diagram.content_type = "text/plain"
+    diagram.updated_at = timezone.now()
+    diagram.save(update_fields=[
+        "png_path", "png_paths", "png_size", "png_content_type", "png_updated_at",
+        "content_type", "updated_at",
+    ])
+    if getattr(settings, "LIKEC4_EXPORT_DELETE_OLD", True):
+        storage = SeaweedFSStorage()
+        for path in old_paths - set(paths):
+            try:
+                storage.delete(path)
+            except Exception:
+                logger.warning("LikeC4 render cleanup failed for diagram %s", diagram.pk)
+    return JsonResponse({"ok": True})
 
 
 @login_required
@@ -772,84 +838,92 @@ def likec4_import(request):
     uploaded_file = request.FILES.get("file")
     if not uploaded_file:
         return JsonResponse({"ok": False, "error": "missing_file"}, status=400)
-    filename = uploaded_file.name or "diagram.c4"
-    if not filename.lower().endswith(".c4"):
+    if not (uploaded_file.name or "diagram.c4").lower().endswith(".c4"):
         return JsonResponse({"ok": False, "error": "invalid_extension"}, status=400)
-
+    try:
+        raw = uploaded_file.read(source_limit() + 1)
+    except Exception:
+        return JsonResponse({"ok": False, "error": "invalid_file"}, status=400)
+    if len(raw) > source_limit():
+        return JsonResponse({"ok": False, "error": "source_too_large"}, status=413)
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return JsonResponse({"ok": False, "error": "invalid_encoding"}, status=400)
     requested_path = request.POST.get("path")
-    storage_path = _normalize_likec4_path(requested_path)
-    if not storage_path:
-        unique_id = f"{int(time() * 1000)}{uuid4().hex[:4]}"
-        storage_path = f"diagrams/{unique_id}/likec4.c4"
+    try:
+        dat, section = _likec4_context(request, request.POST)
+    except (ValueError, ValidationError):
+        return JsonResponse({"ok": False, "error": "invalid_context"}, status=400)
+    if requested_path:
+        diagram = _resolve_likec4_read(request, requested_path)
+        require_diagram_write(diagram, request.user)
+        if section is not None:
+            try:
+                diagram = bind_diagram(diagram, section, request.user)
+            except PermissionDenied:
+                raise Http404("LikeC4 diagram not found.") from None
+    else:
+        if section is not None:
+            from .access import require_section_write
 
-    content_type = getattr(uploaded_file, "content_type", "") or "text/plain"
+            require_section_write(section, request.user)
+        diagram_id = uuid4()
+        storage_path = f"diagrams/likec4/{diagram_id}/source.c4"
+        diagram = LikeC4Diagram(
+            id=diagram_id, title=sanitize_diagram_title(Path(uploaded_file.name).stem),
+            owner=request.user, dat=dat, storage_path=storage_path,
+        )
+        if section is not None:
+            diagram.save()
+            diagram.sections.add(section)
+    revision = source_revision(raw)
+    content = ContentFile(raw, name="source.c4")
+    content.content_type = "text/plain"
     storage = SeaweedFSStorage()
     try:
-        storage.save(storage_path, uploaded_file)
-    except HTTPError as exc:
-        logger.warning("LikeC4 import failed for %s: %s", storage_path, exc)
+        storage.save(diagram.storage_path, content)
+    except HTTPError:
         return JsonResponse({"ok": False, "error": "storage_failed"}, status=502)
-
-    size = int(getattr(uploaded_file, "size", 0) or 0)
-    LikeC4Diagram.objects.update_or_create(
-        storage_path=storage_path,
-        defaults={
-            "content_type": content_type,
-            "size": max(size, 0),
-            "updated_at": timezone.now(),
-        },
-    )
-    job = enqueue_likec4_export_job(storage_path, requested_by=request.user, source="import")
+    if not diagram.pk:
+        diagram.save()
+    diagram.revision = revision
+    diagram.content_type = "text/plain"
+    diagram.size = len(raw)
+    diagram.png_path = ""
+    diagram.png_paths = []
+    diagram.png_size = 0
+    diagram.png_content_type = "image/png"
+    diagram.png_updated_at = None
+    diagram.updated_at = timezone.now()
+    diagram.save()
+    job = enqueue_likec4_export_job(diagram.storage_path, requested_by=request.user, source="import")
     status_path = reverse("api:async-job-detail", args=[job.id])
-    return JsonResponse(
-        {
-            "ok": True,
-            "path": storage_path,
-            "size": size,
-            "content_type": content_type,
-            "job_id": str(job.id),
-            "status": job.status,
-            "status_url": request.build_absolute_uri(status_path),
-        }
-    )
+    return JsonResponse({
+        "ok": True, "path": diagram.storage_path, "size": len(raw), "content_type": "text/plain",
+        "job_id": str(job.id), "status": job.status,
+        "status_url": request.build_absolute_uri(status_path),
+    })
 
 
 @login_required
 @require_http_methods(["GET", "HEAD"])
 def likec4_png(request):
     raw_path = request.GET.get("file")
+    storage_path = _normalize_likec4_path(raw_path)
     png_path = _normalize_likec4_asset_path(raw_path, ".png")
-    c4_path = _normalize_likec4_path(raw_path)
-    if not png_path and not c4_path:
-        return HttpResponseBadRequest("Invalid LikeC4 file path.")
-    if not png_path and c4_path:
-        png_path = likec4_png_path_for(c4_path)
-
-    storage_path = png_path
-    storage = SeaweedFSStorage()
-    file_meta = None
-    if c4_path:
-        file_meta = LikeC4Diagram.objects.filter(storage_path=c4_path).only("png_path", "png_content_type").first()
-    if not file_meta and png_path:
-        file_meta = LikeC4Diagram.objects.filter(png_path=png_path).only("png_path", "png_content_type").first()
-    if file_meta and file_meta.png_path:
-        storage_path = file_meta.png_path
-    try:
-        exists = storage.exists(storage_path)
-    except Exception as exc:
-        logger.warning("LikeC4 PNG lookup failed for %s: %s", storage_path, exc)
+    diagram = None
+    if storage_path:
+        diagram = _resolve_likec4_read(request, storage_path)
+        png_path = diagram.png_path
+    elif png_path:
+        for candidate in diagram_queryset_for_user(LikeC4Diagram, request.user).iterator():
+            if _is_diagram_png_path(candidate, png_path):
+                diagram = candidate
+                break
+    if diagram is None or not png_path or not _is_diagram_png_path(diagram, png_path):
         raise Http404("LikeC4 PNG not found.")
-    if not exists:
-        raise Http404("LikeC4 PNG not found.")
-
-    try:
-        file_handle = storage.open(storage_path, "rb")
-    except FileNotFoundError:
-        raise Http404("LikeC4 PNG not found.")
-    content_type = "image/png"
-    if file_meta and file_meta.png_content_type:
-        content_type = file_meta.png_content_type
-    response = FileResponse(file_handle, content_type=content_type)
+    response = HttpResponse(_read_normalized_png(png_path), content_type="image/png")
     response["X-Content-Type-Options"] = "nosniff"
     return response
 
@@ -857,87 +931,52 @@ def likec4_png(request):
 @login_required
 @require_safe
 def likec4_views(request):
-    raw_path = request.GET.get("file")
-    storage_path = _normalize_likec4_path(raw_path)
-    if not storage_path:
-        return HttpResponseBadRequest("Invalid LikeC4 file path.")
-    file_meta = LikeC4Diagram.objects.filter(storage_path=storage_path).only("png_path", "png_paths").first()
-    paths = []
-    thumb_url = None
-    thumb_path = file_meta.png_path if file_meta and file_meta.png_path else None
-    if thumb_path:
-        thumb_url = _likec4_png_url(request, thumb_path)
-    if file_meta and isinstance(file_meta.png_paths, list):
-        seen = set()
-        for entry in file_meta.png_paths:
-            normalized = _normalize_likec4_asset_path(entry if isinstance(entry, str) else None, ".png")
-            if not normalized or normalized in seen:
-                continue
-            seen.add(normalized)
-            url = _likec4_png_url(request, normalized)
-            if thumb_url and url == thumb_url:
-                continue
-            paths.append(url)
-    if not paths:
-        fallback_path = likec4_png_path_for(storage_path)
-        paths = [_likec4_png_url(request, fallback_path)]
-    thumb_path = thumb_path or likec4_png_path_for(storage_path)
-    return JsonResponse(
-        {
-            "ok": True,
-            "paths": paths,
-            "thumbnail_url": _likec4_png_url(request, thumb_path),
-        }
-    )
+    diagram = _resolve_likec4_read(request, request.GET.get("file"))
+    paths = _owned_png_paths(diagram)
+    urls = [_likec4_png_url(request, path) for path in paths if path != diagram.png_path]
+    return JsonResponse({
+        "ok": True,
+        "paths": urls,
+        "thumbnail_url": _likec4_png_url(request, diagram.png_path) if diagram.png_path in paths else None,
+    })
 
 
 @login_required
 @require_safe
 def likec4_export(request):
     storage_path = _normalize_likec4_path(request.GET.get("file"))
-    if not storage_path:
-        return HttpResponseBadRequest("Invalid LikeC4 file path.")
-
-    storage = SeaweedFSStorage()
-    file_meta = LikeC4Diagram.objects.filter(storage_path=storage_path).only("content_type").first()
-    content_type = file_meta.content_type if file_meta and file_meta.content_type else "text/plain"
-    if content_type.startswith("text/") and "charset=" not in content_type:
-        content_type = f"{content_type}; charset=utf-8"
-
+    diagram = _resolve_likec4_read(request, storage_path)
     try:
-        file_handle = storage.open(storage_path, "rb")
+        file_handle = SeaweedFSStorage().open(diagram.storage_path, "rb")
     except FileNotFoundError:
-        raise Http404("LikeC4 file not found.")
-
-    filename = Path(storage_path).name or "diagram.c4"
-    response = FileResponse(file_handle, content_type=content_type)
+        raise Http404("LikeC4 file not found.") from None
+    filename = Path(diagram.storage_path).name or "diagram.c4"
+    response = FileResponse(file_handle, content_type="text/plain; charset=utf-8")
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    response["X-Content-Type-Options"] = "nosniff"
     return response
 
 
 @login_required
 @require_http_methods(["GET", "HEAD"])
 def diagram_asset(request, pk: int, asset_path: str):
-    diagram = get_object_or_404(DrawIODiagram, pk=pk, owner=request.user)
+    diagram = get_diagram_for_user(DrawIODiagram, request.user, pk=pk)
     normalized = _normalize_asset_path(asset_path)
     if not normalized:
         raise Http404("Diagram asset not found.")
     storage_path = f"diagrams/{diagram.pk}/{normalized}"
-    allowed = set(diagram.png_paths or [])
+    allowed = {
+        path for path in (diagram.png_paths or [])
+        if _valid_drawio_png_path(diagram, path)
+    }
     thumb_name = diagram.thumbnail.name if diagram.thumbnail and diagram.thumbnail.name else ""
-    if thumb_name:
+    if thumb_name and _valid_drawio_png_path(diagram, thumb_name):
         allowed.add(thumb_name)
+    else:
+        thumb_name = ""
     if storage_path not in allowed:
         raise Http404("Diagram asset not found.")
-    storage = SeaweedFSStorage()
-    try:
-        file_handle = storage.open(storage_path, "rb")
-    except FileNotFoundError:
-        raise Http404("Diagram asset not found.")
-    content_type = "image/png"
-    if thumb_name and storage_path == thumb_name:
-        content_type = diagram.thumbnail_content_type or "image/png"
-    response = FileResponse(file_handle, content_type=content_type)
+    response = HttpResponse(_read_normalized_png(storage_path), content_type="image/png")
     response["X-Content-Type-Options"] = "nosniff"
     return response
 
@@ -945,7 +984,8 @@ def diagram_asset(request, pk: int, asset_path: str):
 @login_required
 @require_POST
 def diagram_save_thumbnail(request, pk: int):
-    diagram = get_object_or_404(DrawIODiagram, pk=pk, owner=request.user)
+    diagram = get_diagram_for_user(DrawIODiagram, request.user, pk=pk)
+    require_diagram_write(diagram, request.user)
     try:
         data = json.loads(request.body.decode("utf-8") or "{}")
     except json.JSONDecodeError:
@@ -1011,82 +1051,185 @@ def drawio_proxy(request, path: str = ""):
 @login_required
 @require_http_methods(["GET", "HEAD", "POST"])
 def likec4_proxy(request, path: str = ""):
-    """
-    Reverse proxy for the LikeC4 editor UI/API behind authenticated Django sessions.
-
-    POST is required by the embedded editor API. Because the proxy is CSRF-exempt
-    for that integration, unsafe session requests are restricted to same-origin
-    requests by _reject_unsafe_session_request before forwarding any body.
-    """
     upstream_base = getattr(settings, "LIKEC4_EDITOR_URL", "").rstrip("/")
-    if not upstream_base:
-        raise Http404("LikeC4 editor unavailable.")
-    if not is_http_url(upstream_base):
-        logger.warning("LikeC4 proxy blocked: LIKEC4_EDITOR_URL must be http(s).")
+    normalized_path = (path or "").strip()
+    if not upstream_base or not is_http_url(upstream_base):
         raise Http404("LikeC4 editor unavailable.")
     if not _proxy_upstream_is_allowlisted(upstream_base, "LIKEC4_PROXY_ALLOWED_UPSTREAM_HOSTS"):
-        logger.warning("LikeC4 proxy blocked: upstream host is not allowlisted.")
         raise Http404("LikeC4 editor unavailable.")
-    normalized_path = (path or "").strip()
-    allowed_prefixes = _split_csv(getattr(settings, "LIKEC4_PROXY_ALLOWED_PATH_PREFIXES", "*,"))
-    if not _proxy_path_is_allowed(normalized_path) or not _proxy_path_matches_prefixes(normalized_path, allowed_prefixes):
-        logger.warning("LikeC4 proxy blocked: invalid/disallowed path '%s'.", normalized_path)
+    if not _proxy_path_is_allowed(normalized_path):
         raise Http404("LikeC4 editor unavailable.")
-    upstream = upstream_base if not normalized_path else f"{upstream_base}/{normalized_path.lstrip('/')}"
-    query = request.META.get("QUERY_STRING")
-    if query:
-        upstream = f"{upstream}?{query}"
-
-    method = "HEAD" if request.method == "HEAD" else request.method
     csrf_response = _reject_unsafe_session_request(request, "likec4_proxy")
     if csrf_response is not None:
         return csrf_response
+
+    api_paths = {"c4", "save", "flow-matrix", "export-json"}
+    static_paths = {"", "index.html", "viewer.html", "security.js"}
+    bundle_match = re.fullmatch(
+        r"bundles/([a-f0-9-]{36})/([a-f0-9]{64})/([A-Za-z0-9_./-]+)", normalized_path,
+    )
+    if normalized_path not in api_paths | static_paths and not bundle_match:
+        raise Http404("LikeC4 editor unavailable.")
+
+    diagram = None
+    operation = None
+    revision = None
+    can_write = False
+    if normalized_path in api_paths or normalized_path in {"", "index.html"}:
+        diagram = _resolve_likec4_read(request, request.GET.get("file"))
+        try:
+            require_diagram_write(diagram, request.user)
+            can_write = True
+        except PermissionDenied:
+            can_write = False
+        if normalized_path in api_paths:
+            if normalized_path == "save":
+                if request.method != "POST":
+                    return HttpResponse(status=405)
+                if not can_write:
+                    raise PermissionDenied
+                operation = "write"
+            else:
+                if request.method not in {"GET", "HEAD"}:
+                    return HttpResponse(status=405)
+                operation = "read"
+                revision = refresh_revision(diagram)
+        elif request.method not in {"GET", "HEAD"}:
+            return HttpResponse(status=405)
+    elif bundle_match:
+        if request.method not in {"GET", "HEAD"}:
+            return HttpResponse(status=405)
+        diagram = get_diagram_for_user(LikeC4Diagram, request.user, pk=bundle_match.group(1))
+        revision = bundle_match.group(2)
+        operation = "bundle"
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*", bundle_match.group(3)):
+            raise Http404("LikeC4 asset not found.")
+    elif normalized_path == "viewer.html":
+        if request.method not in {"GET", "HEAD"}:
+            return HttpResponse(status=405)
+        bundle = request.GET.get("bundle", "")
+        bundle_parts = urlsplit(bundle)
+        expected_origin = urlsplit(request.build_absolute_uri("/"))
+        proxy_root = reverse("diagrams:likec4_proxy_root")
+        expected_prefix = f"{proxy_root}bundles/"
+        if bundle_parts.scheme or bundle_parts.netloc:
+            if (
+                bundle_parts.scheme != expected_origin.scheme
+                or bundle_parts.netloc != expected_origin.netloc
+                or not bundle_parts.path.startswith(expected_prefix)
+                or bundle_parts.query
+                or bundle_parts.fragment
+            ):
+                raise Http404("LikeC4 viewer not found.")
+            bundle = bundle_parts.path[len(proxy_root):]
+        match = re.fullmatch(
+            r"bundles/([a-f0-9-]{36})/([a-f0-9]{64})/likec4-webcomponent\.js", bundle,
+        )
+        if not match:
+            raise Http404("LikeC4 viewer not found.")
+        diagram = get_diagram_for_user(LikeC4Diagram, request.user, pk=match.group(1))
+        revision = match.group(2)
+    elif normalized_path != "security.js":
+        raise Http404("LikeC4 editor unavailable.")
+
+    if normalized_path in api_paths:
+        if operation == "write":
+            max_body_bytes = source_limit() + 64 * 1024
+            if int(request.META.get("CONTENT_LENGTH") or 0) > max_body_bytes:
+                return JsonResponse({"ok": False, "error": "payload_too_large"}, status=413)
+            try:
+                payload = json.loads(request.body.decode("utf-8") or "{}")
+                if not isinstance(payload, dict) or not isinstance(payload.get("content"), str):
+                    raise ValueError
+                content = payload["content"]
+                content_bytes = content.encode("utf-8")
+                if len(content_bytes) > source_limit():
+                    return JsonResponse({"ok": False, "error": "source_too_large"}, status=413)
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                return JsonResponse({"ok": False, "error": "invalid_payload"}, status=400)
+            revision = source_revision(content_bytes)
+            body = json.dumps({"content": content}, ensure_ascii=False).encode("utf-8")
+        else:
+            body = None
+    else:
+        body = None
+
+    upstream_path = normalized_path
+    if upstream_path in {"", "index.html"}:
+        query = urlencode({"file": diagram.storage_path})
+    elif upstream_path == "viewer.html":
+        query = ""
+    else:
+        query = ""
+    upstream = upstream_base if not upstream_path else f"{upstream_base}/{upstream_path}"
+    if query:
+        upstream = f"{upstream}?{query}"
+    method = "HEAD" if request.method == "HEAD" else request.method
     headers = {}
-    content_type = request.headers.get("Content-Type")
-    if content_type:
-        headers["Content-Type"] = content_type
+    if operation == "write":
+        headers["Content-Type"] = "application/json"
     accept = request.headers.get("Accept")
     if accept:
         headers["Accept"] = accept
     user_agent = request.headers.get("User-Agent")
     if user_agent:
         headers["User-Agent"] = user_agent
-    api_token = getattr(settings, "LIKEC4_API_TOKEN", "")
-    if api_token:
-        headers["X-LikeC4-Token"] = api_token
-    body = request.body if method == "POST" else None
-    if method == "POST":
-        max_body_bytes = int(getattr(settings, "LIKEC4_PROXY_MAX_BODY_BYTES", 1024 * 1024))
-        if len(body or b"") > max_body_bytes:
-            logger.warning(
-                "LikeC4 proxy blocked: payload exceeds max size (%s bytes).",
-                max_body_bytes,
-            )
-            return HttpResponse("payload too large", status=413)
+    if diagram is not None and operation:
+        try:
+            headers.update(scope_headers(diagram, operation, revision=revision))
+        except ValidationError:
+            raise Http404("LikeC4 source unavailable.") from None
+    if normalized_path in api_paths - {"save"}:
+        headers["X-LikeC4-Can-Write"] = "1" if can_write else "0"
 
     try:
         req = Request(upstream, data=body, headers=headers, method=method)
-        with urlopen(req, timeout=20) as resp:
+        with urlopen(req, timeout=int(getattr(settings, "LIKEC4_RENDER_TIMEOUT", 150))) as resp:
             status = getattr(resp, "status", 200)
-            payload = b"" if method == "HEAD" else resp.read()
+            payload = b"" if method == "HEAD" else resp.read(8 * 1024 * 1024 + 1)
+            if len(payload) > 8 * 1024 * 1024:
+                return JsonResponse({"ok": False, "error": "response_too_large"}, status=502)
             response = HttpResponse(payload, status=status)
             content_type = resp.headers.get("Content-Type")
             if content_type:
                 response["Content-Type"] = content_type
-            for header_name in ("Cache-Control", "ETag", "Last-Modified", "Expires"):
+            response["X-Content-Type-Options"] = "nosniff"
+            for header_name in ("Cache-Control", "ETag", "Last-Modified", "Expires", "Content-Disposition"):
                 header_val = resp.headers.get(header_name)
                 if header_val:
                     response[header_name] = header_val
+            if status < 400 and operation == "write":
+                with transaction.atomic():
+                    current = LikeC4Diagram.objects.select_for_update().get(pk=diagram.pk)
+                    current.revision = revision
+                    current.size = len(content_bytes)
+                    current.content_type = "text/plain"
+                    current.updated_at = timezone.now()
+                    current.png_path = ""
+                    current.png_paths = []
+                    current.png_size = 0
+                    current.png_updated_at = None
+                    current.png_content_type = "image/png"
+                    current.save(update_fields=[
+                        "revision", "size", "content_type", "updated_at", "png_path", "png_paths",
+                        "png_size", "png_updated_at", "png_content_type",
+                    ])
+                enqueue_likec4_export_job(diagram.storage_path, requested_by=request.user, source="editor_save")
             return response
-    except Exception as exc:  # pragma: no cover - network/runtime failures
-        logger.warning("likec4 proxy failed for %s: %s", upstream, exc)
-        raise Http404("LikeC4 editor unavailable.")
+    except HTTPError as exc:
+        payload = exc.read(64 * 1024)
+        response = HttpResponse(payload, status=exc.code, content_type=exc.headers.get("Content-Type", "application/json"))
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
+    except (OSError, ValueError) as exc:
+        logger.warning("LikeC4 proxy failed for %s (%s)", normalized_path, type(exc).__name__)
+        return JsonResponse({"ok": False, "error": "editor_unavailable"}, status=502)
 
 
 @login_required
 @require_safe
 def diagram_embed_context(request, pk: int):
-    diagram = get_object_or_404(DrawIODiagram, pk=pk, owner=request.user)
+    diagram = get_diagram_for_user(DrawIODiagram, request.user, pk=pk)
     library_urls = _collect_library_urls(request)
     public_url = _resolve_public_drawio_url(request)
     embed_url = _build_embed_url(library_urls, public_url, request)
@@ -1108,8 +1251,8 @@ def diagram_embed_context(request, pk: int):
 @login_required
 @require_GET
 def diagram_viewer_context(request, pk: int):
-    diagram = get_object_or_404(DrawIODiagram, pk=pk, owner=request.user)
-    thumbnail_url = _current_thumbnail_url(diagram)
+    diagram = get_diagram_for_user(DrawIODiagram, request.user, pk=pk)
+    thumbnail_url = _current_thumbnail_url(diagram, request)
     diagram_xml = diagram.read_xml() or "<mxGraphModel/>"
     drawio_job = None
     if not thumbnail_url:
@@ -1159,7 +1302,8 @@ def diagram_viewer_context(request, pk: int):
 @login_required
 @require_POST
 def diagram_import_xml(request, pk: int):
-    diagram = get_object_or_404(DrawIODiagram, pk=pk, owner=request.user)
+    diagram = get_diagram_for_user(DrawIODiagram, request.user, pk=pk)
+    require_diagram_write(diagram, request.user)
     base_context = _build_import_log_context(request, diagram)
     logger.info(
         "diagram_import_xml: request received diagram_id=%s user_id=%s username=%s",
@@ -1293,9 +1437,9 @@ def diagram_import_xml(request, pk: int):
 @login_required
 @require_safe
 def diagram_export_xml(request, pk: int):
-    diagram = get_object_or_404(DrawIODiagram, pk=pk, owner=request.user)
+    diagram = get_diagram_for_user(DrawIODiagram, request.user, pk=pk)
     xml_payload = diagram.read_xml() or "<mxGraphModel/>"
     filename_root = slugify(diagram.title) or f"diagram-{diagram.pk}"
-    response = HttpResponse(xml_payload, content_type="application/xml; charset=utf-8")
+    response = HttpResponse(xml_payload, content_type="text/plain; charset=utf-8")
     response["Content-Disposition"] = f'attachment; filename="{filename_root}.drawio"'
     return response

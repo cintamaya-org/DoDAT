@@ -107,6 +107,31 @@ def dat_has_drawio_columns(config) -> bool:
     return False
 
 
+@register.filter
+def dat_repeater_full_width(entry, section_slug) -> bool:
+    return entry.data_type == "repeater" and (
+        dat_has_drawio_columns(entry.config)
+        or (section_slug, entry.key) in {
+            ("validation", "suivi_sections"),
+            ("architecture", "flux"),
+            ("exploitation", "ressources"),
+        }
+    )
+
+
+@register.simple_tag
+def dat_repeater_pagination(entry, section_slug, rows):
+    if section_slug != "architecture" or entry.key not in {"briques", "flux"}:
+        return None
+    page_size = 10
+    total = len(rows)
+    return {
+        "page_size": page_size,
+        "total": total,
+        "num_pages": max(1, (total + page_size - 1) // page_size),
+    }
+
+
 def _normalise_icon_config(icon_config):
     if not icon_config:
         return None

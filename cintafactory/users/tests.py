@@ -869,7 +869,7 @@ class OAuthServiceTests(TestCase):
             password="pwd",
         )
 
-        with self.assertRaisesMessage(OAuthError, "n'est pas verifiee"):
+        with self.assertRaisesMessage(OAuthError, "n'est pas vérifiée"):
             resolve_oauth_user(
                 self._preprovisioned_provider(),
                 {
@@ -889,7 +889,7 @@ class OAuthServiceTests(TestCase):
         user.is_active = False
         user.save(update_fields=["is_active"])
 
-        with self.assertRaisesMessage(OAuthError, "desactive"):
+        with self.assertRaisesMessage(OAuthError, "désactivé"):
             resolve_oauth_user(
                 self._preprovisioned_provider(),
                 {"sub": "inactive-id", "email": "inactive-sso@example.com"},
