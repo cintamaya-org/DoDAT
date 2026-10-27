@@ -9,6 +9,8 @@ from django.db.models import QuerySet
 from rest_framework import serializers, viewsets
 from rest_framework.exceptions import PermissionDenied
 
+from cintafactory.api.permissions import CanUseAPI, IsSuperuser
+
 from .models import BusinessGroup, _get_default_role_for_group
 
 User = get_user_model()
@@ -36,6 +38,7 @@ class UserSerializer(serializers.ModelSerializer):
             "is_active",
             "is_staff",
             "is_superuser",
+            "can_use_api",
             "role",
             "business_group",
             "profile_picture",
@@ -47,6 +50,12 @@ class UserSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         actor = getattr(self.context.get("request"), "user", None)
+        if "can_use_api" in attrs and not (
+            actor is not None
+            and actor.is_authenticated
+            and actor.is_superuser
+        ):
+            raise PermissionDenied("Seul un superadministrateur peut modifier l'accès API.")
         if actor is not None and actor.is_authenticated and actor.is_superuser:
             return attrs
         if self.instance is not None and _privileged_user(self.instance):
@@ -100,14 +109,7 @@ class BusinessGroupSerializer(serializers.ModelSerializer):
 
 class UserViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer
-    permission_required_by_action = {
-        "list": ["users.view_user"],
-        "retrieve": ["users.view_user"],
-        "create": ["users.add_user"],
-        "update": ["users.change_user"],
-        "partial_update": ["users.change_user"],
-        "destroy": ["users.delete_user"],
-    }
+    permission_classes = [CanUseAPI, IsSuperuser]
 
     def get_queryset(self) -> QuerySet:
         return User.objects.select_related("role", "business_group").all()
@@ -120,14 +122,7 @@ class UserViewSet(viewsets.ModelViewSet):
 
 class BusinessGroupViewSet(viewsets.ModelViewSet):
     serializer_class = BusinessGroupSerializer
-    permission_required_by_action = {
-        "list": ["users.view_businessgroup"],
-        "retrieve": ["users.view_businessgroup"],
-        "create": ["users.add_businessgroup"],
-        "update": ["users.change_businessgroup"],
-        "partial_update": ["users.change_businessgroup"],
-        "destroy": ["users.delete_businessgroup"],
-    }
+    permission_classes = [CanUseAPI, IsSuperuser]
 
     def get_queryset(self) -> QuerySet:
         return BusinessGroup.objects.select_related(

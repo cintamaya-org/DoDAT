@@ -100,6 +100,9 @@ from .models import (
 from .pdf import generate_dat_pdf
 from .permissions import (
     filter_dat_queryset_for_user,
+    user_can_change_dat,
+    user_can_create_dat_entities,
+    user_can_manage_dat,
     user_can_update_section_status,
     user_is_dat_admin,
     user_is_dat_admin_for_dat,
@@ -145,7 +148,6 @@ from cintafactory.notifications.external import ExternalNotificationEvent, dispa
 
 logger = logging.getLogger(__name__)
 
-PORTEUR_ROLE_SLUG = DAT_PORTEUR_ROLE_SLUG
 VALIDATION_STATUS_LABELS = {
     DATStatus.EN_ATTENTE_DE_REVUE.label,
     DATStatus.RESERVE.label,
@@ -2598,39 +2600,6 @@ def submit_validation_decision(request, pk: int):
         messages.success(request, f"Le DAT est placé en réserve ({label}). Les sections sont à nouveau éditables.")
 
     return redirect(reverse("dat:my_detail", args=[dat.pk]))
-
-
-def user_is_porteur_demande(user):
-    is_role = getattr(user, "is_role", None)
-    return bool(callable(is_role) and is_role(PORTEUR_ROLE_SLUG))
-
-
-def user_can_create_dat_entities(user):
-    is_authenticated = getattr(user, "is_authenticated", False)
-    return bool(is_authenticated and user_is_porteur_demande(user))
-
-
-def user_can_manage_dat(user):
-    if user is None:
-        return False
-    is_role = getattr(user, "is_role", None)
-    return (
-        getattr(user, "is_superuser", False)
-        or getattr(user, "is_staff", False)
-        or (callable(is_role) and is_role("admin"))
-    )
-
-
-def user_can_change_dat(dat: DAT | None, user) -> bool:
-    if user is None or not getattr(user, "is_authenticated", False):
-        return False
-    if user_can_manage_dat(user):
-        return True
-    return bool(
-        dat is not None
-        and dat.owner_id == user.pk
-        and workflow_has_capability(dat, "owner_editable")
-    )
 
 
 def user_can_progress_dat(dat: DAT, user) -> bool:

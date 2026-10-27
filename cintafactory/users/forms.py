@@ -78,6 +78,7 @@ class UserForm(forms.ModelForm):
             "is_active",
             "is_staff",
             "is_superuser",
+            "can_use_api",
         ]
 
     def __init__(self, *args, **kwargs):
@@ -109,6 +110,10 @@ class UserForm(forms.ModelForm):
             profile_picture.required = False
             profile_picture.label = "Photo de profil"
             profile_picture.help_text = "Image redimensionnee en 350x350 (JPG, PNG ou WEBP)."
+        can_use_api = self.fields.get("can_use_api")
+        if can_use_api:
+            can_use_api.label = "Accès à l'API (OAuth)"
+            can_use_api.help_text = "Désactivé par défaut. Seul un superadministrateur peut modifier ce réglage."
 
     def clean(self):
         cleaned_data = super().clean()

@@ -63,8 +63,13 @@ class PDFStorageReferenceSecurityTests(SimpleTestCase):
 
 class DATExportAPISecurityTests(TestCase):
     def setUp(self):
-        self.role = Role.objects.create(name="Export API member", slug="export-api-member")
-        self.user = get_user_model().objects.create_user(username="dat-api-creator", password="pwd", role=self.role)
+        self.role, _ = Role.objects.get_or_create(
+            slug="porteur-demande", defaults={"name": "Export API porteur"},
+        )
+        self.user = get_user_model().objects.create_user(
+            username="dat-api-creator", password="pwd", role=self.role, can_use_api=True,
+        )
+        self.other_user = get_user_model().objects.create_user(username="dat-api-other", password="pwd")
         self.user.user_permissions.add(Permission.objects.get(content_type__app_label="dat", codename="add_dat"))
         self.application = Application.objects.create(
             code="export-api-security", name="Export API",
@@ -76,6 +81,7 @@ class DATExportAPISecurityTests(TestCase):
     def test_create_ignores_internal_export_metadata_and_approval_override(self):
         response = self.api.post(reverse("api:dat-list"), {
             "reference": "SECURE-API-DAT", "title": "Own DAT", "application": str(self.application.pk),
+            "owner": str(self.other_user.pk), "status": "refuse",
             "pdf_export_path": "dat_exports/foreign/secret.pdf", "pdf_export_content_type": "text/html",
             "pdf_export_size": 9000, "pdf_export_in_progress": True,
             "pdf_export_requested_by": str(self.user.pk), "pdf_export_requested_by_display": "Forged",
@@ -84,6 +90,7 @@ class DATExportAPISecurityTests(TestCase):
         self.assertEqual(response.status_code, 201)
         dat = DAT.objects.get(pk=response.data["id"])
         self.assertEqual(dat.owner, self.user)
+        self.assertEqual(dat.status, DAT._meta.get_field("status").default)
         self.assertEqual(dat.pdf_export_path, "")
         self.assertEqual(dat.pdf_export_content_type, "application/pdf")
         self.assertEqual(dat.pdf_export_size, 0)

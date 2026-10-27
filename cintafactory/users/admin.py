@@ -59,6 +59,7 @@ class UserAdmin(DjangoUserAdmin):
         ("Personal info", {"fields": ("first_name", "last_name", "email")}),
         ("Structure", {"fields": ("business_group", "role")}),
         ("Permissions", {"fields": ("is_active", "is_staff", "is_superuser", "groups", "user_permissions")}),
+        ("API", {"fields": ("can_use_api",)}),
         ("Important dates", {"fields": ("last_login", "date_joined")}),
     )
     add_fieldsets = (
@@ -99,6 +100,12 @@ class UserAdmin(DjangoUserAdmin):
     )
     search_fields = ("username", "first_name", "last_name", "email")
     ordering = ("username",)
+
+    def get_readonly_fields(self, request, obj=None):
+        readonly_fields = list(super().get_readonly_fields(request, obj))
+        if not request.user.is_superuser:
+            readonly_fields.append("can_use_api")
+        return tuple(readonly_fields)
 
     def business_direction(self, obj):
         group = getattr(obj, "business_group", None)

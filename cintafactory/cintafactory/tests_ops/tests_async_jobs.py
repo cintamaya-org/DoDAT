@@ -75,9 +75,11 @@ class AsyncJobServiceTests(TestCase):
 
 class AsyncJobApiTests(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username="jobs-user", password="pwd")
-        self.other = User.objects.create_user(username="jobs-other", password="pwd")
-        self.staff = User.objects.create_user(username="jobs-staff", password="pwd", is_staff=True)
+        self.user = User.objects.create_user(username="jobs-user", password="pwd", can_use_api=True)
+        self.other = User.objects.create_user(username="jobs-other", password="pwd", can_use_api=True)
+        self.staff = User.objects.create_user(
+            username="jobs-staff", password="pwd", is_staff=True, can_use_api=True,
+        )
 
         self.user_job = AsyncJob.objects.create(
             job_type="exports.likec4",
@@ -103,6 +105,14 @@ class AsyncJobApiTests(TestCase):
     def test_jobs_list_requires_authentication(self):
         response = self.client.get(reverse("api:async-job-list"))
         self.assertIn(response.status_code, {401, 403})
+
+    def test_jobs_list_requires_api_opt_in(self):
+        disabled_user = User.objects.create_user(username="jobs-api-disabled", password="pwd")
+        self.client.force_login(disabled_user)
+
+        response = self.client.get(reverse("api:async-job-list"))
+
+        self.assertEqual(response.status_code, 403)
 
     def test_jobs_list_returns_only_requester_jobs(self):
         self.client.force_login(self.user)

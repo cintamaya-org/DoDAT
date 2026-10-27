@@ -275,7 +275,7 @@ class UserViewSet(BaseSecuredViewSet):
         Fieldset("Profil", Row("first_name", "last_name"), Row("profile_picture")),
         Fieldset("Organisation", Row("business_group", "role")),
         Fieldset("Securite", Row("password1", "password2")),
-        Fieldset("Roles et droits", Row("is_active", "is_staff", "is_superuser")),
+        Fieldset("Roles et droits", Row("is_active", "is_staff", "is_superuser"), Row("can_use_api")),
     )
 
     def role_direction(self, obj):

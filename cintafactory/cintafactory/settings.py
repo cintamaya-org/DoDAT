@@ -145,6 +145,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "cintafactory.middleware.HideDisabledApiBrowserPagesMiddleware",
     "cintafactory.middleware.RateLimitMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
@@ -490,6 +491,7 @@ REST_FRAMEWORK = {
         "oauth2_provider.contrib.rest_framework.OAuth2Authentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": (
+        "cintafactory.api.permissions.CanUseAPI",
         "cintafactory.api.permissions.GranularModelPermissions",
     ),
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
@@ -499,6 +501,10 @@ SPECTACULAR_SETTINGS = {
     "TITLE": "CintaFactory API",
     "DESCRIPTION": "API documentation for CintaFactory.",
     "VERSION": "1.0.0",
+    "SERVE_PERMISSIONS": [
+        "cintafactory.api.permissions.CanUseAPI",
+        "cintafactory.api.permissions.IsSuperuser",
+    ],
     "SERVE_INCLUDE_SCHEMA": False,
 }
 

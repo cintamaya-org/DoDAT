@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from django.conf import settings
 from django.core.cache import cache
-from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
 from django.http.request import validate_host
 
 from .logging.logging_utils import bind_request_context, clear_request_context
@@ -200,6 +200,36 @@ class DynamicCsrfTrustedOriginsMiddleware:
             candidate = f"{scheme}://{netloc}"
             origins.add(candidate)
         settings.CSRF_TRUSTED_ORIGINS = sorted(origins)
+
+
+class HideDisabledApiBrowserPagesMiddleware:
+    """Hide REST pages from browser navigation when API access is disabled."""
+
+    def __init__(self, get_response: Callable[[HttpRequest], HttpResponse]) -> None:
+        self.get_response = get_response
+
+    def __call__(self, request: HttpRequest) -> HttpResponse:
+        path = request.path_info
+        is_api_path = path == "/api" or path.startswith("/api/")
+        user = getattr(request, "user", None)
+        has_api_access = bool(
+            getattr(user, "is_authenticated", False)
+            and getattr(user, "can_use_api", False)
+        )
+        if is_api_path and not has_api_access and self._is_browser_request(request):
+            raise Http404
+        return self.get_response(request)
+
+    @staticmethod
+    def _is_browser_request(request: HttpRequest) -> bool:
+        if request.headers.get("Sec-Fetch-Mode", "").lower() == "navigate":
+            return True
+        accept_header = request.headers.get("Accept", "")
+        explicitly_accepts_html = any(
+            media_type.split(";", 1)[0].strip().lower() == "text/html"
+            for media_type in accept_header.split(",")
+        )
+        return explicitly_accepts_html and request.accepts("text/html")
 
 
 class RateLimitMiddleware:
