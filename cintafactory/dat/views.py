@@ -40,7 +40,10 @@ from material import Fieldset, Layout, Row
 from material.frontend.registry import modules as module_registry
 from material.frontend.views import CreateModelView, DetailModelView, ListModelView, ModelViewSet, UpdateModelView
 
-from diagrams.models import DrawIODiagram
+from diagrams.access import get_dat_diagram
+from diagrams.likec4_scope import refresh_revision, scope_headers
+from diagrams.models import DrawIODiagram, LikeC4Diagram
+from diagrams.references import iter_diagram_references
 from diagrams.validation import sanitize_diagram_title
 from cintafactory.french_messages import FrenchCreateMessageMixin, FrenchUpdateMessageMixin
 from cintafactory.url_safety import is_http_url
@@ -3157,11 +3160,18 @@ class DatExportJSONView(DatExportBaseView):
 class DatGeneratePDFExportView(DatExportBaseView):
     def get(self, request, *args, **kwargs):
         dat = self.get_object()
+        if not can_download_export(dat, request.user, "pdf"):
+            messages.error(
+                request,
+                "Export PDF verrouillé : 2 administrateurs DAT doivent approuver la demande.",
+            )
+            return redirect("dat:my_detail", pk=dat.pk)
         pdf_content, _payload = self.build_pdf_document(dat)
         try:
             store_dat_pdf_export(dat, pdf_content)
         except Exception as exc:  # pragma: no cover - storage failure should be surfaced
             logger.warning("Impossible d'enregistrer l'export PDF du DAT %s: %s", dat.pk, exc)
+        record_export_download(dat, request.user, "pdf")
         response = HttpResponse(pdf_content, content_type="application/pdf")
         response["Content-Disposition"] = f'attachment; filename="{self.build_filename(dat, "pdf")}"'
         return response
@@ -3172,6 +3182,17 @@ class DatTriggerPDFExportView(DatExportBaseView):
 
     def post(self, request, *args, **kwargs):
         dat = self.get_object()
+        if not can_download_export(dat, request.user, "pdf"):
+            accepts_json = request.headers.get("x-requested-with") == "XMLHttpRequest" or "application/json" in (
+                request.headers.get("Accept", "")
+            )
+            if accepts_json:
+                return JsonResponse({"ok": False, "error": "export_locked"}, status=403)
+            messages.error(
+                request,
+                "Export PDF verrouillé : 2 administrateurs DAT doivent approuver la demande.",
+            )
+            return redirect("dat:my_detail", pk=dat.pk)
         base_url = request.build_absolute_uri("/")
         job = schedule_dat_pdf_generation(dat, request.user, base_url=base_url)
         accepts_json = request.headers.get("x-requested-with") == "XMLHttpRequest" or "application/json" in (
@@ -3727,9 +3748,13 @@ def _sub_section_has_drawio_repeater(sub_section: DATSubSection) -> bool:
 @login_required
 @require_POST
 def create_schema_diagram(request, dat_pk: int):
-    dat = get_object_or_404(DAT.objects.prefetch_related("sections__allowed_roles"), pk=dat_pk)
+    dat = get_object_or_404(
+        filter_dat_queryset_for_user(DAT.objects.prefetch_related("sections__allowed_roles"), request.user),
+        pk=dat_pk,
+    )
     if workflow_has_capability(dat, "terminal"):
         raise PermissionDenied
+    target_section = None
 
     try:
         payload = json.loads(request.body.decode("utf-8") or "{}")
@@ -3764,6 +3789,7 @@ def create_schema_diagram(request, dat_pk: int):
                 sub_section_slug,
             )
             raise PermissionDenied
+        target_section = sub_section.section
     elif section_slug:
         sync_dat_sections_if_needed(dat)
         sub_sections = list(
@@ -3786,6 +3812,7 @@ def create_schema_diagram(request, dat_pk: int):
             if section_is_locked(status_map.get(sub_section.section.slug), dat=dat):
                 continue
             allowed = True
+            target_section = sub_section.section
             break
         if not allowed:
             logger.warning(
@@ -3803,6 +3830,7 @@ def create_schema_diagram(request, dat_pk: int):
         if not architecture_sections:
             logger.warning("create_schema_diagram denied: no architecture section dat_id=%s user_id=%s", dat_pk, request.user.id)
             raise PermissionDenied
+        target_section = architecture_sections[0]
 
         schema_sub_sections = list(
             DATSubSection.objects.filter(
@@ -3812,7 +3840,8 @@ def create_schema_diagram(request, dat_pk: int):
             ).select_related("section", "section__dat")
         )
         if schema_sub_sections:
-            allowed = any(sub_section.can_user_edit(request.user) for sub_section in schema_sub_sections)
+            editable_sub_sections = [sub_section for sub_section in schema_sub_sections if sub_section.can_user_edit(request.user)]
+            allowed = bool(editable_sub_sections)
             if not allowed:
                 logger.warning(
                     "create_schema_diagram denied: no editable schemas sub-section dat_id=%s user_id=%s sub_section_count=%s",
@@ -3821,8 +3850,10 @@ def create_schema_diagram(request, dat_pk: int):
                     len(schema_sub_sections),
                 )
                 raise PermissionDenied
+            target_section = editable_sub_sections[0].section
         else:
-            allowed = any(section.can_user_edit(request.user) for section in architecture_sections)
+            editable_sections = [section for section in architecture_sections if section.can_user_edit(request.user)]
+            allowed = bool(editable_sections)
             if not allowed:
                 logger.warning(
                     "create_schema_diagram denied: no editable architecture section dat_id=%s user_id=%s section_count=%s",
@@ -3831,6 +3862,7 @@ def create_schema_diagram(request, dat_pk: int):
                     len(architecture_sections),
                 )
                 raise PermissionDenied
+            target_section = editable_sections[0]
     raw_title = (payload.get("title") or "").strip()
     if raw_title:
         try:
@@ -3848,7 +3880,9 @@ def create_schema_diagram(request, dat_pk: int):
         except ValidationError:
             title = sanitize_diagram_title("Diagramme")
 
-    diagram = DrawIODiagram.objects.create(title=title, owner=request.user)
+    diagram = DrawIODiagram.objects.create(title=title, owner=request.user, dat=dat)
+    if target_section is not None:
+        diagram.sections.add(target_section)
     response_payload = {
         "ok": True,
         "diagram": {
@@ -3902,10 +3936,15 @@ LIKEC4_PROTOCOLS = {
 
 
 def _normalize_likec4_path(raw_path) -> str:
-    if not raw_path:
+    if not isinstance(raw_path, str) or not raw_path or raw_path != raw_path.strip():
         return ""
-    cleaned = str(raw_path).strip().lstrip("/")
-    if not cleaned or not cleaned.lower().endswith(".c4"):
+    cleaned = raw_path
+    if (
+        not cleaned.lower().endswith(".c4")
+        or cleaned.startswith("/")
+        or "\\" in cleaned
+        or any(ord(character) < 32 or character in ":%?#" for character in cleaned)
+    ):
         return ""
     parts = Path(cleaned).parts
     if any(part in (".", "..") for part in parts):
@@ -3968,9 +4007,7 @@ def _guess_likec4_protocol(label: str) -> tuple[str, str]:
     return protocol, port
 
 
-def _fetch_likec4_flow_matrix(storage_path: str) -> dict | None:
-    if not storage_path:
-        return None
+def _fetch_likec4_flow_matrix(diagram: LikeC4Diagram) -> dict | None:
     base_url = getattr(settings, "LIKEC4_EDITOR_URL", "").strip()
     if not base_url:
         return None
@@ -3978,26 +4015,33 @@ def _fetch_likec4_flow_matrix(storage_path: str) -> dict | None:
         logger.warning("LikeC4 flow-matrix blocked: LIKEC4_EDITOR_URL must be http(s).")
         return None
     try:
-        query = urlencode({"file": storage_path})
+        query = urlencode({"file": diagram.storage_path})
     except Exception:
         query = ""
     url = f"{base_url.rstrip('/')}/flow-matrix"
     if query:
         url = f"{url}?{query}"
-    headers = {}
-    api_token = getattr(settings, "LIKEC4_API_TOKEN", "").strip()
-    if api_token:
-        headers["X-LikeC4-Token"] = api_token
     try:
-        request = Request(url, headers=headers)
-        with urlopen(request, timeout=10) as response:
+        revision = refresh_revision(diagram)
+        headers = scope_headers(diagram, "read", revision=revision)
+    except (OSError, ValidationError, ValueError):
+        logger.warning("LikeC4 flow-matrix source unavailable for diagram %s", diagram.pk)
+        return None
+    try:
+        request = Request(url, headers=headers, method="GET")
+        with urlopen(request, timeout=15) as response:
             status = getattr(response, "status", 200)
             if status < 200 or status >= 300:
-                logger.warning("LikeC4 flow-matrix failed for %s: status=%s", storage_path, status)
+                logger.warning("LikeC4 flow-matrix failed for diagram %s: status=%s", diagram.pk, status)
                 return None
-            payload = json.loads(response.read().decode("utf-8", errors="ignore") or "{}")
+            raw = response.read(8 * 1024 * 1024 + 1)
+            if len(raw) > 8 * 1024 * 1024:
+                return {"error": "graph_too_large"}
+            payload = json.loads(raw.decode("utf-8", errors="strict") or "{}")
             return payload if isinstance(payload, dict) else None
     except HTTPError as exc:
+        if exc.code == 413:
+            return {"error": "graph_too_large"}
         body = ""
         try:
             body = exc.read().decode("utf-8", errors="ignore")
@@ -4005,13 +4049,13 @@ def _fetch_likec4_flow_matrix(storage_path: str) -> dict | None:
             body = ""
         logger.warning(
             "LikeC4 flow-matrix failed for %s: status=%s body=%s",
-            storage_path,
+            diagram.pk,
             exc.code,
             body[:200],
         )
         return None
     except Exception as exc:  # pragma: no cover - best effort parsing
-        logger.warning("LikeC4 flow-matrix failed for %s: %s", storage_path, exc)
+        logger.warning("LikeC4 flow-matrix failed for diagram %s: %s", diagram.pk, type(exc).__name__)
         return None
 
 
@@ -4156,25 +4200,51 @@ def parse_schema_diagram(request, dat_pk: int):
     except (json.JSONDecodeError, UnicodeDecodeError):
         payload = {}
 
-    diagram_ids = _normalize_diagram_ids(payload.get("diagram_ids"))
-    likec4_paths = _normalize_likec4_paths(payload.get("likec4_paths"))
-    if not diagram_ids and not likec4_paths:
-        diagram_ids = _extract_schema_diagram_ids(schema_sub_section)
-        likec4_paths = _extract_schema_likec4_paths(schema_sub_section)
+    diagram_ids = []
+    likec4_paths = []
+    if "diagram_ids" in payload or "likec4_paths" in payload:
+        raw_ids = payload.get("diagram_ids", [])
+        raw_paths = payload.get("likec4_paths", [])
+        if not isinstance(raw_ids, (list, tuple)) or not isinstance(raw_paths, (list, tuple)):
+            raise Http404("Diagram not found.")
+        try:
+            diagram_ids = [uuid.UUID(str(raw).strip()) for raw in raw_ids]
+        except (TypeError, ValueError, AttributeError):
+            raise Http404("Diagram not found.") from None
+        likec4_paths = [_normalize_likec4_path(raw) for raw in raw_paths]
+        if any(not path for path in likec4_paths):
+            raise Http404("Diagram not found.")
+        diagram_ids = list(dict.fromkeys(diagram_ids))
+        likec4_paths = list(dict.fromkeys(likec4_paths))
+    else:
+        schemas_part = schema_sub_section.parts.filter(key="schemas").first()
+        if schemas_part is not None:
+            try:
+                references = list(iter_diagram_references(schemas_part.config, schemas_part.value or []))
+            except ValidationError:
+                raise Http404("Diagram not found.") from None
+            diagram_ids = list(dict.fromkeys(
+                identifier for kind, _index, _key, identifier in references if kind == "drawio"
+            ))
+            likec4_paths = list(dict.fromkeys(
+                identifier for kind, _index, _key, identifier in references if kind == "likec4"
+            ))
     if not diagram_ids and not likec4_paths:
         return JsonResponse(
             {"ok": False, "error": "missing_diagrams", "message": "Aucun diagramme à analyser."},
             status=400,
         )
 
-    diagrams = []
-    if diagram_ids:
-        diagrams = list(DrawIODiagram.objects.filter(pk__in=diagram_ids).only("pk", "xml_file"))
-    if diagram_ids and not diagrams and not likec4_paths:
-        return JsonResponse(
-            {"ok": False, "error": "diagram_not_found", "message": "Aucun diagramme n'a été trouvé."},
-            status=404,
-        )
+    try:
+        # Resolve every reference inside this DAT before the first source read or
+        # renderer request. Mixed authorized and unauthorized lists fail closed.
+        diagrams = [get_dat_diagram(DrawIODiagram, dat, pk=identifier) for identifier in diagram_ids]
+        likec4_diagrams = [
+            get_dat_diagram(LikeC4Diagram, dat, storage_path=storage_path)
+            for storage_path in likec4_paths
+        ]
+    except Http404:
+        raise Http404("Diagram not found.") from None
 
     briques_rows: list[dict[str, str]] = []
     flux_rows: list[dict[str, str]] = []
@@ -4186,9 +4256,11 @@ def parse_schema_diagram(request, dat_pk: int):
                 briques_rows.extend(briques)
             if fluxes:
                 flux_rows.extend(fluxes)
-    if likec4_paths:
-        for path in likec4_paths:
-            likec4_payload = _fetch_likec4_flow_matrix(path)
+    if likec4_diagrams:
+        for diagram in likec4_diagrams:
+            likec4_payload = _fetch_likec4_flow_matrix(diagram)
+            if likec4_payload and likec4_payload.get("error") == "graph_too_large":
+                return JsonResponse({"ok": False, "error": "graph_too_large"}, status=413)
             if not likec4_payload:
                 continue
             briques, fluxes = _likec4_rows_from_flow_matrix(likec4_payload)

@@ -22,9 +22,10 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.http import Http404
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
+from PIL import Image
 
 from . import views
-from .models import DrawIODiagram
+from .models import DrawIODiagram, LikeC4Diagram
 from .validation import sanitize_diagram_title
 
 
@@ -71,7 +72,12 @@ class DiagramImportViewTest(TestCase):
         self.client.force_login(self.user)
         xml = "<mxGraphModel><root><mxCell id=\"0\" /></root></mxGraphModel>"
         payload = SimpleUploadedFile("schema.drawio", xml.encode("utf-8"), content_type="application/xml")
-        response = self.client.post(self.url, {"file": payload})
+        storage = self.diagram.xml_file.storage
+        with (
+            patch.object(storage, "save", return_value=f"diagrams/{self.diagram.pk}/diagram.drawio"),
+            patch.object(storage, "open", return_value=BytesIO(xml.encode("utf-8"))),
+        ):
+            response = self.client.post(self.url, {"file": payload})
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertTrue(data.get("ok"))
@@ -81,7 +87,8 @@ class DiagramImportViewTest(TestCase):
         self.assertEqual(data["job"]["status"], "queued")
         mock_enqueue_job.assert_called_once()
         self.diagram.refresh_from_db()
-        self.assertEqual(self.diagram.read_xml(), xml)
+        with patch.object(storage, "open", return_value=BytesIO(xml.encode("utf-8"))):
+            self.assertEqual(self.diagram.read_xml(), xml)
 
 
 class DiagramViewerContextTest(TestCase):
@@ -93,7 +100,6 @@ class DiagramViewerContextTest(TestCase):
         self._media_override.enable()
         self.user = get_user_model().objects.create_user(username="viewer", password="pwd")
         self.diagram = DrawIODiagram.objects.create(title="Diag", owner=self.user)
-        self.diagram.write_xml("<mxGraphModel/>")
         self.url = reverse("diagrams:viewer_context", args=[self.diagram.pk])
 
     def tearDown(self) -> None:
@@ -101,7 +107,8 @@ class DiagramViewerContextTest(TestCase):
         super().tearDown()
 
     @patch("diagrams.views.enqueue_drawio_export_job")
-    def test_enqueues_missing_thumbnail_on_view(self, mock_enqueue_job):
+    @patch("diagrams.views.DrawIODiagram.read_xml", return_value="<mxGraphModel/>")
+    def test_enqueues_missing_thumbnail_on_view(self, mock_read_xml, mock_enqueue_job):
         self.client.force_login(self.user)
         mock_enqueue_job.return_value = type("Job", (), {"id": "44444444-4444-4444-4444-444444444444", "status": "queued"})()
         response = self.client.get(self.url)
@@ -126,7 +133,8 @@ class DiagramSaveXmlAsyncTest(TestCase):
         self.url = reverse("diagrams:save_xml", args=[self.diagram.pk])
 
     @patch("diagrams.views.enqueue_drawio_export_job")
-    def test_save_xml_enqueues_drawio_job(self, mock_enqueue_job):
+    @patch("diagrams.views.DrawIODiagram.write_xml")
+    def test_save_xml_enqueues_drawio_job(self, mock_write_xml, mock_enqueue_job):
         mock_enqueue_job.return_value = type("Job", (), {"id": "66666666-6666-6666-6666-666666666666", "status": "queued"})()
         self.client.force_login(self.user)
         xml = "<mxGraphModel><root><mxCell id=\"1\" /></root></mxGraphModel>"
@@ -152,52 +160,53 @@ class LikeC4MetadataAuthTest(TestCase):
     def setUp(self) -> None:
         super().setUp()
         self.url = reverse("diagrams:likec4_metadata")
+        self.user = get_user_model().objects.create_user(username="meta-auth", password="pwd")
+        self.diagram_id = uuid.uuid4()
+        self.revision = "a" * 64
+        self.storage_path = f"diagrams/likec4/{self.diagram_id}/source.c4"
+        self.png_path = f"diagrams/likec4/{self.diagram_id}/views/{self.revision}/main.png"
+        self.diagram = LikeC4Diagram.objects.create(
+            id=self.diagram_id, title="Metadata diagram", owner=self.user,
+            storage_path=self.storage_path, revision=self.revision, size=10,
+        )
         self.payload = {
-            "path": "diagrams/123/likec4.c4",
+            "diagram_id": str(self.diagram_id),
+            "path": self.storage_path,
+            "revision": self.revision,
             "size": 10,
-            "content_type": "text/plain",
+            "png_path": self.png_path,
+            "png_paths": [self.png_path],
+            "png_size": 20,
         }
 
-    @patch("diagrams.views.emit_baseline_metric")
-    def test_requires_auth_or_token(self, emit_metric):
+    def test_requires_service_token_header(self):
         with self.settings(LIKEC4_METADATA_TOKEN="secret-token"):
+            response = self.client.post(
+                self.url,
+                data=json.dumps(dict(self.payload, token="secret-token")),
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json().get("error"), "unauthorized")
+
+    def test_valid_service_token_updates_only_existing_diagram(self):
+        with (
+            self.settings(LIKEC4_METADATA_TOKEN="secret-token"),
+            mock.patch("diagrams.views.refresh_revision", return_value=self.revision),
+        ):
             response = self.client.post(
                 self.url,
                 data=json.dumps(self.payload),
                 content_type="application/json",
-            )
-        self.assertEqual(response.status_code, 403)
-        data = response.json()
-        self.assertFalse(data.get("ok"))
-        self.assertEqual(data.get("error"), "unauthorized")
-        emit_metric.assert_called_once()
-        _, kwargs = emit_metric.call_args
-        self.assertEqual(kwargs["dimensions"]["surface"], "likec4_metadata")
-        self.assertEqual(kwargs["dimensions"]["outcome"], "unauthorized")
-        self.assertFalse(kwargs["success"])
-
-    @patch("diagrams.views.enqueue_likec4_export_job")
-    def test_allows_valid_token(self, mock_enqueue):
-        mock_enqueue.return_value = type("Job", (), {"id": "11111111-1111-1111-1111-111111111111", "status": "queued"})()
-        payload = dict(self.payload, token="secret-token")
-        with self.settings(LIKEC4_METADATA_TOKEN="secret-token"):
-            response = self.client.post(
-                self.url,
-                data=json.dumps(payload),
-                content_type="application/json",
+                HTTP_X_LIKEC4_TOKEN="secret-token",
             )
         self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertTrue(data.get("ok"))
-        self.assertIn("job", data)
-        self.assertEqual(data["job"]["status"], "queued")
-        mock_enqueue.assert_called_once()
+        self.assertEqual(response.json(), {"ok": True})
+        self.diagram.refresh_from_db()
+        self.assertEqual(self.diagram.png_path, self.png_path)
 
-    @patch("diagrams.views.enqueue_likec4_export_job")
-    def test_allows_authenticated_user(self, mock_enqueue):
-        mock_enqueue.return_value = type("Job", (), {"id": "22222222-2222-2222-2222-222222222222", "status": "queued"})()
-        user = get_user_model().objects.create_user(username="meta-auth", password="pwd")
-        self.client.force_login(user)
+    def test_authenticated_user_cannot_call_metadata_callback(self):
+        self.client.force_login(self.user)
         with self.settings(LIKEC4_METADATA_TOKEN="secret-token"):
             response = self.client.post(
                 self.url,
@@ -205,31 +214,34 @@ class LikeC4MetadataAuthTest(TestCase):
                 content_type="application/json",
                 HTTP_ORIGIN="http://testserver",
             )
-        self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertTrue(data.get("ok"))
-        self.assertIn("job", data)
-        self.assertEqual(data["job"]["status"], "queued")
-        mock_enqueue.assert_called_once()
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json().get("error"), "unauthorized")
 
-    @patch("diagrams.views.enqueue_likec4_export_job")
-    def test_authenticated_user_requires_same_origin(self, mock_enqueue):
-        mock_enqueue.return_value = type("Job", (), {"id": "33333333-3333-3333-3333-333333333333", "status": "queued"})()
-        user = get_user_model().objects.create_user(username="meta-cross-site", password="pwd")
-        self.client.force_login(user)
+    def test_unknown_diagram_callback_cannot_create_metadata(self):
+        payload = dict(self.payload, diagram_id=str(uuid.uuid4()), path="diagrams/likec4/" + str(uuid.uuid4()) + "/source.c4")
         with self.settings(LIKEC4_METADATA_TOKEN="secret-token"):
             response = self.client.post(
                 self.url,
-                data=json.dumps(self.payload),
+                data=json.dumps(payload),
                 content_type="application/json",
-                HTTP_ORIGIN="http://evil.example",
+                HTTP_X_LIKEC4_TOKEN="secret-token",
             )
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json().get("error"), "csrf_failed")
-        mock_enqueue.assert_not_called()
+        self.assertEqual(response.status_code, 404)
 
 
-class LikeC4ExportBaselineTests(SimpleTestCase):
+class LikeC4ExportBaselineTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="likec4-export", password="pwd")
+        self.diagram_id = uuid.uuid4()
+        self.revision = "a" * 64
+        self.diagram = LikeC4Diagram.objects.create(
+            id=self.diagram_id,
+            title="Export diagram",
+            owner=self.user,
+            storage_path=f"diagrams/likec4/{self.diagram_id}/source.c4",
+            revision=self.revision,
+        )
+
     @patch("diagrams.likec4_exports.emit_baseline_metric")
     def test_enqueue_emits_success_metric(self, emit_metric):
         class Response:
@@ -245,12 +257,17 @@ class LikeC4ExportBaselineTests(SimpleTestCase):
             LIKEC4_EXPORT_ENABLED=True,
             LIKEC4_EXPORT_URL="https://example.local/export",
             LIKEC4_EXPORT_TIMEOUT=1,
-            LIKEC4_API_TOKEN="",
+            LIKEC4_API_TOKEN="service-token",
         ):
-            with patch("diagrams.likec4_exports.urlopen", return_value=Response()):
+            with (
+                patch("diagrams.likec4_scope.refresh_revision", return_value=self.revision),
+                patch("diagrams.likec4_exports.urlopen", return_value=Response()),
+            ):
                 from .likec4_exports import enqueue_likec4_export
 
-                result = enqueue_likec4_export("diagrams/1/likec4.c4", source="test")
+                result = enqueue_likec4_export(
+                    self.diagram.storage_path, source="test", diagram=self.diagram
+                )
 
         self.assertTrue(result)
         emit_metric.assert_called_once()
@@ -263,21 +280,26 @@ class LikeC4ExportBaselineTests(SimpleTestCase):
             LIKEC4_EXPORT_ENABLED=True,
             LIKEC4_EXPORT_URL="https://example.local/export",
             LIKEC4_EXPORT_TIMEOUT=1,
-            LIKEC4_API_TOKEN="",
+            LIKEC4_API_TOKEN="service-token",
         ):
-            with patch(
-                "diagrams.likec4_exports.urlopen",
-                side_effect=HTTPError(
-                    url="https://example.local/export",
-                    code=503,
-                    msg="Service Unavailable",
-                    hdrs=None,
-                    fp=None,
+            with (
+                patch("diagrams.likec4_scope.refresh_revision", return_value=self.revision),
+                patch(
+                    "diagrams.likec4_exports.urlopen",
+                    side_effect=HTTPError(
+                        url="https://example.local/export",
+                        code=503,
+                        msg="Service Unavailable",
+                        hdrs=None,
+                        fp=None,
+                    ),
                 ),
             ):
                 from .likec4_exports import enqueue_likec4_export
 
-                result = enqueue_likec4_export("diagrams/1/likec4.c4", source="test")
+                result = enqueue_likec4_export(
+                    self.diagram.storage_path, source="test", diagram=self.diagram
+                )
 
         self.assertFalse(result)
         emit_metric.assert_called_once()
@@ -290,6 +312,14 @@ class ProxySecurityTests(TestCase):
         super().setUp()
         cache.clear()
         self.user = get_user_model().objects.create_user(username="proxy-user", password="pwd")
+        diagram_id = uuid.uuid4()
+        self.diagram = LikeC4Diagram.objects.create(
+            id=diagram_id,
+            title="Proxy diagram",
+            owner=self.user,
+            storage_path=f"diagrams/likec4/{diagram_id}/source.c4",
+            revision="a" * 64,
+        )
 
     def test_drawio_proxy_blocks_absolute_url_path(self):
         with self.settings(DRAWIO_BASE_URL="https://drawio.example.test"):
@@ -320,12 +350,13 @@ class ProxySecurityTests(TestCase):
         self.client.force_login(self.user)
         with self.settings(
             LIKEC4_EDITOR_URL="https://likec4.example.test",
-            LIKEC4_PROXY_MAX_BODY_BYTES=4,
+            LIKEC4_API_TOKEN="proxy-token",
+            LIKEC4_MAX_SOURCE_BYTES=4,
         ):
             with patch("diagrams.views.urlopen") as mock_urlopen:
                 response = self.client.post(
-                    reverse("diagrams:likec4_proxy_root"),
-                    data=b"abcdef",
+                    reverse("diagrams:likec4_proxy", args=["save"]) + f"?file={self.diagram.storage_path}",
+                    data=json.dumps({"content": "12345"}),
                     content_type="application/json",
                     HTTP_ORIGIN="http://testserver",
                 )
@@ -343,13 +374,15 @@ class ProxySecurityTests(TestCase):
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def read(self):
+            def read(self, _size=-1):
                 return b"<html></html>"
 
         self.client.force_login(self.user)
         with self.settings(LIKEC4_EDITOR_URL="https://likec4.example.test"):
             with patch("diagrams.views.urlopen", return_value=Response()):
-                response = self.client.get(reverse("diagrams:likec4_proxy_root"))
+                response = self.client.get(
+                    reverse("diagrams:likec4_proxy_root") + f"?file={self.diagram.storage_path}"
+                )
 
         self.assertEqual(response.status_code, 200)
         csp = response["Content-Security-Policy"]
@@ -368,14 +401,17 @@ class ProxySecurityTests(TestCase):
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def read(self):
+            def read(self, _size=-1):
                 return b'{"ok": true}'
 
         self.client.force_login(self.user)
         with self.settings(LIKEC4_EDITOR_URL="https://likec4.example.test", LIKEC4_API_TOKEN="proxy-token"):
-            with patch("diagrams.views.urlopen", return_value=Response()) as mock_urlopen:
+            with (
+                patch("diagrams.views.urlopen", return_value=Response()) as mock_urlopen,
+                patch("diagrams.views.enqueue_likec4_export_job"),
+            ):
                 response = self.client.post(
-                    reverse("diagrams:likec4_proxy", args=["save"]),
+                    reverse("diagrams:likec4_proxy", args=["save"]) + f"?file={self.diagram.storage_path}",
                     data=b'{"content": ""}',
                     content_type="application/json",
                     HTTP_ORIGIN="http://testserver",
@@ -402,7 +438,28 @@ class ProxySecurityTests(TestCase):
 
 
 @override_settings(ALLOWED_HOSTS=["app.example.test", "testserver"])
-class DiagramCoverageHelperTests(SimpleTestCase):
+class DiagramCoverageHelperTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="diagram-coverage", password="pwd")
+
+    def _likec4_diagram(self):
+        diagram_id = uuid.uuid4()
+        revision = "b" * 64
+        return LikeC4Diagram.objects.create(
+            id=diagram_id,
+            title="Coverage diagram",
+            owner=self.user,
+            storage_path=f"diagrams/likec4/{diagram_id}/source.c4",
+            revision=revision,
+            size=4,
+        )
+
+    @staticmethod
+    def _png_bytes(mode="RGBA"):
+        output = BytesIO()
+        Image.new(mode, (1, 1), (1, 2, 3, 0) if mode == "RGBA" else (1, 2, 3)).save(output, format="PNG")
+        return output.getvalue()
+
     def test_asset_and_proxy_path_helpers_reject_traversal_and_external_paths(self):
         self.assertEqual(views._normalize_asset_path(" /views/main.png "), "views/main.png")
         for path in (None, "", "/", "../secret", "views/../secret"):
@@ -500,23 +557,28 @@ class DiagramCoverageHelperTests(SimpleTestCase):
 
     def test_thumbnail_lookup_handles_missing_and_failed_storage(self):
         self.assertIsNone(views._current_thumbnail_url(SimpleNamespace(pk=1, thumbnail=None)))
+        diagram_id = uuid.uuid4()
         field = SimpleNamespace(
-            name="thumb.png",
+            name=f"diagrams/{diagram_id}/views/thumb.png",
             storage=SimpleNamespace(exists=mock.Mock(return_value=False)),
             url="/media/thumb.png",
         )
-        self.assertIsNone(views._current_thumbnail_url(SimpleNamespace(pk=2, thumbnail=field)))
+        diagram = SimpleNamespace(pk=diagram_id, thumbnail=field)
+        self.assertIsNone(views._current_thumbnail_url(diagram))
         field.storage.exists.return_value = True
-        self.assertEqual(views._current_thumbnail_url(SimpleNamespace(pk=2, thumbnail=field)), "/media/thumb.png")
+        self.assertEqual(
+            views._current_thumbnail_url(diagram),
+            reverse("diagrams:diagram_asset", args=[diagram_id, "views/thumb.png"]),
+        )
         field.storage.exists.side_effect = OSError("storage offline")
-        self.assertIsNone(views._current_thumbnail_url(SimpleNamespace(pk=2, thumbnail=field)))
+        self.assertIsNone(views._current_thumbnail_url(diagram))
 
     def test_thumbnail_save_rejects_invalid_data_and_skips_identical_content(self):
         self.assertFalse(views._save_thumbnail_from_data_uri(SimpleNamespace(pk=1), "not-an-image"))
-        raw = b"png-bytes"
+        raw = views._normalize_png_bytes(self._png_bytes())
         encoded = base64.b64encode(raw).decode("ascii")
         field = SimpleNamespace(
-            name="thumb.png",
+            name="diagrams/3/views/thumb.png",
             open=mock.Mock(),
             read=mock.Mock(return_value=raw),
             close=mock.Mock(),
@@ -532,7 +594,8 @@ class DiagramCoverageHelperTests(SimpleTestCase):
         diagram.save.assert_called_once_with(update_fields=["updated_at"])
 
     def test_thumbnail_save_writes_new_png_and_updates_metadata(self):
-        raw = b"new-png"
+        raw = self._png_bytes("RGB")
+        expected = views._normalize_png_bytes(raw)
         encoded = base64.b64encode(raw).decode("ascii")
         field = SimpleNamespace(name="", save=mock.Mock())
         diagram = SimpleNamespace(pk=4, thumbnail=field, save=mock.Mock())
@@ -541,7 +604,7 @@ class DiagramCoverageHelperTests(SimpleTestCase):
 
         field.save.assert_called_once()
         self.assertEqual(field.save.call_args.args[0], "thumb.png")
-        self.assertEqual(diagram.thumbnail_size, len(raw))
+        self.assertEqual(diagram.thumbnail_size, len(expected))
         self.assertEqual(diagram.thumbnail_content_type, "image/png")
         self.assertIn("thumbnail_size", diagram.save.call_args.kwargs["update_fields"])
 
@@ -553,12 +616,14 @@ class DiagramCoverageHelperTests(SimpleTestCase):
         )
         response = mock.MagicMock(status=200)
         response.__enter__.return_value = response
-        response.read.return_value = base64.b64encode(b"png")
+        png = self._png_bytes()
+        response.read.return_value = base64.b64encode(png)
         with (
             mock.patch.object(views, "_drawio_export_candidates", return_value=["http://first", "http://second"]),
             mock.patch.object(views, "urlopen", side_effect=[OSError("offline"), response]),
         ):
-            self.assertEqual(views._export_drawio_png_bytes("<mxGraphModel />"), b"png")
+            result = views._export_drawio_png_bytes("<mxGraphModel />")
+        self.assertEqual(result, views._normalize_png_bytes(png))
 
     def test_drawio_view_export_saves_pages_and_best_effort_deletes_stale_images(self):
         diagram = SimpleNamespace(
@@ -588,220 +653,202 @@ class DiagramCoverageHelperTests(SimpleTestCase):
 
     def test_likec4_metadata_rejects_invalid_auth_payload_and_paths(self):
         factory = RequestFactory()
-        anonymous = SimpleNamespace(is_authenticated=False)
-        request = factory.post("/metadata", data="{invalid", content_type="application/json")
-        request.user = anonymous
-        self.assertEqual(views.likec4_metadata(request).status_code, 400)
-
-        request = factory.post("/metadata", data="[]", content_type="application/json")
-        request.user = anonymous
-        self.assertEqual(views.likec4_metadata(request).status_code, 400)
-
-        request = factory.post("/metadata", data=json.dumps({"path": "models/a.c4"}), content_type="application/json")
-        request.user = anonymous
-        with override_settings(LIKEC4_METADATA_TOKEN="secret"), mock.patch.object(views, "emit_baseline_metric") as metric:
-            self.assertEqual(views.likec4_metadata(request).status_code, 403)
-        metric.assert_called_once()
-
-        request = factory.post(
-            "/metadata",
-            data=json.dumps({"path": "models/a.c4"}),
-            content_type="application/json",
-            HTTP_X_LIKEC4_TOKEN="wrong",
-        )
-        request.user = SimpleNamespace(is_authenticated=True)
-        request.META["HTTP_ORIGIN"] = "http://evil.example"
+        diagram = self._likec4_diagram()
+        payload = {
+            "diagram_id": str(diagram.pk),
+            "path": diagram.storage_path,
+            "revision": diagram.revision,
+            "size": diagram.size,
+            "png_size": 10,
+            "png_path": f"diagrams/likec4/{diagram.pk}/views/{diagram.revision}/main.png",
+            "png_paths": [f"diagrams/likec4/{diagram.pk}/views/{diagram.revision}/main.png"],
+        }
         with override_settings(LIKEC4_METADATA_TOKEN="secret"):
-            self.assertEqual(views.likec4_metadata(request).status_code, 403)
-
-        request = factory.post(
-            "/metadata",
-            data=json.dumps({"path": "../outside.c4"}),
-            content_type="application/json",
-            HTTP_X_LIKEC4_TOKEN="secret",
-        )
-        request.user = anonymous
-        with override_settings(LIKEC4_METADATA_TOKEN="secret"):
+            self.assertEqual(
+                views.likec4_metadata(factory.post("/metadata", data=json.dumps(payload), content_type="application/json")).status_code,
+                403,
+            )
+            invalid = factory.post(
+                "/metadata", data="{invalid", content_type="application/json", HTTP_X_LIKEC4_TOKEN="secret",
+            )
+            self.assertEqual(views.likec4_metadata(invalid).status_code, 400)
+            invalid_path = dict(payload, path="../outside.c4")
+            request = factory.post(
+                "/metadata", data=json.dumps(invalid_path), content_type="application/json",
+                HTTP_X_LIKEC4_TOKEN="secret",
+            )
             self.assertEqual(views.likec4_metadata(request).status_code, 400)
-
-        request = factory.post(
-            "/metadata",
-            data=json.dumps({"path": "models/a.c4", "png_path": "../outside.png"}),
-            content_type="application/json",
-            HTTP_X_LIKEC4_TOKEN="secret",
-        )
-        request.user = anonymous
-        with override_settings(LIKEC4_METADATA_TOKEN="secret"):
-            self.assertEqual(views.likec4_metadata(request).status_code, 400)
+            invalid_png = dict(payload, png_path="../outside.png", png_paths=["../outside.png"])
+            request = factory.post(
+                "/metadata", data=json.dumps(invalid_png), content_type="application/json",
+                HTTP_X_LIKEC4_TOKEN="secret",
+            )
+            with mock.patch.object(views, "refresh_revision", return_value=diagram.revision):
+                self.assertEqual(views.likec4_metadata(request).status_code, 400)
 
     def test_likec4_metadata_saves_normalized_paths_and_best_effort_cleans_old_assets(self):
+        diagram = self._likec4_diagram()
+        prefix = f"diagrams/likec4/{diagram.pk}/views/{diagram.revision}/"
+        old_path = prefix + "old.png"
+        diagram.png_path = old_path
+        diagram.png_paths = [old_path, prefix + "stale.png"]
+        diagram.save(update_fields=["png_path", "png_paths"])
+        paths = [prefix + "main.png", prefix + "page.png"]
         request = RequestFactory().post(
             "/metadata",
             data=json.dumps(
                 {
-                    "path": " /models/context.c4 ",
-                    "size": -7,
-                    "content_type": "text/plain",
-                    "png_path": "/models/main.png",
-                    "png_size": "invalid",
-                    "png_paths": ["models/main.png", "models/page.png", "../bad.png", None, "models/page.png"],
+                    "diagram_id": str(diagram.pk),
+                    "path": diagram.storage_path,
+                    "revision": diagram.revision,
+                    "size": diagram.size,
+                    "png_path": paths[0],
+                    "png_size": "20",
+                    "png_paths": paths,
                 }
             ),
             content_type="application/json",
             HTTP_X_LIKEC4_TOKEN="secret",
         )
-        request.user = SimpleNamespace(is_authenticated=False)
-        old = SimpleNamespace(png_path="old.png", png_paths=["old.png", "stale.png"])
         with (
             override_settings(LIKEC4_METADATA_TOKEN="secret", LIKEC4_EXPORT_DELETE_OLD=True),
-            mock.patch.object(views.LikeC4Diagram.objects, "filter") as filter_diagrams,
-            mock.patch.object(views.LikeC4Diagram.objects, "update_or_create") as update_diagram,
+            mock.patch.object(views, "refresh_revision", return_value=diagram.revision),
             mock.patch.object(views, "SeaweedFSStorage") as storage_factory,
         ):
-            filter_diagrams.return_value.only.return_value.first.return_value = old
             storage_factory.return_value.delete.side_effect = OSError("storage unavailable")
             response = views.likec4_metadata(request)
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(json.loads(response.content), {"ok": True})
-        update_diagram.assert_called_once()
-        self.assertEqual(update_diagram.call_args.kwargs["storage_path"], "models/context.c4")
-        defaults = update_diagram.call_args.kwargs["defaults"]
-        self.assertEqual(defaults["size"], 0)
-        self.assertEqual(defaults["png_path"], "models/main.png")
-        self.assertEqual(defaults["png_size"], 0)
-        self.assertEqual(defaults["png_paths"], ["models/main.png", "models/page.png"])
-        self.assertEqual(storage_factory.return_value.delete.call_args_list, [
-            mock.call("old.png"),
-            mock.call("stale.png"),
-        ])
+        diagram.refresh_from_db()
+        self.assertEqual(diagram.png_path, paths[0])
+        self.assertEqual(diagram.png_paths, paths)
+        self.assertCountEqual(
+            storage_factory.return_value.delete.call_args_list,
+            [mock.call(old_path), mock.call(prefix + "stale.png")],
+        )
 
-    def test_likec4_metadata_queues_export_when_thumbnail_is_missing(self):
+    def test_likec4_metadata_rejects_stale_revision_and_unknown_diagrams(self):
+        diagram = self._likec4_diagram()
+        png_path = f"diagrams/likec4/{diagram.pk}/views/{diagram.revision}/main.png"
+        payload = {
+            "diagram_id": str(diagram.pk), "path": diagram.storage_path,
+            "revision": diagram.revision, "size": diagram.size, "png_size": 10,
+            "png_path": png_path, "png_paths": [png_path],
+        }
         request = RequestFactory().post(
             "/metadata",
-            data=json.dumps({"path": "models/context.c4", "size": "bad"}),
+            data=json.dumps(payload),
             content_type="application/json",
             HTTP_X_LIKEC4_TOKEN="secret",
         )
-        request.user = SimpleNamespace(is_authenticated=False)
-        job = SimpleNamespace(id=uuid.uuid4(), status="queued")
-        with (
-            override_settings(LIKEC4_METADATA_TOKEN="secret"),
-            mock.patch.object(views.LikeC4Diagram.objects, "filter") as filter_diagrams,
-            mock.patch.object(views.LikeC4Diagram.objects, "update_or_create"),
-            mock.patch.object(views, "enqueue_likec4_export_job", return_value=job) as enqueue,
+        with override_settings(LIKEC4_METADATA_TOKEN="secret"), mock.patch.object(
+            views, "refresh_revision", return_value="c" * 64,
         ):
-            filter_diagrams.return_value.only.return_value.first.return_value = None
-            response = views.likec4_metadata(request)
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(json.loads(response.content)["job"]["job_id"], str(job.id))
-        enqueue.assert_called_once_with("models/context.c4", requested_by=None, source="metadata")
+            self.assertEqual(views.likec4_metadata(request).status_code, 409)
+        unknown = dict(payload, diagram_id=str(uuid.uuid4()), path=f"diagrams/likec4/{uuid.uuid4()}/source.c4")
+        request = RequestFactory().post(
+            "/metadata", data=json.dumps(unknown), content_type="application/json", HTTP_X_LIKEC4_TOKEN="secret",
+        )
+        with override_settings(LIKEC4_METADATA_TOKEN="secret"):
+            with self.assertRaises(Http404):
+                views.likec4_metadata(request)
 
     def test_likec4_import_validates_files_saves_and_reports_storage_errors(self):
         factory = RequestFactory()
-        user = SimpleNamespace(is_authenticated=True)
         no_file = factory.post("/import")
-        no_file.user = user
+        no_file.user = self.user
         self.assertEqual(views.likec4_import(no_file).status_code, 400)
         invalid_file = factory.post(
             "/import",
             {"file": SimpleUploadedFile("diagram.txt", b"data")},
         )
-        invalid_file.user = user
+        invalid_file.user = self.user
         self.assertEqual(views.likec4_import(invalid_file).status_code, 400)
 
         upload = SimpleUploadedFile("diagram.c4", b"spec", content_type="text/plain")
-        request = factory.post("/import", {"file": upload, "path": "/models/context.c4"})
-        request.user = user
+        request = factory.post("/import", {"file": upload})
+        request.user = self.user
         job = SimpleNamespace(id=uuid.uuid4(), status="queued")
         with (
             mock.patch.object(views, "SeaweedFSStorage") as storage_factory,
-            mock.patch.object(views.LikeC4Diagram.objects, "update_or_create") as update_diagram,
             mock.patch.object(views, "enqueue_likec4_export_job", return_value=job) as enqueue,
         ):
             response = views.likec4_import(request)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(json.loads(response.content)["path"], "models/context.c4")
+        path = json.loads(response.content)["path"]
+        self.assertRegex(path, r"^diagrams/likec4/[a-f0-9-]{36}/source\.c4$")
         storage_factory.return_value.save.assert_called_once()
         saved_path, saved_file = storage_factory.return_value.save.call_args.args
-        self.assertEqual(saved_path, "models/context.c4")
-        self.assertEqual(saved_file.name, "diagram.c4")
+        self.assertEqual(saved_path, path)
+        self.assertEqual(saved_file.name, "source.c4")
         self.assertEqual(saved_file.read(), b"spec")
-        update_diagram.assert_called_once()
-        enqueue.assert_called_once_with("models/context.c4", requested_by=user, source="import")
+        enqueue.assert_called_once_with(path, requested_by=self.user, source="import")
 
         upload = SimpleUploadedFile("diagram.c4", b"spec", content_type="text/plain")
         request = factory.post("/import", {"file": upload})
-        request.user = user
+        request.user = self.user
         with mock.patch.object(views, "SeaweedFSStorage") as storage_factory:
             storage_factory.return_value.save.side_effect = HTTPError("http://storage.invalid", 503, "down", {}, None)
             self.assertEqual(views.likec4_import(request).status_code, 502)
 
     def test_likec4_file_endpoints_serve_metadata_paths_and_not_found_errors(self):
-        user = SimpleNamespace(is_authenticated=True)
-        png_request = RequestFactory().get("/png", {"file": "models/context.c4"})
-        png_request.user = user
-        metadata = SimpleNamespace(png_path="models/rendered.png", png_content_type="image/webp")
+        diagram = self._likec4_diagram()
+        prefix = f"diagrams/likec4/{diagram.pk}/views/{diagram.revision}/"
+        diagram.png_path = prefix + "main.png"
+        diagram.png_paths = [diagram.png_path, prefix + "page.png"]
+        diagram.png_content_type = "image/webp"
+        diagram.save(update_fields=["png_path", "png_paths", "png_content_type"])
+        png_request = RequestFactory().get("/png", {"file": diagram.storage_path})
+        png_request.user = self.user
         with (
-            mock.patch.object(views.LikeC4Diagram.objects, "filter") as find_diagram,
             mock.patch.object(views, "SeaweedFSStorage") as storage_factory,
         ):
-            find_diagram.return_value.only.return_value.first.return_value = metadata
-            storage_factory.return_value.exists.return_value = True
-            storage_factory.return_value.open.return_value = BytesIO(b"png")
+            png_bytes = self._png_bytes()
+            storage_factory.return_value.open.return_value = BytesIO(png_bytes)
             png_response = views.likec4_png(png_request)
         self.assertEqual(png_response.status_code, 200)
-        self.assertEqual(png_response["Content-Type"], "image/webp")
+        self.assertEqual(png_response["Content-Type"], "image/png")
         self.assertEqual(png_response["X-Content-Type-Options"], "nosniff")
-        self.assertEqual(b"".join(png_response.streaming_content), b"png")
+        self.assertEqual(png_response.content, views._normalize_png_bytes(png_bytes))
+
+        with mock.patch.object(views, "SeaweedFSStorage") as storage_factory:
+            storage_factory.return_value.open.return_value = BytesIO(b"<script>alert(1)</script>")
+            with self.assertRaises(Http404):
+                views.likec4_png(png_request)
 
         invalid_png = RequestFactory().get("/png", {"file": "../outside.c4"})
-        invalid_png.user = user
-        self.assertEqual(views.likec4_png(invalid_png).status_code, 400)
+        invalid_png.user = self.user
+        with self.assertRaises(Http404):
+            views.likec4_png(invalid_png)
 
-        views_request = RequestFactory().get("/views", {"file": "models/context.c4"})
-        views_request.user = user
-        metadata = SimpleNamespace(
-            png_path="models/main.png",
-            png_paths=["models/main.png", "models/page.png", "../bad.png", "models/page.png"],
-        )
-        with mock.patch.object(views.LikeC4Diagram.objects, "filter") as find_diagram:
-            find_diagram.return_value.only.return_value.first.return_value = metadata
-            views_response = views.likec4_views(views_request)
+        views_request = RequestFactory().get("/views", {"file": diagram.storage_path})
+        views_request.user = self.user
+        views_response = views.likec4_views(views_request)
         views_payload = json.loads(views_response.content)
         self.assertEqual(len(views_payload["paths"]), 1)
         self.assertEqual(
             parse_qs(urlsplit(views_payload["paths"][0]).query)["file"],
-            ["models/page.png"],
+            [prefix + "page.png"],
         )
 
-        export_request = RequestFactory().get("/export", {"file": "models/context.c4"})
-        export_request.user = user
-        metadata = SimpleNamespace(content_type="text/plain")
+        export_request = RequestFactory().get("/export", {"file": diagram.storage_path})
+        export_request.user = self.user
         with (
-            mock.patch.object(views.LikeC4Diagram.objects, "filter") as find_diagram,
             mock.patch.object(views, "SeaweedFSStorage") as storage_factory,
         ):
-            find_diagram.return_value.only.return_value.first.return_value = metadata
             storage_factory.return_value.open.return_value = BytesIO(b"model")
             export_response = views.likec4_export(export_request)
         self.assertEqual(export_response["Content-Type"], "text/plain; charset=utf-8")
-        self.assertEqual(export_response["Content-Disposition"], 'attachment; filename="context.c4"')
+        self.assertEqual(export_response["Content-Disposition"], 'attachment; filename="source.c4"')
         self.assertEqual(b"".join(export_response.streaming_content), b"model")
 
-        with (
-            mock.patch.object(views.LikeC4Diagram.objects, "filter") as find_diagram,
-            mock.patch.object(views, "SeaweedFSStorage") as storage_factory,
-        ):
-            find_diagram.return_value.only.return_value.first.return_value = None
-            storage_factory.return_value.exists.side_effect = OSError("offline")
-            with self.assertRaises(Http404):
-                views.likec4_png(png_request)
-
-            storage_factory.return_value.exists.side_effect = None
-            storage_factory.return_value.exists.return_value = True
+        missing = RequestFactory().get("/png", {"file": f"diagrams/likec4/{uuid.uuid4()}/source.c4"})
+        missing.user = self.user
+        with self.assertRaises(Http404):
+            views.likec4_png(missing)
+        with mock.patch.object(views, "SeaweedFSStorage") as storage_factory:
             storage_factory.return_value.open.side_effect = FileNotFoundError
             with self.assertRaises(Http404):
                 views.likec4_png(png_request)

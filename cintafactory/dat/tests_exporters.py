@@ -9,11 +9,12 @@ from io import BytesIO
 from types import SimpleNamespace
 from unittest import mock
 
-from django.core.exceptions import ImproperlyConfigured
+from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.test import SimpleTestCase, override_settings
 
 from . import exporters
 from .exporters import DATExportModelBuilder
+from diagrams.models import LikeC4Diagram
 
 
 def _response(status, body):
@@ -225,18 +226,25 @@ class DatExportModelBuilderTests(SimpleTestCase):
             }
         )
         self.assertEqual(self.builder._get_likec4_keys(part), ("engine", "path"))
-        self.assertEqual(self.builder._normalize_likec4_path(" /workspace/views/main.c4 "), "workspace/views/main.c4")
-        for raw in (None, "", "/../secret.c4", "./main.c4", "main.txt"):
+        self.assertEqual(self.builder._normalize_likec4_path("workspace/views/main.c4"), "workspace/views/main.c4")
+        for raw in (None, "", " /workspace/views/main.c4 ", "/../secret.c4", "./main.c4", "main.txt"):
             with self.subTest(raw=raw):
-                self.assertEqual(self.builder._normalize_likec4_path(raw), "")
+                if raw in (None, ""):
+                    self.assertEqual(self.builder._normalize_likec4_path(raw), "")
+                else:
+                    with self.assertRaises(ValidationError):
+                        self.builder._normalize_likec4_path(raw)
 
         rows = [
             {"engine": " LIKEC4 ", "path": "one.c4"},
             {"engine": "drawio", "path": "two.c4"},
-            {"engine": "likec4", "path": "../unsafe.c4"},
             "not a row",
         ]
         self.assertEqual(self.builder._collect_likec4_references(rows, "engine", "path"), {"one.c4"})
+        with self.assertRaises(ValidationError):
+            self.builder._collect_likec4_references(
+                [{"engine": "likec4", "path": "../unsafe.c4"}], "engine", "path"
+            )
 
     def test_likec4_previews_attach_to_matching_rows(self):
         part = SimpleNamespace(
@@ -279,12 +287,13 @@ class DatExportModelBuilderTests(SimpleTestCase):
 
     def test_seaweed_png_data_uri_reads_and_handles_storage_failures(self):
         storage = mock.Mock()
-        handle = BytesIO(b"png")
+        png = self._png_bytes()
+        handle = BytesIO(png)
         storage.open.return_value = handle
 
         self.assertEqual(
             self.builder._seaweed_png_data_uri(storage, "image.png"),
-            "data:image/png;base64," + base64.b64encode(b"png").decode("ascii"),
+            "data:image/png;base64," + base64.b64encode(png).decode("ascii"),
         )
         self.assertTrue(handle.closed)
         self.assertIsNone(self.builder._seaweed_png_data_uri(storage, ""))
@@ -298,32 +307,49 @@ class DatExportModelBuilderTests(SimpleTestCase):
     def test_likec4_preview_uses_views_and_fallback_paths(self):
         storage = mock.Mock()
         storage.url.side_effect = lambda path: f"storage:{path}"
+        diagram_id = uuid.uuid4()
+        revision = "a" * 64
+        prefix = f"diagrams/likec4/{diagram_id}/views/{revision}/"
         meta = SimpleNamespace(
-            png_path="thumb.png",
-            png_paths=["thumb.png", "repo/views/home.png", "ignored.svg", 3],
+            pk=diagram_id,
+            revision=revision,
+            png_path=prefix + "thumb.png",
+            png_paths=[prefix + "thumb.png", prefix + "repo/home.png", "ignored.svg", 3],
         )
         self.builder._seaweed_png_data_uri = mock.Mock(side_effect=["data:image/png;base64,AA==", None])
         self.builder.refresh_likec4_exports = True
 
         preview = self.builder._build_likec4_preview("repo/model.c4", meta, storage)
 
-        self.assertEqual(preview["png_paths"], ["repo/views/home.png"])
-        self.assertEqual(preview["images"], [{"src": "data:image/png;base64,AA==", "label": "home.png"}])
-        self.assertEqual(preview["thumbnail_url"], "storage:thumb.png")
+        self.assertEqual(preview["png_paths"], [prefix + "repo/home.png"])
+        self.assertEqual(
+            preview["images"],
+            [{"src": "data:image/png;base64,AA==", "label": "repo/home.png"}],
+        )
+        self.assertIsNone(preview["thumbnail_url"])
 
-        with mock.patch.object(exporters, "likec4_png_path_for", return_value="fallback.png"):
-            self.builder._seaweed_png_data_uri = mock.Mock(return_value=None)
-            fallback = self.builder._build_likec4_preview("repo/model.c4", None, storage)
-        self.assertEqual(fallback["png_paths"], ["fallback.png"])
-        self.assertEqual(fallback["images"][0]["src"], "storage:fallback.png")
+        self.builder._seaweed_png_data_uri = mock.Mock(return_value=None)
+        fallback = self.builder._build_likec4_preview("repo/model.c4", None, storage)
+        self.assertEqual(fallback, {"type": "likec4", "title": "", "thumbnail_url": None, "images": []})
 
     def test_likec4_readiness_checks_unique_paths_and_missing_files(self):
         storage = mock.Mock()
         storage.exists.return_value = True
-        meta = SimpleNamespace(png_path="thumb.png", png_paths=["thumb.png", "view.png", None, 4])
+        diagram_id = uuid.uuid4()
+        revision = "b" * 64
+        prefix = f"diagrams/likec4/{diagram_id}/views/{revision}/"
+        meta = SimpleNamespace(
+            pk=diagram_id,
+            revision=revision,
+            png_path=prefix + "thumb.png",
+            png_paths=[prefix + "thumb.png", prefix + "view.png", None, 4],
+        )
 
         self.assertTrue(self.builder._is_likec4_ready(storage, "model.c4", meta))
-        self.assertEqual(storage.exists.call_args_list, [mock.call("thumb.png"), mock.call("view.png")])
+        self.assertEqual(
+            storage.exists.call_args_list,
+            [mock.call(prefix + "thumb.png"), mock.call(prefix + "view.png")],
+        )
         self.assertFalse(self.builder._is_likec4_ready(storage, "model.c4", None))
         self.assertFalse(self.builder._is_likec4_ready(storage, "model.c4", SimpleNamespace(png_path=None, png_paths=[])))
         storage.exists.side_effect = [False]
@@ -348,7 +374,17 @@ class DatExportModelBuilderTests(SimpleTestCase):
 
     @override_settings(LIKEC4_EXPORT_ENABLED=True, LIKEC4_EXPORT_URL="https://export.example", LIKEC4_EXPORT_TIMEOUT=2)
     def test_wait_for_likec4_exports_exits_when_preview_is_ready(self):
-        meta = SimpleNamespace(storage_path="model.c4", png_path="thumb.png", png_paths=[])
+        diagram_id = uuid.uuid4()
+        revision = "c" * 64
+        png_path = f"diagrams/likec4/{diagram_id}/views/{revision}/thumb.png"
+        meta = SimpleNamespace(
+            pk=diagram_id,
+            revision=revision,
+            storage_path="diagrams/likec4/" + str(diagram_id) + "/source.c4",
+            png_path=png_path,
+            png_paths=[],
+        )
+        self.builder._dat = SimpleNamespace(pk=12)
         query = mock.Mock()
         query.only.return_value = [meta]
         with (
@@ -357,44 +393,25 @@ class DatExportModelBuilderTests(SimpleTestCase):
             mock.patch.object(exporters.time, "monotonic", side_effect=[10, 11]),
         ):
             storage_factory.return_value.exists.return_value = True
-            self.builder._wait_for_likec4_exports(["model.c4"])
+            self.builder._wait_for_likec4_exports([meta.storage_path])
 
-        storage_factory.return_value.exists.assert_called_once_with("thumb.png")
+        storage_factory.return_value.exists.assert_called_once_with(png_path)
         query.only.assert_called_once_with("storage_path", "png_path", "png_paths")
 
-    def test_likec4_export_request_sends_json_and_handles_failures(self):
-        with mock.patch.object(exporters, "urlopen", return_value=_response(201, b'{"ok":true}')) as open_url:
+    def test_likec4_export_request_uses_registered_diagram_enqueue(self):
+        self.builder._dat = SimpleNamespace(pk=7)
+        diagram = SimpleNamespace(storage_path="diagrams/likec4/abc/source.c4")
+        with (
+            mock.patch.object(exporters, "get_dat_diagram", return_value=diagram) as get_diagram,
+            mock.patch.object(exporters, "enqueue_likec4_export") as enqueue,
+        ):
             self.builder.likec4_export_source = "unit_test"
-            self.builder._request_likec4_export("model.c4", export_url="https://export.example", timeout=9)
+            self.builder._request_likec4_export("diagrams/likec4/abc/source.c4", export_url="https://export.example", timeout=9)
 
-        request = open_url.call_args.args[0]
-        self.assertEqual(json.loads(request.data), {
-            "storage_path": "model.c4",
-            "source": "unit_test",
-            "requested_at": mock.ANY,
-        })
-        open_url.assert_called_once_with(request, timeout=9)
-
-        with mock.patch.object(exporters, "urlopen") as open_url:
-            self.builder._request_likec4_export("model.c4", export_url="file:///unsafe", timeout=1)
-            open_url.assert_not_called()
-
-        responses = [
-            _response(503, b"{}"),
-            _response(200, b"not-json"),
-            _response(200, b'{"ok":false,"error":"failed"}'),
-        ]
-        with mock.patch.object(exporters, "urlopen", side_effect=responses):
-            with self.assertLogs(exporters.logger, level="INFO"):
-                for _ in responses:
-                    self.builder._request_likec4_export(
-                        "model.c4", export_url="https://export.example", timeout=1
-                    )
-        with mock.patch.object(exporters, "urlopen", side_effect=TimeoutError("offline")):
-            with self.assertLogs(exporters.logger, level="WARNING"):
-                self.builder._request_likec4_export(
-                    "model.c4", export_url="https://export.example", timeout=1
-                )
+        get_diagram.assert_called_once_with(
+            LikeC4Diagram, self.builder._dat, storage_path="diagrams/likec4/abc/source.c4"
+        )
+        enqueue.assert_called_once_with("diagrams/likec4/abc/source.c4", source="unit_test")
 
     def test_drawio_columns_and_ids_ignore_malformed_values(self):
         diagram_id = uuid.uuid4()
@@ -415,13 +432,26 @@ class DatExportModelBuilderTests(SimpleTestCase):
         self.assertEqual(self.builder._normalize_diagram_id(f" {diagram_id} "), diagram_id)
         for invalid in (None, "", "bad-uuid"):
             self.assertIsNone(self.builder._normalize_diagram_id(invalid))
-        rows = [{"diagram": str(diagram_id)}, {"other": "bad-uuid"}, "not a row"]
+        rows = [{"diagram": str(diagram_id)}, "not a row"]
         self.assertEqual(self.builder._collect_diagram_ids(rows, columns), {diagram_id})
+        with self.assertRaises(ValidationError):
+            self.builder._collect_diagram_ids([{"other": "bad-uuid"}], columns)
 
     def test_drawio_images_use_stored_paths_then_thumbnail_fallback(self):
         storage = mock.Mock()
         storage.url.side_effect = lambda path: f"storage:{path}"
-        diagram = SimpleNamespace(png_paths=["one.png", None, 4, "two.png"])
+        diagram_id = uuid.uuid4()
+        diagram = SimpleNamespace(
+            pk=diagram_id,
+            revision="d" * 64,
+            png_paths=[
+                f"diagrams/{diagram_id}/views/one.png",
+                None,
+                4,
+                f"diagrams/{diagram_id}/views/two.png",
+            ],
+            thumbnail=None,
+        )
         self.builder._seaweed_png_data_uri = mock.Mock(side_effect=["data:image/png;base64,AA==", None])
         with mock.patch.object(exporters, "SeaweedFSStorage", return_value=storage):
             images = self.builder._build_drawio_images(diagram)
@@ -429,7 +459,6 @@ class DatExportModelBuilderTests(SimpleTestCase):
             images,
             [
                 {"src": "data:image/png;base64,AA==", "label": "Page 1"},
-                {"src": "storage:two.png", "label": "Page 2"},
             ],
         )
 
@@ -438,27 +467,39 @@ class DatExportModelBuilderTests(SimpleTestCase):
         self.builder._thumbnail_data_uri = mock.Mock(return_value="data:image/png;base64,BB==")
         self.assertEqual(self.builder._build_drawio_images(diagram), [{"src": "data:image/png;base64,BB=="}])
         self.builder._thumbnail_data_uri.return_value = None
-        self.assertEqual(self.builder._build_drawio_images(diagram), [{"src": "thumbnail-url"}])
+        self.assertEqual(self.builder._build_drawio_images(diagram), [])
         diagram.thumbnail = None
         self.assertEqual(self.builder._build_drawio_images(diagram), [])
 
     def test_thumbnail_data_uri_encodes_and_tolerates_unreadable_files(self):
         field = mock.Mock()
-        field.name = "diagram.jpg"
-        field.read.return_value = b"image"
+        field.name = "diagrams/1/views/thumb.png"
+        field.read.return_value = self._png_bytes()
         diagram = SimpleNamespace(pk=1, thumbnail=field)
 
         self.assertEqual(
             self.builder._thumbnail_data_uri(diagram),
-            "data:image/jpeg;base64," + base64.b64encode(b"image").decode("ascii"),
+            "data:image/png;base64," + base64.b64encode(self._png_bytes()).decode("ascii"),
         )
         field.close.assert_called_once()
+        field.name = "diagrams/another-diagram/views/thumb.png"
+        self.assertIsNone(self.builder._thumbnail_data_uri(diagram))
+        field.name = "diagrams/1/views/thumb.png"
         field.open.side_effect = FileNotFoundError
         self.assertIsNone(self.builder._thumbnail_data_uri(diagram))
         field.open.side_effect = OSError("offline")
         with self.assertLogs(exporters.logger, level="WARNING"):
             self.assertIsNone(self.builder._thumbnail_data_uri(diagram))
         self.assertIsNone(self.builder._thumbnail_data_uri(SimpleNamespace(thumbnail=None)))
+
+    @staticmethod
+    def _png_bytes():
+        from io import BytesIO
+        from PIL import Image
+
+        output = BytesIO()
+        Image.new("RGBA", (1, 1), (255, 0, 0, 128)).save(output, format="PNG")
+        return output.getvalue()
 
     @override_settings(DRAWIO_EXPORT_URL="https://primary.example/export", DRAWIO_BASE_URL="https://backup.example")
     def test_drawio_thumbnail_retries_export_endpoint(self):

@@ -8,7 +8,10 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.db import transaction
+
+from diagrams.references import prepare_diagram_references
 
 from users.models import Role
 from workflows.services import workflow_initial_state, workflow_states
@@ -212,6 +215,7 @@ class DATImportService:
             return
         sync_dat_sections_if_needed(dat)
         section_map = self._build_section_map(dat)
+        pending = []
         for section_payload in payload:
             if not isinstance(section_payload, dict):
                 continue
@@ -277,7 +281,19 @@ class DATImportService:
                     # Skip empty values to avoid creating useless entries
                     if prepared in (None, "", [], {}):
                         continue
-                    part.update_value(prepared)
+                    pending.append((part, prepared))
+        # An invalid later reference must not cause an earlier source to be read.
+        try:
+            for part, prepared in pending:
+                prepare_diagram_references(part, prepared, self.actor)
+            copies = {}
+            for part, prepared in pending:
+                prepared = prepare_diagram_references(
+                    part, prepared, self.actor, attach=True, copies=copies,
+                )
+                part.update_value(prepared)
+        except ValidationError as exc:
+            raise DATImportError("Les références de diagrammes du fichier sont invalides ou inaccessibles.") from exc
 
     def _build_section_map(self, dat: DAT):
         section_map: Dict[str, Dict[str, Any]] = {}

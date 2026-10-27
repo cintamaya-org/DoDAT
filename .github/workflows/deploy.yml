@@ -12,6 +12,9 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
 
     steps:
       # Récupère le code du dépôt sur le runner GitHub.
@@ -21,11 +24,23 @@ jobs:
       # Prépare la connexion ssh avec le vps
       - name: Configuration de la connexion SSH
         shell: bash
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
         run: |
+          set -euo pipefail
+          : "${VPS_HOST:?Missing VPS_HOST secret}"
+          : "${VPS_USER:?Missing VPS_USER secret}"
+          : "${VPS_SSH_KEY:?Missing VPS_SSH_KEY secret}"
+          : "${VPS_KNOWN_HOSTS:?Missing independently verified VPS_KNOWN_HOSTS secret}"
           mkdir -p ~/.ssh
-          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
+          printf '%s\n' "${VPS_SSH_KEY}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+          printf '%s\n' "${VPS_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          ssh-keygen -l -f ~/.ssh/known_hosts >/dev/null
+          ssh-keygen -F "${VPS_HOST}" -f ~/.ssh/known_hosts >/dev/null
 
       # Envoie le contenu du dépôt vers le VPS en supprimer les fichiers qui ne sont plus dans le rep
       - name: Synchronisation du dépôt vers le VPS
@@ -33,12 +48,13 @@ jobs:
         run: |
           set -euo pipefail
           DEST="/opt/cintafactory/test"
-          ssh -i ~/.ssh/id_rsa "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" "mkdir -p ${DEST}"
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes -o BatchMode=yes -o IdentitiesOnly=yes \
+            "${VPS_USER}@${VPS_HOST}" "mkdir -p ${DEST}"
           rsync -az --delete \
             --exclude='.git' \
             --exclude='.github' \
-            -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes" \
-            ./ "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:${DEST}/"
+            -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes -o BatchMode=yes -o IdentitiesOnly=yes" \
+            ./ "${VPS_USER}@${VPS_HOST}:${DEST}/"
 
       # Trasmission des secrets au vps et lancement des dockers
       - name: Déploiement sur le VPS
@@ -113,7 +129,8 @@ jobs:
           DEV_POSTGRES_PASSWORD_B64="$(printf '%s' "${DEV_POSTGRES_PASSWORD}" | base64 -w0)"
           DEV_ALLOWED_HOST_B64="$(printf '%s' "${DEV_ALLOWED_HOST}" | base64 -w0)"
 
-          ssh -i ~/.ssh/id_rsa "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes -o BatchMode=yes -o IdentitiesOnly=yes \
+            "${VPS_USER}@${VPS_HOST}" \
             "DEV_DJANGO_SECRET_KEY_B64='${DEV_DJANGO_SECRET_KEY_B64}' \
              DEV_LIKEC4_METADATA_TOKEN_B64='${DEV_LIKEC4_METADATA_TOKEN_B64}' \
              DEV_LIKEC4_API_TOKEN_B64='${DEV_LIKEC4_API_TOKEN_B64}' \

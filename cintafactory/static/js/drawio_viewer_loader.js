@@ -541,6 +541,13 @@
     if (isLikeC4Import && button.dataset.likec4Path) {
       formData.append("path", button.dataset.likec4Path);
     }
+    if (isLikeC4Import) {
+      const container = button.closest(".dat-repeater");
+      const datId = container && container.getAttribute("data-dat-id");
+      const sectionId = container && container.getAttribute("data-diagram-section-id");
+      if (datId) formData.append("dat_id", datId);
+      if (sectionId) formData.append("section_id", sectionId);
+    }
     setButtonBusy(button, true);
     const request = fetch(importUrl, {
       method: "POST",

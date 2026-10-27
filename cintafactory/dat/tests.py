@@ -2106,6 +2106,7 @@ class DatPdfExportNotificationTest(TestCase):
             application=self.application,
             status=DATStatus.NOUVELLE_DEMANDE,
             owner=self.user,
+            secure_export_requires_dual_admin_approval=False,
         )
         self.client.force_login(self.user)
 
@@ -2621,7 +2622,7 @@ class DatSectionsSyncTests(TestCase):
         self.assertFalse(dat_sections_need_sync(self.dat))
 
 
-class DatPartFieldCoverageTests(SimpleTestCase):
+class DatPartFieldCoverageTests(TestCase):
     @staticmethod
     def _part(data_type, config=None, *, required=False):
         return SimpleNamespace(
@@ -3006,7 +3007,7 @@ class DatViewHelperCoverageTests(SimpleTestCase):
             [first, second],
         )
         self.assertEqual(dat_views._normalize_diagram_ids("not-a-list"), [])
-        self.assertEqual(dat_views._normalize_likec4_path(" /models/context.c4 "), "models/context.c4")
+        self.assertEqual(dat_views._normalize_likec4_path(" /models/context.c4 "), "")
         self.assertEqual(dat_views._normalize_likec4_path("../outside.c4"), "")
         self.assertEqual(dat_views._normalize_likec4_path("model.txt"), "")
         self.assertEqual(
@@ -3048,10 +3049,14 @@ class DatViewHelperCoverageTests(SimpleTestCase):
         self.assertEqual(dat_views._likec4_rows_from_flow_matrix([]), ([], []))
 
     def test_flow_matrix_fetch_handles_configuration_responses_and_network_errors(self):
+        diagram = SimpleNamespace(
+            pk=uuid.UUID("21cf4380-3a36-4885-a4d7-fb56ebf04c7f"),
+            storage_path="diagrams/likec4/21cf4380-3a36-4885-a4d7-fb56ebf04c7f/source.c4",
+        )
         with override_settings(LIKEC4_EDITOR_URL=""):
-            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("model.c4"))
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix(diagram))
         with override_settings(LIKEC4_EDITOR_URL="file:///tmp/editor"):
-            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("model.c4"))
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix(diagram))
 
         response = mock.MagicMock()
         response.status = 200
@@ -3059,19 +3064,21 @@ class DatViewHelperCoverageTests(SimpleTestCase):
         with override_settings(
             LIKEC4_EDITOR_URL="https://editor.example/",
             LIKEC4_API_TOKEN="test-token",
-        ), mock.patch("dat.views.urlopen") as urlopen:
+        ), mock.patch("dat.views.refresh_revision", return_value="a" * 64), mock.patch(
+            "dat.views.urlopen"
+        ) as urlopen:
             urlopen.return_value.__enter__.return_value = response
-            self.assertEqual(dat_views._fetch_likec4_flow_matrix("models/one.c4"), {"flows": []})
+            self.assertEqual(dat_views._fetch_likec4_flow_matrix(diagram), {"flows": []})
             request = urlopen.call_args.args[0]
             self.assertEqual(urlsplit(request.full_url).path, "/flow-matrix")
-            self.assertEqual(parse_qs(urlsplit(request.full_url).query), {"file": ["models/one.c4"]})
+            self.assertEqual(parse_qs(urlsplit(request.full_url).query), {"file": [diagram.storage_path]})
             self.assertEqual(request.get_header("X-likec4-token"), "test-token")
 
             response.status = 503
-            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("models/one.c4"))
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix(diagram))
             response.status = 200
             response.read.return_value = b"not-json"
-            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("models/one.c4"))
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix(diagram))
 
             urlopen.side_effect = HTTPError(
                 "https://editor.example/flow-matrix",
@@ -3080,9 +3087,9 @@ class DatViewHelperCoverageTests(SimpleTestCase):
                 hdrs=None,
                 fp=BytesIO(b"error body"),
             )
-            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("models/one.c4"))
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix(diagram))
             urlopen.side_effect = OSError("network unavailable")
-            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("models/one.c4"))
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix(diagram))
 
     def test_drawio_repeater_detection_and_repeater_update_report_changes(self):
         sub_section = SimpleNamespace(
@@ -3432,6 +3439,7 @@ class DatImportServiceCoverageTests(SimpleTestCase):
 
         part = SimpleNamespace(
             key="field",
+            config={},
             prepare_value=mock.Mock(side_effect=lambda value: value),
             update_value=mock.Mock(),
         )

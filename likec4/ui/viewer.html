@@ -50,10 +50,11 @@
     <div class="message" id="message">Loading LikeC4 view...</div>
   </div>
 
+  <script src="security.js"></script>
   <script>
     const params = new URLSearchParams(window.location.search);
     const viewId = (params.get('view') || 'index').trim() || 'index';
-    const bundleParam = params.get('bundle') || 'likec4-webcomponent.js';
+    const bundleParam = params.get('bundle');
     const root = document.getElementById('root');
     const message = document.getElementById('message');
 
@@ -67,19 +68,19 @@
     });
 
     const mountView = () => {
-      root.innerHTML = '';
+      root.replaceChildren();
       const viewEl = document.createElement('likec4-view');
       viewEl.setAttribute('view-id', viewId);
       viewEl.setAttribute('browser', 'true');
       root.appendChild(viewEl);
     };
 
-    const scriptUrl = new URL(bundleParam, window.location.href).toString();
-    loadScript(scriptUrl)
+    Promise.resolve()
+      .then(() => loadScript(CintaLikeC4.scopedBundleUrl(bundleParam, window.location.href)))
       .then(() => {
         if (!customElements.get('likec4-view')) {
           message.textContent = 'LikeC4 web component not registered.';
-          root.innerHTML = '';
+          root.replaceChildren();
           root.appendChild(message);
           return;
         }
@@ -87,7 +88,7 @@
       })
       .catch((err) => {
         const detail = err && err.message ? err.message : 'Unknown error';
-        message.innerHTML = 'Failed to load LikeC4 bundle. <strong>' + detail + '</strong>';
+        CintaLikeC4.setStatusText(message, 'Failed to load LikeC4 bundle. ' + detail);
       });
   </script>
 </body>

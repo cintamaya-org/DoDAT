@@ -53,6 +53,14 @@ class DATSerializer(serializers.ModelSerializer):
             "business_direction",
             "created_at",
             "updated_at",
+            "pdf_export_in_progress",
+            "pdf_export_requested_at",
+            "pdf_export_requested_by",
+            "pdf_export_requested_by_display",
+            "pdf_export_path",
+            "pdf_export_content_type",
+            "pdf_export_size",
+            "secure_export_requires_dual_admin_approval",
         ]
 
 

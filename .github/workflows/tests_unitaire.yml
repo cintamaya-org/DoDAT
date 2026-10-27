@@ -7,6 +7,7 @@ on:
       - dev
     paths:
       - "cintafactory/**"
+      - "likec4/**"
       - "pyproject.toml"
       - "uv.lock"
       - ".coveragerc"
@@ -70,6 +71,14 @@ jobs:
         run: |
           uv sync
           uv pip install "coverage[toml]>=7.6"
+
+      - name: Node.js pour les tests LikeC4
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Tests LikeC4 sans dépendances
+        run: node --test likec4/tests/*.test.js
 
       - name: Vérification de la configuration Django
         run: uv run python cintafactory/manage.py check

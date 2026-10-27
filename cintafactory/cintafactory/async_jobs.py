@@ -11,7 +11,9 @@ from threading import Thread, current_thread, main_thread
 from typing import Any
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import close_old_connections
+from django.http import Http404
 from django.utils import timezone
 
 from .logging.logging_utils import bind_request_context, clear_request_context, get_request_context
@@ -73,9 +75,20 @@ def enqueue_likec4_export_job(
     requested_by=None,
     source: str | None = None,
 ) -> AsyncJob:
+    from diagrams.access import get_diagram_for_user
+    from diagrams.likec4_scope import refresh_revision
+    from diagrams.models import LikeC4Diagram
+
+    if not getattr(requested_by, "is_authenticated", False):
+        raise ValueError("LikeC4 export requires an authenticated requester.")
+    try:
+        diagram = get_diagram_for_user(LikeC4Diagram, requested_by, storage_path=storage_path)
+    except (Http404, ValidationError, ValueError, TypeError):
+        raise ValueError("LikeC4 export requires an accessible registered diagram.") from None
+    revision = refresh_revision(diagram)
     request_context = get_request_context()
     trace_id = str(request_context.get("request_id", "") or "")
-    idempotency_key = f"likec4_export:{storage_path}"
+    idempotency_key = f"likec4_export:{diagram.pk}:{revision}"
     existing = (
         AsyncJob.objects.filter(idempotency_key=idempotency_key, status__in=_ACTIVE_STATUSES)
         .order_by("-created_at")
@@ -90,11 +103,13 @@ def enqueue_likec4_export_job(
         job_type=LIKEC4_EXPORT_JOB_TYPE,
         queue_name=LIKEC4_EXPORT_JOB_TYPE,
         status=AsyncJob.Status.QUEUED,
-        resource_ref=storage_path,
+        resource_ref=str(diagram.pk),
         requested_by=requested_by if getattr(requested_by, "is_authenticated", False) else None,
         max_attempts=max_attempts,
         payload={
             "storage_path": storage_path,
+            "diagram_id": str(diagram.pk),
+            "revision": revision,
             "source": source or "",
             "backoff_seconds": backoff,
             "trace_id": trace_id,
@@ -113,10 +128,21 @@ def enqueue_drawio_export_job(
     requested_by=None,
     source: str | None = None,
 ) -> AsyncJob:
+    from diagrams.access import get_diagram_for_user
+    from diagrams.models import DrawIODiagram
+
+    if not getattr(requested_by, "is_authenticated", False):
+        raise ValueError("Draw.io export requires an authenticated requester.")
+    try:
+        diagram = get_diagram_for_user(DrawIODiagram, requested_by, pk=diagram_id)
+    except (Http404, ValidationError, ValueError, TypeError):
+        raise ValueError("Draw.io export requires an accessible registered diagram.") from None
+
+    normalized_xml = xml_payload or "<mxGraphModel/>"
+    revision = sha256(normalized_xml.encode("utf-8")).hexdigest()
     request_context = get_request_context()
     trace_id = str(request_context.get("request_id", "") or "")
-    xml_hash = sha256((xml_payload or "").encode("utf-8")).hexdigest()
-    idempotency_key = f"drawio_export:{diagram_id}:{xml_hash}"
+    idempotency_key = f"drawio_export:{diagram.pk}:{revision}"
     existing = (
         AsyncJob.objects.filter(idempotency_key=idempotency_key, status__in=_ACTIVE_STATUSES)
         .order_by("-created_at")
@@ -129,12 +155,13 @@ def enqueue_drawio_export_job(
         job_type=DRAWIO_EXPORT_JOB_TYPE,
         queue_name=DRAWIO_EXPORT_JOB_TYPE,
         status=AsyncJob.Status.QUEUED,
-        resource_ref=str(diagram_id),
+        resource_ref=str(diagram.pk),
         requested_by=requested_by if getattr(requested_by, "is_authenticated", False) else None,
         max_attempts=max(1, len(backoff)),
         payload={
-            "diagram_id": str(diagram_id),
-            "xml_payload": xml_payload or "",
+            "diagram_id": str(diagram.pk),
+            "xml_payload": normalized_xml,
+            "revision": revision,
             "source": source or "",
             "backoff_seconds": backoff,
             "trace_id": trace_id,
@@ -195,9 +222,37 @@ def _run_likec4_job(job_id) -> None:
             return
         payload = dict(job.payload or {})
         storage_path = str(payload.get("storage_path", "")).strip()
+        diagram_id = str(payload.get("diagram_id", "")).strip()
+        revision = str(payload.get("revision", "")).strip()
         source = str(payload.get("source", "")).strip() or None
         if not storage_path:
             _set_job_failed(job, "Missing storage_path in payload.", dead_lettered=True)
+            return
+        from diagrams.likec4_scope import refresh_revision
+        from diagrams.models import LikeC4Diagram
+
+        diagram = LikeC4Diagram.objects.filter(storage_path=storage_path).first()
+        if diagram is None or (diagram_id and str(diagram.pk) != diagram_id):
+            _set_job_failed(job, "Unresolved LikeC4 diagram reference.", dead_lettered=True)
+            return
+        requester_id = getattr(job, "requested_by_id", None)
+        requester = getattr(job, "requested_by", None)
+        if requester_id and requester is not None:
+            try:
+                diagram = get_diagram_for_user(
+                    LikeC4Diagram, requester, pk=diagram.pk, storage_path=storage_path,
+                )
+            except (Http404, ValidationError, ValueError, TypeError):
+                _set_job_failed(job, "Requester no longer has diagram access.", dead_lettered=True)
+                return
+        current_revision = refresh_revision(diagram)
+        # Resolve legacy path-only jobs through their exact registered object.
+        if not diagram_id or not revision:
+            diagram_id, revision = str(diagram.pk), current_revision
+            payload.update({"diagram_id": diagram_id, "revision": revision})
+            AsyncJob.objects.filter(pk=job.pk).update(payload=payload, resource_ref=diagram_id)
+        if revision != current_revision:
+            _set_job_failed(job, "Stale LikeC4 render revision.", dead_lettered=True)
             return
         schedule = _normalize_backoff(payload.get("backoff_seconds"), _likec4_backoff_schedule())
 
@@ -210,7 +265,9 @@ def _run_likec4_job(job_id) -> None:
             )
             from diagrams.likec4_exports import enqueue_likec4_export
 
-            ok = enqueue_likec4_export(storage_path, source=source)
+            ok = enqueue_likec4_export(
+                storage_path, source=source, diagram_id=diagram_id, revision=revision,
+            )
             if ok:
                 AsyncJob.objects.filter(id=job.id).update(
                     status=AsyncJob.Status.SUCCEEDED,
@@ -275,6 +332,7 @@ def _run_drawio_job(job_id) -> None:
                 attempt_count=attempt_index,
                 last_error="",
             )
+            from diagrams.access import get_diagram_for_user
             from diagrams.models import DrawIODiagram
             from diagrams.views import _export_drawio_views
 
@@ -282,7 +340,29 @@ def _run_drawio_job(job_id) -> None:
             if not diagram:
                 _set_job_failed(job, "Diagram not found.", dead_lettered=True)
                 return
-            ok = _export_drawio_views(diagram, xml_payload or diagram.read_xml() or "<mxGraphModel/>")
+            requester_id = getattr(job, "requested_by_id", None)
+            requester = getattr(job, "requested_by", None)
+            if requester_id and requester is not None:
+                try:
+                    diagram = get_diagram_for_user(
+                        DrawIODiagram, requester, pk=diagram.pk,
+                    )
+                except (Http404, ValidationError, ValueError, TypeError):
+                    _set_job_failed(job, "Requester no longer has diagram access.", dead_lettered=True)
+                    return
+            current_xml = diagram.read_xml() or "<mxGraphModel/>"
+            revision = sha256(current_xml.encode("utf-8")).hexdigest()
+            expected_revision = str(payload.get("revision", "") or "")
+            if expected_revision:
+                if revision != expected_revision:
+                    _set_job_failed(job, "Stale Draw.io render revision.", dead_lettered=True)
+                    return
+            elif xml_payload and xml_payload != current_xml:
+                # Legacy jobs have no revision hash; only exact current source
+                # is safe to render after an upgrade.
+                _set_job_failed(job, "Stale legacy Draw.io render job.", dead_lettered=True)
+                return
+            ok = _export_drawio_views(diagram, current_xml)
             if ok:
                 AsyncJob.objects.filter(id=job.id).update(
                     status=AsyncJob.Status.SUCCEEDED,
