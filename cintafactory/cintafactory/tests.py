@@ -47,6 +47,7 @@ SENSITIVE_ENDPOINT_TEST_CLIENT_IP = "192.0.2.5"
 
 
 class FrenchNotificationLanguageTests(SimpleTestCase):
+    @override_settings(SESSION_ENGINE="django.contrib.sessions.backends.signed_cookies")
     def test_english_browser_preference_does_not_override_french(self):
         response = self.client.get(
             reverse("login"),
