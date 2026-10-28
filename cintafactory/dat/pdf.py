@@ -65,9 +65,19 @@ def generate_dat_pdf(dat, *, base_url: str | None = None):
 def render_pdf_from_html(html: str, *, base_url: str | None = None) -> bytes:
     logger.debug("Rendu PDF WeasyPrint (base_url=%s).", base_url)
     try:
-        from weasyprint import HTML
+        from weasyprint import HTML, URLFetcher
     except ImportError as exc:  # pragma: no cover - env misconfiguration
         raise ImproperlyConfigured(
             "Le module WeasyPrint doit être installé pour permettre l'export PDF des DAT."
         ) from exc
-    return HTML(string=html, base_url=base_url).write_pdf()
+    class EmbeddedPNGFetcher(URLFetcher):
+        def fetch(self, url, headers=None):
+            if not url.startswith("data:image/png;base64,"):
+                raise ValueError("Only embedded PNG images are allowed in DAT PDFs.")
+            return super().fetch(url, headers)
+
+    return HTML(
+        string=html,
+        base_url=base_url,
+        url_fetcher=EmbeddedPNGFetcher(allowed_protocols={"data"}, allow_redirects=False),
+    ).write_pdf()

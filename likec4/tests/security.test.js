@@ -4,6 +4,7 @@ const { Readable } = require('node:stream');
 const { mkdtemp, readFile, rm, writeFile } = require('node:fs/promises');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
+const { Worker } = require('node:worker_threads');
 const {
   DEFAULT_LIMITS, RequestError, revisionOf, authorizeScope, validateSource, readBounded, createQueue,
 } = require('../worker/scope');
@@ -106,6 +107,50 @@ test('render queue applies backpressure at its configured pending bound', async 
   release('first');
   assert.equal(await active, 'first');
   assert.equal(await waiting, 'second');
+});
+
+test('matrix parsing does not rescan long nonmatching relation or metadata tokens', async () => {
+  const script = `
+    const { buildFlowMatrix } = require(${JSON.stringify(require.resolve('../server'))});
+    const token = 'x'.repeat(200000);
+    for (const source of [token, token + ' -> 123', "component a 'A' { metadata { " + token + ' } }']) {
+      const result = buildFlowMatrix(source);
+      if (result.flows.length) process.exit(1);
+    }
+    const unclosed = "component a 'A' {".repeat(10000);
+    if (buildFlowMatrix(unclosed).components.length) process.exit(1);
+    try {
+      buildFlowMatrix(unclosed + '}'.repeat(10000));
+      process.exit(1);
+    } catch (error) {
+      if (!(error.status === 413 && error.code === 'graph_too_large')) throw error;
+    }
+  `;
+  await new Promise((resolve, reject) => {
+    const worker = new Worker(script, { eval: true });
+    const timer = setTimeout(() => {
+      worker.terminate();
+      reject(new Error('Matrix parsing exceeded its time budget'));
+    }, 2000);
+    worker.once('error', error => { clearTimeout(timer); reject(error); });
+    worker.once('exit', code => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error('Matrix parser worker exited with code ' + code));
+    });
+  });
+});
+
+test('relation scanning preserves valid tokens after malformed prefixes', () => {
+  const result = buildFlowMatrix("ignored -> 123 api-gateway -> data-store 'TLS' next -> last \"HTTPS\"");
+  assert.deepEqual(result.flows, [
+    { from: 'api-gateway', to: 'data-store', label: 'TLS' },
+    { from: 'next', to: 'last', label: 'HTTPS' },
+  ]);
+  assert.deepEqual(buildFlowMatrix('a->b').flows, []);
+  const nested = buildFlowMatrix("component outer 'Outer' { component inner 'Inner' { metadata { owner 'Team' } } }");
+  assert.deepEqual(nested.components.map(component => component.name), ['outer', 'inner']);
+  assert.equal(nested.components[1].metadata.owner, 'Team');
 });
 
 test('renderer stores bundles under immutable diagram and revision namespaces', async () => {

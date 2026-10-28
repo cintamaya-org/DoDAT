@@ -140,11 +140,12 @@ const stripComments = (text) => {
   return result;
 };
 
-const findClosingBrace = (text, openIndex) => {
+const findClosingBrace = (text, openIndex, budget) => {
   let depth = 0;
   let inSingle = false;
   let inDouble = false;
   for (let i = openIndex; i < text.length; i++) {
+    if (--budget.remaining < 0) throw new RequestError(413, 'graph_too_large');
     const ch = text[i];
     const prev = i > 0 ? text[i - 1] : '';
     if (ch === '\'' && !inDouble && prev !== '\\') {
@@ -192,7 +193,6 @@ const parseKeyValues = (text) => {
       i++;
     }
     if (i === whitespaceStart || text[i] !== '\'') {
-      i = keyStart + 1;
       continue;
     }
 
@@ -230,7 +230,6 @@ const parseRelations = (text, maxRelations = DEFAULT_LIMITS.relations) => {
       i++;
     }
     if (text[i] !== '-' || text[i + 1] !== '>') {
-      i = fromStart + 1;
       continue;
     }
     i += 2;
@@ -239,7 +238,6 @@ const parseRelations = (text, maxRelations = DEFAULT_LIMITS.relations) => {
       i++;
     }
     if (!isIdentifierStart(text[i])) {
-      i = fromStart + 1;
       continue;
     }
 
@@ -278,6 +276,8 @@ const parseRelations = (text, maxRelations = DEFAULT_LIMITS.relations) => {
 const parseComponents = (content, alreadyCleaned = false) => {
   const cleaned = alreadyCleaned ? content : stripComments(content);
   const components = [];
+  // Nested bodies overlap; bound total scanning across the entire document.
+  const budget = { remaining: DEFAULT_LIMITS.source * 4 };
   const compRegex = /component\s+([A-Za-z_][\w-]*)\s*'([^']*)'\s*\{/g;
   let match;
 
@@ -285,8 +285,8 @@ const parseComponents = (content, alreadyCleaned = false) => {
     const name = match[1];
     const title = match[2];
     const openIdx = match.index + match[0].lastIndexOf('{');
-    const closeIdx = findClosingBrace(cleaned, openIdx);
-    if (closeIdx === -1) continue;
+    const closeIdx = findClosingBrace(cleaned, openIdx, budget);
+    if (closeIdx === -1) break;
     const body = cleaned.slice(openIdx + 1, closeIdx);
 
     // Extract metadata blocks
@@ -296,7 +296,7 @@ const parseComponents = (content, alreadyCleaned = false) => {
     let metaMatch;
     while ((metaMatch = metaRegex.exec(body)) !== null) {
       const metaOpen = metaMatch.index + metaMatch[0].lastIndexOf('{');
-      const metaClose = findClosingBrace(body, metaOpen);
+      const metaClose = findClosingBrace(body, metaOpen, budget);
       if (metaClose === -1) break;
       const metaBody = body.slice(metaOpen + 1, metaClose);
       parseKeyValues(metaBody).forEach(({ key, value }) => {

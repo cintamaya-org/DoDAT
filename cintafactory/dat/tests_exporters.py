@@ -14,6 +14,7 @@ from django.test import SimpleTestCase, override_settings
 
 from . import exporters
 from .exporters import DATExportModelBuilder
+from .pdf import render_pdf_from_html
 from diagrams.models import LikeC4Diagram
 
 
@@ -23,6 +24,84 @@ def _response(status, body):
     response.read.return_value = body
     response.__enter__.return_value = response
     return response
+
+
+class RepeaterPreviewSecurityTests(SimpleTestCase):
+    def setUp(self):
+        self.builder = DATExportModelBuilder()
+
+    def _build_part(self, rows, config=None):
+        part = SimpleNamespace(
+            pk=uuid.uuid4(), key="schemas", label="Schemas", required=False,
+            data_type=exporters.DATPartEntryType.REPEATER, value=rows, order=0,
+            config=config or {}, _get_current_entry=lambda: None,
+            render_value=lambda value: value,
+        )
+        return self.builder.build_parts(SimpleNamespace(parts=SimpleNamespace(all=lambda: [part])))[0]
+
+    def test_stored_preview_urls_are_not_used_and_source_rows_stay_unchanged(self):
+        for diagram in (
+            {"images": [{"src": "http://127.0.0.1/internal"}]},
+            {"data_uri": "file:///private/image.png"},
+            {"thumbnail_url": "https://internal.example/image.png"},
+        ):
+            with self.subTest(diagram=diagram):
+                rows = [{"name": "User content", "diagram_previews": [{"diagram": diagram}]}]
+                result = self._build_part(rows)
+                self.assertEqual(result["diagram_previews"], [])
+                self.assertNotIn("diagram_previews", result["display_value"][0])
+                self.assertEqual(result["display_value"][0]["name"], "User content")
+                self.assertEqual(result["value"], rows)
+                self.assertEqual(rows[0]["diagram_previews"], [{"diagram": diagram}])
+
+    def test_valid_diagram_previews_are_regenerated_instead_of_mixed_with_stored_values(self):
+        identifier = uuid.uuid4()
+        trusted = {"title": "Authorized diagram", "images": [{"src": "data:image/png;base64,cG5n"}]}
+        rows = [{"diagram_id": str(identifier), "diagram_previews": [{"diagram": {"data_uri": "file:///private.png"}}]}]
+        with mock.patch.object(self.builder, "_load_diagram_previews", return_value={identifier: trusted}):
+            result = self._build_part(rows, {"columns": [{"key": "diagram_id", "drawio": True}]})
+        self.assertEqual(len(result["diagram_previews"]), 1)
+        self.assertEqual(result["diagram_previews"][0]["diagram"], trusted)
+        self.assertEqual(rows[0]["diagram_previews"][0]["diagram"]["data_uri"], "file:///private.png")
+
+
+class PDFResourceSecurityTests(SimpleTestCase):
+    def test_fetcher_rejects_external_files_and_non_png_data_before_opening_resources(self):
+        with mock.patch("weasyprint.HTML") as html:
+            render_pdf_from_html("<p>DAT</p>", base_url="https://app.example/")
+        fetcher = html.call_args.kwargs["url_fetcher"]
+        with mock.patch("urllib.request.OpenerDirector.open") as open_resource:
+            for url in (
+                "http://127.0.0.1/internal", "https://internal.example/image.png",
+                "file:///private/image.png", "FILE:///private/image.png",
+                "//internal.example/image.png", "../private.png",
+                "data:image/svg+xml,<svg/>", "data:text/html,private",
+            ):
+                with self.subTest(url=url), self.assertRaises(ValueError):
+                    fetcher(url)
+        open_resource.assert_not_called()
+
+    def test_real_pdf_keeps_embedded_pngs_without_http_or_file_access(self):
+        from PIL import Image
+
+        image = BytesIO()
+        Image.new("RGB", (2, 2), "blue").save(image, format="PNG")
+        image_url = "data:image/png;base64," + base64.b64encode(image.getvalue()).decode("ascii")
+        html = (
+            '<p>Approved DAT</p><img src="' + image_url + '">'
+            '<img src="http://127.0.0.1/internal"><img src="file:///private.png">'
+        )
+        with (
+            mock.patch("urllib.request.HTTPHandler.http_open") as http_open,
+            mock.patch("urllib.request.HTTPSHandler.https_open") as https_open,
+            mock.patch("urllib.request.FileHandler.file_open") as file_open,
+        ):
+            document = render_pdf_from_html(html)
+        http_open.assert_not_called()
+        https_open.assert_not_called()
+        file_open.assert_not_called()
+        self.assertTrue(document.startswith(b"%PDF"))
+        self.assertIn(b"/Subtype /Image", document)
 
 
 class DatExportModelBuilderTests(SimpleTestCase):
