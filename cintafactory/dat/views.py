@@ -302,6 +302,13 @@ def user_can_review_dat(dat: DAT, user) -> bool:
     )
 
 
+def _user_ids_match(left: object, right: object) -> bool:
+    """Compare IDs read from JSON payloads with model IDs without type drift."""
+    if left in (None, "") or right in (None, ""):
+        return False
+    return str(left) == str(right)
+
+
 def refresh_dat_status(
     dat: DAT,
     *,
@@ -1428,7 +1435,7 @@ def build_section_payload(
                     info = status_map.get(target.slug) or {}
                     reserve_message = str(info.get("reserve_message") or "").strip()
                     reserve_by_id = info.get("reserve_by_id")
-                    if reserve_message and reserve_by_id == user_id:
+                    if reserve_message and _user_ids_match(reserve_by_id, user_id):
                         validation_reserve_clear_allowed_sections[target.slug] = True
                     elif not reserve_message:
                         validation_reserve_allowed_sections[target.slug] = True
@@ -2172,7 +2179,7 @@ def update_section_status(request, dat_pk: int, section_slug: str):
         target_url=redirect_url,
     )
     if new_status == validated_value and target_reserve_message and target_reserve_by_id:
-        if target_reserve_by_id != getattr(request.user, "id", None):
+        if not _user_ids_match(target_reserve_by_id, getattr(request.user, "id", None)):
             reserve_user = get_user_model().objects.filter(pk=target_reserve_by_id).first()
             if reserve_user:
                 validator_display = format_user_display(request.user)
@@ -2366,7 +2373,7 @@ def update_section_reserve(request, dat_pk: int, section_slug: str):
     current_row = existing_row_map.get(section.slug) or existing_row_map.get(section.title) or {}
     existing_reserve_message = str(current_row.get("reserve_message") or "").strip()
     existing_reserve_by_id = current_row.get("reserve_by_id")
-    if existing_reserve_message and existing_reserve_by_id != user_id:
+    if existing_reserve_message and not _user_ids_match(existing_reserve_by_id, user_id):
         raise PermissionDenied
 
     reserve_by_display = format_user_display(request.user)
@@ -2505,7 +2512,7 @@ def clear_section_reserve(request, dat_pk: int, section_slug: str):
     current_reserve_message = str(current_row.get("reserve_message") or "").strip()
     if not section.can_user_edit(request.user):
         raise PermissionDenied
-    if reserve_by_id != getattr(request.user, "id", None):
+    if not _user_ids_match(reserve_by_id, getattr(request.user, "id", None)):
         raise PermissionDenied
 
     sections = list(dat.sections.order_by("order", "id").select_related("metadata"))
