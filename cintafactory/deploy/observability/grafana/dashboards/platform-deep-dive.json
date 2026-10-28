@@ -215,7 +215,7 @@
   "tags": ["observability", "deep-dive", "metrics", "logs"],
   "templating": {"list": []},
   "time": {"from": "now-6h", "to": "now"},
-  "title": "Cinta Platform Deep Dive",
+  "title": "DoDat Platform Deep Dive",
   "uid": "cinta-platform-deep-dive",
   "version": 1
 }

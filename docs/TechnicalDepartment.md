@@ -13,7 +13,7 @@ SPDX-License-Identifier: CC-BY-ND-4.0
 
 ## Vue d'ensemble
 
-CintaFactory sépare deux axes :
+DoDat sépare deux axes :
 
 - **direction technique** : rattachement des rôles et groupes qui réalisent ou valident le travail technique ;
 - **direction métier** : rattachement fonctionnel de l'application et du DAT.

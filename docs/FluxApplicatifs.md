@@ -7,7 +7,7 @@ SPDX-License-Identifier: CC-BY-ND-4.0
 # Génération des flux applicatifs depuis draw.io et LikeC4
 
 **Public visé :** architectes, responsables de DAT et développeurs.  
-**Objectif :** définir comment CintaFactory extrait briques techniques et flux applicatifs depuis des diagrammes draw.io ou LikeC4.  
+**Objectif :** définir comment DoDat extrait briques techniques et flux applicatifs depuis des diagrammes draw.io ou LikeC4.<br>
 **Sources de vérité :** `cintafactory/dat/drawio_parser.py`, `cintafactory/dat/views.py`, `likec4/server.js`, `cintafactory/dat/config/section_blueprints.json` et `cintafactory/static/js/drawio_viewer_loader.js`.<br>
 **Dernière vérification :** 24 août 2026.
 
@@ -26,7 +26,7 @@ flowchart LR
     S[Schémas du DAT]
     D[Diagrammes draw.io]
     L[Fichiers LikeC4]
-    P[Analyseur CintaFactory]
+    P[Analyseur DoDat]
     B[Briques techniques]
     F[Flux applicatifs]
     H[Historique DAT]

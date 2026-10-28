@@ -2,9 +2,9 @@
 # SPDX-FileCopyrightText: 2026 Baptiste COQUELET <github.com/BaptisteCoquelet>
 # SPDX-License-Identifier: CC-BY-ND-4.0
 
-# CintaFactory
+# DoDat
 
-**CintaFactory** est une plateforme Django destinée à centraliser la gestion des dossiers d'architecture technique, appelés **DAT**. Le projet couvre le cycle de vie complet d'un DAT : création, structuration du contenu, affectation des responsables, validation par workflow, suivi des décisions, exports sécurisés et visualisation de diagrammes.
+**DoDat** est une plateforme Django destinée à centraliser la gestion des dossiers d'architecture technique, appelés **DAT**. Le projet couvre le cycle de vie complet d'un DAT : création, structuration du contenu, affectation des responsables, validation par workflow, suivi des décisions, exports sécurisés et visualisation de diagrammes.
 
 L'objectif est de fournir un espace commun aux équipes métier, architecture et validation pour préparer, relire et tracer les dossiers d'architecture d'une application.
 

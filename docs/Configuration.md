@@ -234,7 +234,7 @@ Compose transmet ces variables au service Django dans les fichiers production, d
 
 ### Comptes locaux et association
 
-Microsoft, Amazon et Okta ne créent pas automatiquement de compte local. L'utilisateur doit déjà exister dans Cintafactory. À sa première connexion, l'application associe son identité à l'unique compte local dont l'adresse email correspond sans tenir compte de la casse, si OAUTH_ALLOW_EMAIL_LINKING=1.
+Microsoft, Amazon et Okta ne créent pas automatiquement de compte local. L'utilisateur doit déjà exister dans DoDat. À sa première connexion, l'application associe son identité à l'unique compte local dont l'adresse email correspond sans tenir compte de la casse, si OAUTH_ALLOW_EMAIL_LINKING=1.
 
 Une revendication email_verified absente est acceptée pour cette association ; une valeur explicitement fausse est refusée. Une adresse absente, aucun compte correspondant, plusieurs comptes correspondants ou un compte désactivé font échouer la connexion. Un lien fournisseur déjà enregistré reste utilisable si son compte local est actif. Avec OAUTH_ALLOW_EMAIL_LINKING=0, seuls les liens OAuthAccount déjà enregistrés fonctionnent.
 

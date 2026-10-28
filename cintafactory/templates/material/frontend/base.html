@@ -8,7 +8,7 @@
         <meta http-equiv="X-UA-Compatible" content="IE=edge">
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0"/>
         {% block turbolinks-cache-control %}<meta name="turbolinks-cache-control" content="no-cache">{% endblock %}
-        <title>{% block title %}{% endblock %}</title>
+        <title>{% block title %}{% endblock %} | {{ application_name }}</title>
         {% block favicon %}<link href="{% static 'imgs/logo.ico' %}" rel="icon" type="image/x-icon">{% endblock %}
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>

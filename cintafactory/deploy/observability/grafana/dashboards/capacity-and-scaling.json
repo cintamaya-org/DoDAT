@@ -96,7 +96,7 @@
   "tags": ["plan6", "capacity", "scaling", "containers"],
   "templating": {"list": []},
   "time": {"from": "now-6h", "to": "now"},
-  "title": "Cinta Capacity and Scaling",
+  "title": "DoDat Capacity and Scaling",
   "uid": "cinta-capacity-scaling",
   "version": 1
 }

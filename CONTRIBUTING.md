@@ -6,8 +6,8 @@ For more details, please check the LICENSE file or visit https://spdx.org
 Date : 11/09/2026*
 
 ---
-# Welcome to CintaFactory!
-First off, thank you for considering contributing to CintaFactory, it's people like you that make open source such a great ecosystem to build in !
+# Welcome to DoDat!
+First off, thank you for considering contributing to DoDat, it's people like you that make open source such a great ecosystem to build in !
 
 Following these guidelines helps communicate that you respect the time of the developers maintaining this project. In return, they should reciprocate that respect in addressing your issues, assessing your changes, and helping you finalize your pull requests.
 
@@ -23,7 +23,7 @@ Following these guidelines helps communicate that you respect the time of the de
 - Uncoordinated breaking changes : Avoid opening large, unsolicited pull requests without first discussing the architectural impact via an issue.
 ---
 # Responsibilities & Code of Conduct
-We want CintaFactory to be a welcoming, friendly, and safe environment for everyone, regardless of background, identity, or current level of coding experience.
+We want DoDat to be a welcoming, friendly, and safe environment for everyone, regardless of background, identity, or current level of coding experience.
 - **People first, code second**: Always be kind, patient, and empathetic. We critique ideas and implementations, never the people behind them.
 
 - **Assume positive intent**: Text communication can sometimes sound blunt. Give each other the benefit of the doubt and foster collaborative discussions.

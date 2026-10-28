@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 Baptiste COQUELET <github.com/BaptisteCoquelet>
 # SPDX-License-Identifier: CC-BY-ND-4.0
 
-# CintaFactory Services and Interactions
+# DoDat Services and Interactions
 
 This document reflects the current runtime topology, including scaled application services, monitoring services, and reliability operations.
 

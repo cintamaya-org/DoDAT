@@ -54,7 +54,7 @@
   "tags": ["plan6", "logs", "tracing"],
   "templating": {"list": []},
   "time": {"from": "now-6h", "to": "now"},
-  "title": "Cinta Logs and Correlation",
+  "title": "DoDat Logs and Correlation",
   "uid": "cinta-logs-correlation",
   "version": 1
 }

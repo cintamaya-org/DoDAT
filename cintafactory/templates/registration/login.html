@@ -19,7 +19,7 @@
         <section class="login-page__form">
             <div class="login-card cinta-card cinta-card--narrow">
                 <h1 class="login-card__title">{% trans "Connexion" %}</h1>
-                <p class="login-card__subtitle">{% trans "Accedez a votre espace Cintafactory" %}</p>
+                <p class="login-card__subtitle">{% blocktrans %}Accedez a votre espace {{ application_name }}{% endblocktrans %}</p>
 
                 <form method="post" novalidate class="login-form">
                     {% csrf_token %}
