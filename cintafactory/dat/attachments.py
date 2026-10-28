@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import os
 import socket
+import struct
 import time
 import uuid
 from dataclasses import dataclass
@@ -291,38 +292,49 @@ def _probe_clamav(host: str, port: int, timeout: int) -> None:
             print(f"[ClamAV] {label} failed: {exc}", flush=True)
 
 
+def _iter_clamav_stream_chunks(uploaded_file, chunk_size: int = 64 * 1024):
+    if hasattr(uploaded_file, "chunks"):
+        for chunk in uploaded_file.chunks():
+            for offset in range(0, len(chunk), chunk_size):
+                yield chunk[offset : offset + chunk_size]
+        return
+
+    while True:
+        chunk = uploaded_file.read(chunk_size)
+        if not chunk:
+            return
+        yield chunk
+
+
+def _read_clamav_stream_response(sock: socket.socket, max_response_bytes: int = 4096) -> bytes:
+    response = bytearray()
+    while True:
+        chunk = sock.recv(min(4096, max_response_bytes + 1 - len(response)))
+        if not chunk:
+            raise OSError("ClamAV closed connection before completing its response")
+        response.extend(chunk)
+        terminator = response.find(b"\0")
+        if terminator >= 0:
+            if terminator + 1 > max_response_bytes:
+                raise OSError("ClamAV response exceeded the allowed size")
+            return bytes(response[: terminator + 1])
+        if len(response) > max_response_bytes:
+            raise OSError("ClamAV response exceeded the allowed size")
+
+
 def _scan_file_with_scan_command(uploaded_file, host: str, port: int, timeout: int) -> bytes:
-    scan_dir = getattr(settings, "CLAMAV_SCAN_DIR", "") or ""
-    if not scan_dir:
-        raise ValidationError("Le scan antivirus n'est pas configuré (CLAMAV_SCAN_DIR manquant).")
-    os.makedirs(scan_dir, exist_ok=True)
-    try:
-        # 0o711 : clamd (autre utilisateur, autre conteneur) doit pouvoir traverser le dossier
-        # pour lire le fichier à scanner, sans pouvoir en lister le contenu.
-        os.chmod(scan_dir, 0o711)
-    except OSError:
-        pass
-    filename = f"upload_{uuid.uuid4().hex}"
-    path = os.path.join(scan_dir, filename)
+    # Keep scan hook stable; INSTREAM sends bytes directly to clamd without a temp file.
     uploaded_file.seek(0)
     try:
-        with open(path, "wb") as target:
-            if hasattr(uploaded_file, "chunks"):
-                for chunk in uploaded_file.chunks():
-                    target.write(chunk)
-            else:
-                target.write(uploaded_file.read())
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            sock.sendall(b"zINSTREAM\0")
+            for chunk in _iter_clamav_stream_chunks(uploaded_file):
+                sock.sendall(struct.pack("!I", len(chunk)))
+                sock.sendall(chunk)
+            sock.sendall(struct.pack("!I", 0))
+            return _read_clamav_stream_response(sock)
     finally:
         uploaded_file.seek(0)
-    print(f"[ClamAV] SCAN path: {path}", flush=True)
-    try:
-        command = f"SCAN {path}\n".encode("utf-8")
-        return _send_clamav_command(host, port, timeout, command)
-    finally:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
 
 
 def scan_file_with_clamav(uploaded_file) -> None:
@@ -352,7 +364,7 @@ def scan_file_with_clamav(uploaded_file) -> None:
     for attempt in range(retries + 1):
         try:
             print(
-                f"[ClamAV] scan attempt {attempt + 1}/{retries + 1} -> {host}:{port} (SCAN)",
+                f"[ClamAV] scan attempt {attempt + 1}/{retries + 1} -> {host}:{port} (INSTREAM)",
                 flush=True,
             )
             response = _scan_file_with_scan_command(uploaded_file, host, port, timeout)
@@ -395,14 +407,7 @@ def scan_file_with_clamav(uploaded_file) -> None:
 
     if not response_text:
         response_text = response.decode("utf-8", errors="replace")
-   
-    if "ERROR" in response_text and "No such file or directory" in response_text:
-        outcome = "file_unreachable"
-        _emit(False, outcome)
-        raise AttachmentSecurityError(
-            "Le fichier n'est pas accessible par l'antivirus (volume partage manquant).",
-            failure_state=outcome,
-        )
+    response_text = response_text.replace("\x00", "").strip()
     if "FOUND" in response_text:
         print(f"[ClamAV] scan result: {response_text.strip()}", flush=True)
         outcome = "infected"

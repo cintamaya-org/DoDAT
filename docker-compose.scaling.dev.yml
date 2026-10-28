@@ -65,7 +65,6 @@ services:
       CLAMAV_HOST: ${CLAMAV_HOST:-clamav}
       CLAMAV_PORT: ${CLAMAV_PORT:-3310}
       CLAMAV_TIMEOUT: ${CLAMAV_TIMEOUT:-30}
-      CLAMAV_SCAN_DIR: ${CLAMAV_SCAN_DIR:-/clamav_scan}
       DRAWIO_BASE_URL: ${DRAWIO_BASE_URL:-http://drawio:8080}
       DRAWIO_PUBLIC_URL: ${DRAWIO_PUBLIC_URL:-http://localhost:8101/diagrams/drawio/proxy/}
       DRAWIO_LIBS: ${DRAWIO_LIBS:-general}
@@ -87,7 +86,6 @@ services:
       LIKEC4_API_TOKEN: ${LIKEC4_API_TOKEN:?Set LIKEC4_API_TOKEN in .env}
     volumes:
       - ./cintafactory:/app
-      - clamav_scan:/clamav_scan
     expose:
       - "8000"
     command: python manage.py runserver 0.0.0.0:8000
@@ -141,11 +139,9 @@ services:
       CLAMAV_HOST: ${CLAMAV_HOST:-clamav}
       CLAMAV_PORT: ${CLAMAV_PORT:-3310}
       CLAMAV_TIMEOUT: ${CLAMAV_TIMEOUT:-30}
-      CLAMAV_SCAN_DIR: ${CLAMAV_SCAN_DIR:-/clamav_scan}
       DRAWIO_BASE_URL: ${DRAWIO_BASE_URL:-http://drawio:8080}
     volumes:
       - ./cintafactory:/app
-      - clamav_scan:/clamav_scan
     command: python manage.py run_async_job_worker --poll-interval 0.5
     security_opt:
       - no-new-privileges:true
@@ -326,8 +322,6 @@ services:
   clamav:
     image: clamav/clamav:latest
     container_name: test_factory_scale_clamav
-    volumes:
-      - clamav_scan:/clamav_scan
     expose:
       - "3310"
     networks:
@@ -361,7 +355,6 @@ volumes:
   pgdata_dev:
   seaweedfs_data:
   likec4_exports_dev:
-  clamav_scan:
 
 networks:
   edge:
