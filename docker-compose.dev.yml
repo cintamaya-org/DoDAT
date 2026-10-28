@@ -128,10 +128,10 @@ services:
       LIKEC4_METADATA_URL: http://web:8000/diagrams/likec4/metadata/
       LIKEC4_METADATA_TOKEN: ${LIKEC4_METADATA_TOKEN:-dev_token_idHaf}
       LIKEC4_API_TOKEN: ${LIKEC4_API_TOKEN:-dev_likec4_api_token_change_me}
-    ports:
-      - "${DEV_BIND_ADDRESS:-127.0.0.1}:${LIKEC4_DEV_HOST_PORT:-5173}:5173"
-      - "${DEV_BIND_ADDRESS:-127.0.0.1}:${LIKEC4_HMR_HOST_PORT:-24678}:24678"
-      - "${DEV_BIND_ADDRESS:-127.0.0.1}:${LIKEC4_EDITOR_HOST_PORT:-4173}:4173"
+    expose:
+      - "4173"
+      - "5173"
+      - "24678"
     volumes:
       - ./likec4:/data
 
