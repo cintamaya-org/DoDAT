@@ -6,7 +6,7 @@ ENV NODE_ENV=production
 ENV PNPM_HOME=/usr/local/share/pnpm
 ENV PATH=${PNPM_HOME}/bin:/usr/local/bin:${PATH}
 
-ARG LIKEC4_VER=latest
+ARG LIKEC4_VER
 ARG PNPM_VERSION=12.6.0
 ARG NODE_VERSION=22.23.4
 
