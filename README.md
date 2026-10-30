@@ -1,8 +1,8 @@
-# CintaFactory
+# DoDAT
 
 ## La plateforme qui simplifie vos dossiers d’architecture
 
-CintaFactory centralise la gestion des **Dossiers d’Architecture Technique (DAT)**.
+DoDAT centralise la gestion des **Dossiers d’Architecture Technique (DAT)**.
 
 Elle réunit les équipes métier, architecture et projet dans un espace commun pour transformer des informations dispersées en décisions claires, documentées et traçables.
 
