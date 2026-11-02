@@ -1,6 +1,12 @@
 {% extends current_module.base_template %}
 {% load material_frontend dat_extras static %}
 
+{% block title %}DAT {{ dat.reference }}{% endblock %}
+{% block page_eyebrow %}Dossier d'Architecture Technique{% endblock %}
+{% block page_title %}DAT — {{ dat.title|default:dat.reference }}{% endblock %}
+{% block page_title_meta %}{% include "dat/partials/dat_topbar_meta.html" with dat=dat dat_header_version=dat_header_version only %}{% endblock %}
+{% block module_container_class %}dat-detail-container{% endblock %}
+
 {% block extrahead %}
 {{ block.super }}
 <link
@@ -14,50 +20,24 @@
 {% block content %}
 {% include "dat/components/drawio_viewer_loader.html" %}
 
-<div class="card cinta-card cinta-card--transparent">
+<div class="card cinta-card cinta-card--transparent dat-detail-shell">
   <div class="card-content">
     {% if section_nav %}
     <div class="card dat-section-sticky-cinta-card">
       <div class="card-content">
       <div class="dat-section-header">
-        <div class="dat-section-nav u-flex u-flex-wrap u-gap-0-5 u-items-center">
+        <div class="dat-section-nav u-flex u-flex-wrap u-gap-0-5 u-items-center" role="navigation" aria-label="Sections du DAT">
           {% for entry in section_nav %}
-            {% with status_info=section_status_map|get_item:entry.slug %}
-              <div class="dat-section-nav-item">
-                <a
-                  href="?section={{ entry.slug }}"
-                  class="dat-section-link dat-section-link--with-status {% if selected_section_slug == entry.slug %}active-section{% else %}{% endif %}"
-                  title="{% if status_info.has_status %}Statut : {{ status_info.label|default:'—' }}{% else %}Pas de statut{% endif %}"
-                >
-                  <!--{% if status_info.has_status %}
-                    {% section_status_icon status_info.value as section_status_icon %}
-                    <span
-                      class="{{ section_status_icon.variant }} dat-section-status-icon"
-                      aria-hidden="true"
-                      style="color: {{ section_status_icon.color|default:'#546e7a' }};"
-                    >
-                      {{ section_status_icon.name|default:'radio_button_unchecked' }}
-                    </span>
-                  {% endif %}-->
-                  {{ entry.title }}
-                  {% if status_info.has_status %}
-                    <span class="chip dat-section-status-pill{% if status_info.value == 'bloque' %} dat-section-status-pill--blocked{% elif status_info.value == 'valide' %} dat-section-status-pill--validated{% elif status_info.value == 'reserve' %} dat-section-status-pill--reserve{% elif status_info.value == 'en_cours' %} dat-section-status-pill--in-progress{% endif %}">{{ status_info.label|default:"—" }}</span>
-                  {% endif %}
-                </a>
-              </div>
-              {% if entry.title == "BESOIN(S)" or entry.title == "EXPLOITATION" %}
-                <span class="dat-section-nav-divider" aria-hidden="true"></span>
-              {% endif %}
-            {% endwith %}
+            <div class="dat-section-nav-item">
+              <a
+                href="?section={{ entry.slug }}"
+                class="dat-section-link {% if selected_section_slug == entry.slug %}active-section{% endif %}"
+                {% if selected_section_slug == entry.slug %}aria-current="page"{% endif %}
+              >
+                {{ entry.title|lower|capfirst }}
+              </a>
+            </div>
           {% endfor %}
-          <span
-            class="dat-section-status-pill chip dat-section-link"
-            data-dat-created-at="{{ dat.created_at|date:'c' }}"
-            title="Créé le {{ dat.created_at|date:'d/m/Y' }} à {{ dat.created_at|time:'H\\hi' }}"
-          >
-            <span>Créé il y a</span>
-            <span class="dat-section-age-value" data-dat-created-value>—</span>
-          </span>
         </div>
 
       </div>
@@ -69,15 +49,19 @@
       {% if selected_section_slug == "informations-generales" %}
         {% include "dat/partials/dat_overview.html" %}
       {% endif %}
-      <div{% if selected_section_slug == "informations-generales" %} class="u-mt-1-5"{% endif %}>
-        {% for container in selected_sections %}
-          {% include "dat/partials/dat_section_card.html" with container=container dat=dat wrap=False %}
-        {% empty %}
-          {% if selected_section_slug != "informations-generales" %}
-            <p class="u-m-0">Aucune donnée n'est disponible pour cette section.</p>
-          {% endif %}
-        {% endfor %}
-      </div>
+      {% if selected_section_slug == "validation" %}
+        {% include "dat/partials/dat_validation_workspace.html" %}
+      {% else %}
+        <div{% if selected_section_slug == "informations-generales" %} class="u-mt-1-5"{% endif %}>
+          {% for container in selected_sections %}
+            {% include "dat/partials/dat_section_card.html" with container=container dat=dat wrap=False %}
+          {% empty %}
+            {% if selected_section_slug != "informations-generales" %}
+              <p class="u-m-0">Aucune donnée n'est disponible pour cette section.</p>
+            {% endif %}
+          {% endfor %}
+        </div>
+      {% endif %}
     </div>
   </div>
 </div>

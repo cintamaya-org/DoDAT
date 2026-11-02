@@ -2,18 +2,11 @@
 {% load static material_frontend %}
 
 {% block module-content %}
-<div class="module-container">
-  {% comment %} {% block breadcrumbs %}
-  <div class="breadcrumbs">
-    <a href="/">Accueil</a>
-    {% block breadcrumbs_items %}{% endblock %}
-  </div>
-  {% endblock breadcrumbs %} {% endcomment %}
-
-  <main class="module-body">
+<div class="module-container {% block module_container_class %}{% endblock %}">
+  <div class="module-body">
     {% block content %}
-      <p>Aucun contenu defini.</p>
+      <p>Aucun contenu défini.</p>
     {% endblock %}
-  </main>
+  </div>
 </div>
 {% endblock module-content %}
