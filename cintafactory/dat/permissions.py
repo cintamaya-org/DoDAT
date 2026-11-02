@@ -6,6 +6,40 @@ from __future__ import annotations
 
 from django.db.models import Q, QuerySet
 
+from .constants import DAT_PORTEUR_ROLE_SLUG
+
+
+def user_can_create_dat_entities(user) -> bool:
+    is_role = getattr(user, "is_role", None)
+    return bool(
+        getattr(user, "is_authenticated", False)
+        and callable(is_role)
+        and is_role(DAT_PORTEUR_ROLE_SLUG)
+    )
+
+
+def user_can_manage_dat(user) -> bool:
+    if user is None:
+        return False
+    is_role = getattr(user, "is_role", None)
+    return bool(
+        getattr(user, "is_superuser", False)
+        or getattr(user, "is_staff", False)
+        or (callable(is_role) and is_role("admin"))
+    )
+
+
+def user_can_change_dat(dat, user) -> bool:
+    if user is None or not getattr(user, "is_authenticated", False):
+        return False
+    if user_can_manage_dat(user):
+        return True
+    if dat is None or getattr(dat, "owner_id", None) != getattr(user, "pk", None):
+        return False
+    from workflows.services import workflow_has_capability
+
+    return workflow_has_capability(dat, "owner_editable")
+
 
 def user_is_dat_admin(user) -> bool:
     """

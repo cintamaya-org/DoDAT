@@ -14,7 +14,7 @@ from rest_framework.permissions import IsAuthenticated
 
 from cintafactory.async_jobs import dispatch_async_job
 from cintafactory.models import AsyncJob
-
+from cintafactory.api.permissions import CanUseAPI
 
 STAFF_PERMISSION_REQUIRED = "Staff permission required."
 
@@ -44,7 +44,7 @@ class AsyncJobSerializer(serializers.ModelSerializer):
 
 class AsyncJobViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = AsyncJobSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CanUseAPI, IsAuthenticated]
 
     def get_queryset(self) -> QuerySet:
         queryset = AsyncJob.objects.select_related("requested_by").all()

@@ -12,6 +12,8 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
+from diagrams.models import LikeC4Diagram
+
 from .. import async_jobs
 from ..async_jobs import enqueue_likec4_export_job
 from ..logging.logging_utils import bind_request_context, clear_request_context
@@ -28,18 +30,23 @@ class AsyncJobServiceTests(TestCase):
     @override_settings(ASYNC_JOBS_RUNNER_MODE="inline", ASYNC_JOBS_LIKEC4_BACKOFF_SECONDS=[0.0])
     def test_enqueue_uses_existing_active_job_for_same_idempotency_key(self):
         user = User.objects.create_user(username="job-owner", password="pwd")
+        diagram = LikeC4Diagram.objects.create(
+            title="Active job", owner=user, storage_path="diagrams/abc/likec4.c4",
+        )
+        revision = "a" * 64
         existing = AsyncJob.objects.create(
             job_type="exports.likec4",
             queue_name="exports.likec4",
             status=AsyncJob.Status.QUEUED,
-            resource_ref="diagrams/abc/likec4.c4",
+            resource_ref=str(diagram.pk),
             requested_by=user,
             max_attempts=2,
-            idempotency_key="likec4_export:diagrams/abc/likec4.c4",
+            idempotency_key=f"likec4_export:{diagram.pk}:{revision}",
             payload={"storage_path": "diagrams/abc/likec4.c4", "source": "test", "backoff_seconds": [0.0]},
         )
 
-        job = enqueue_likec4_export_job("diagrams/abc/likec4.c4", requested_by=user, source="test")
+        with mock.patch("diagrams.likec4_scope.refresh_revision", return_value=revision):
+            job = enqueue_likec4_export_job("diagrams/abc/likec4.c4", requested_by=user, source="test")
 
         self.assertEqual(job.id, existing.id)
         self.assertEqual(AsyncJob.objects.filter(idempotency_key=existing.idempotency_key).count(), 1)
@@ -48,8 +55,10 @@ class AsyncJobServiceTests(TestCase):
     @override_settings(ASYNC_JOBS_RUNNER_MODE="external")
     def test_enqueue_does_not_start_inline_or_thread_runner_in_external_mode(self, dispatch_job):
         user = User.objects.create_user(username="job-owner-2", password="pwd")
+        LikeC4Diagram.objects.create(title="External job", owner=user, storage_path="diagrams/def/likec4.c4")
 
-        job = enqueue_likec4_export_job("diagrams/def/likec4.c4", requested_by=user, source="test")
+        with mock.patch("diagrams.likec4_scope.refresh_revision", return_value="b" * 64):
+            job = enqueue_likec4_export_job("diagrams/def/likec4.c4", requested_by=user, source="test")
 
         self.assertEqual(job.status, AsyncJob.Status.QUEUED)
         dispatch_job.assert_not_called()
@@ -57,16 +66,20 @@ class AsyncJobServiceTests(TestCase):
     @override_settings(ASYNC_JOBS_RUNNER_MODE="external")
     def test_enqueue_persists_request_trace_id_in_payload(self):
         user = User.objects.create_user(username="job-owner-trace", password="pwd")
+        LikeC4Diagram.objects.create(title="Trace job", owner=user, storage_path="diagrams/trace/likec4.c4")
         bind_request_context(request_id="req-trace-123")
-        job = enqueue_likec4_export_job("diagrams/trace/likec4.c4", requested_by=user, source="test")
+        with mock.patch("diagrams.likec4_scope.refresh_revision", return_value="c" * 64):
+            job = enqueue_likec4_export_job("diagrams/trace/likec4.c4", requested_by=user, source="test")
         self.assertEqual(job.payload.get("trace_id"), "req-trace-123")
 
 
 class AsyncJobApiTests(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username="jobs-user", password="pwd")
-        self.other = User.objects.create_user(username="jobs-other", password="pwd")
-        self.staff = User.objects.create_user(username="jobs-staff", password="pwd", is_staff=True)
+        self.user = User.objects.create_user(username="jobs-user", password="pwd", can_use_api=True)
+        self.other = User.objects.create_user(username="jobs-other", password="pwd", can_use_api=True)
+        self.staff = User.objects.create_user(
+            username="jobs-staff", password="pwd", is_staff=True, can_use_api=True,
+        )
 
         self.user_job = AsyncJob.objects.create(
             job_type="exports.likec4",
@@ -92,6 +105,14 @@ class AsyncJobApiTests(TestCase):
     def test_jobs_list_requires_authentication(self):
         response = self.client.get(reverse("api:async-job-list"))
         self.assertIn(response.status_code, {401, 403})
+
+    def test_jobs_list_requires_api_opt_in(self):
+        disabled_user = User.objects.create_user(username="jobs-api-disabled", password="pwd")
+        self.client.force_login(disabled_user)
+
+        response = self.client.get(reverse("api:async-job-list"))
+
+        self.assertEqual(response.status_code, 403)
 
     def test_jobs_list_returns_only_requester_jobs(self):
         self.client.force_login(self.user)
@@ -216,12 +237,13 @@ class AsyncJobRunnerTests(SimpleTestCase):
         drawio_job = SimpleNamespace(id="drawio-job")
         pdf_job = SimpleNamespace(id="pdf-job")
         create.side_effect = [drawio_job, pdf_job]
-        anonymous = SimpleNamespace(is_authenticated=False)
         authenticated = SimpleNamespace(is_authenticated=True)
+        diagram = SimpleNamespace(pk="diagram-42", read_xml=mock.Mock(return_value="<mxGraphModel />"))
 
         with (
             mock.patch.object(async_jobs, "_start_job_runner") as start,
             mock.patch.object(async_jobs, "get_request_context", return_value={"request_id": "trace-42"}),
+            mock.patch("diagrams.access.get_diagram_for_user", return_value=diagram),
             override_settings(
                 ASYNC_JOBS_RUNNER_MODE="external",
                 ASYNC_JOBS_DRAWIO_BACKOFF_SECONDS=[0],
@@ -231,7 +253,7 @@ class AsyncJobRunnerTests(SimpleTestCase):
             returned_drawio = async_jobs.enqueue_drawio_export_job(
                 "diagram-42",
                 xml_payload="<mxGraphModel />",
-                requested_by=anonymous,
+                requested_by=authenticated,
             )
             returned_pdf = async_jobs.enqueue_pdf_export_job(
                 "123",
@@ -242,13 +264,14 @@ class AsyncJobRunnerTests(SimpleTestCase):
         self.assertIs(returned_drawio, drawio_job)
         self.assertIs(returned_pdf, pdf_job)
         drawio_payload = create.call_args_list[0].kwargs
-        self.assertIsNone(drawio_payload["requested_by"])
+        self.assertIs(drawio_payload["requested_by"], authenticated)
         self.assertEqual(drawio_payload["max_attempts"], 1)
         self.assertEqual(
             drawio_payload["payload"],
             {
                 "diagram_id": "diagram-42",
                 "xml_payload": "<mxGraphModel />",
+                "revision": async_jobs.sha256(b"<mxGraphModel />").hexdigest(),
                 "source": "",
                 "backoff_seconds": [0.0],
                 "trace_id": "trace-42",
@@ -263,9 +286,45 @@ class AsyncJobRunnerTests(SimpleTestCase):
         self.assertEqual(pdf_payload["payload"]["trace_id"], "trace-42")
         start.assert_has_calls([mock.call("drawio-job"), mock.call("pdf-job")])
 
+    def test_drawio_enqueue_requires_authenticated_diagram_access(self):
+        with self.assertRaisesMessage(ValueError, "authenticated requester"):
+            async_jobs.enqueue_drawio_export_job("diagram-42", xml_payload="<mxGraphModel/>")
+
+    def test_drawio_runner_rejects_stale_source_revision(self):
+        current_xml = "<mxGraphModel><root/></mxGraphModel>"
+        stale_xml = "<mxGraphModel/>"
+        job = SimpleNamespace(
+            id="stale-drawio-job",
+            status=AsyncJob.Status.QUEUED,
+            payload={
+                "diagram_id": "diagram-42",
+                "xml_payload": stale_xml,
+                "revision": async_jobs.sha256(stale_xml.encode("utf-8")).hexdigest(),
+                "backoff_seconds": [0],
+            },
+        )
+        query = self._mock_job_lookup(job)
+        diagram = SimpleNamespace(
+            pk="diagram-42",
+            read_xml=mock.Mock(return_value=current_xml),
+        )
+        with (
+            mock.patch("diagrams.models.DrawIODiagram.objects.filter") as find_diagram,
+            mock.patch("diagrams.views._export_drawio_views") as export,
+        ):
+            find_diagram.return_value.first.return_value = diagram
+            async_jobs._run_drawio_job(job.id)
+        export.assert_not_called()
+        self.assertEqual(
+            query.return_value.update.call_args.kwargs["last_error"],
+            "Stale Draw.io render revision.",
+        )
+
     def test_likec4_runner_retries_then_succeeds_and_records_metrics(self):
+        diagram = SimpleNamespace(pk="diagram-123", storage_path="data/context.c4", revision="")
         job = SimpleNamespace(
             id="likec4-job",
+            pk="likec4-job",
             status=AsyncJob.Status.QUEUED,
             payload={
                 "storage_path": "data/context.c4",
@@ -275,19 +334,22 @@ class AsyncJobRunnerTests(SimpleTestCase):
         )
         query = self._mock_job_lookup(job)
         with (
+            mock.patch("diagrams.models.LikeC4Diagram.objects.filter") as find_diagram,
+            mock.patch("diagrams.likec4_scope.refresh_revision", return_value="a" * 64),
             mock.patch("diagrams.likec4_exports.enqueue_likec4_export", side_effect=[False, True]) as export,
             mock.patch.object(async_jobs.time, "sleep") as sleep,
             mock.patch.object(async_jobs, "emit_baseline_metric") as metric,
         ):
+            find_diagram.return_value.first.return_value = diagram
             async_jobs._run_likec4_job(job.id)
 
         self.assertEqual(export.call_args_list, [
-            mock.call("data/context.c4", source="admin"),
-            mock.call("data/context.c4", source="admin"),
+            mock.call("data/context.c4", source="admin", diagram_id="diagram-123", revision="a" * 64),
+            mock.call("data/context.c4", source="admin", diagram_id="diagram-123", revision="a" * 64),
         ])
         sleep.assert_called_once_with(0.25)
         update_calls = query.return_value.update.call_args_list
-        self.assertEqual(len(update_calls), 3)
+        self.assertEqual(len(update_calls), 4)
         self.assertEqual(update_calls[-1].kwargs["status"], AsyncJob.Status.SUCCEEDED)
         self.assertEqual(update_calls[-1].kwargs["result_payload"], {
             "storage_path": "data/context.c4",
@@ -447,17 +509,22 @@ class AsyncJobRunnerTests(SimpleTestCase):
         clear.assert_not_called()
 
     def test_runner_exceptions_dead_letter_and_serialization_uses_safe_defaults(self):
+        diagram = SimpleNamespace(pk="diagram-456", storage_path="data/a.c4", revision="")
         job = SimpleNamespace(
             id="errored-job",
+            pk="errored-job",
             status=AsyncJob.Status.QUEUED,
             payload={"storage_path": "data/a.c4", "backoff_seconds": [0]},
         )
         query = self._mock_job_lookup(job)
         with (
+            mock.patch("diagrams.models.LikeC4Diagram.objects.filter") as find_diagram,
+            mock.patch("diagrams.likec4_scope.refresh_revision", return_value="b" * 64),
             mock.patch("diagrams.likec4_exports.enqueue_likec4_export", side_effect=RuntimeError("export failed")),
             mock.patch.object(async_jobs, "emit_baseline_metric"),
             mock.patch.object(async_jobs.logger, "exception"),
         ):
+            find_diagram.return_value.first.return_value = diagram
             async_jobs._run_likec4_job(job.id)
         self.assertEqual(query.return_value.update.call_args.kwargs["status"], AsyncJob.Status.DEAD_LETTERED)
         self.assertEqual(query.return_value.update.call_args.kwargs["last_error"], "RuntimeError: export failed")

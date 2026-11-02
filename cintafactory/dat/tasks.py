@@ -14,6 +14,7 @@ from django.utils import timezone
 
 from cintafactory.async_jobs import enqueue_pdf_export_job
 
+from .export_access import can_download
 from .models import DAT
 from .pdf import generate_dat_pdf
 from .utils import format_user_display, store_dat_pdf_export
@@ -28,6 +29,9 @@ def schedule_dat_pdf_generation(dat: DAT, user, *, base_url: str | None = None):
     Returns the async job when scheduled, None otherwise.
     """
     requester = user if getattr(user, "is_authenticated", False) else None
+    if not can_download(dat, requester, "pdf"):
+        logger.warning("Rejected unauthorized PDF generation request for DAT %s", dat.pk)
+        return None
     now = timezone.now()
     display = format_user_display(requester) if requester else "Système"
     updated = DAT.objects.filter(pk=dat.pk, pdf_export_in_progress=False).update(
@@ -61,7 +65,7 @@ def _run_pdf_generation(dat_id: int, base_url: str | None):
         close_old_connections()
     try:
         dat = (
-            DAT.objects.select_related("application", "owner")
+            DAT.objects.select_related("application", "owner", "pdf_export_requested_by")
             .prefetch_related("participants__role", "participants__user")
             .get(pk=dat_id)
         )
@@ -73,6 +77,10 @@ def _run_pdf_generation(dat_id: int, base_url: str | None):
     reference = dat.reference or dat.title or f"DAT #{dat.pk}"
     print(f"[DAT PDF] generation lancee ({reference}).", flush=True)
     logger.info("Generation PDF DAT %s lancee.", reference)
+    if not can_download(dat, dat.pdf_export_requested_by, "pdf"):
+        logger.warning("Rejected PDF generation after export approval expired for DAT %s", dat.pk)
+        _mark_export_finished(dat_id)
+        return False
     try:
         pdf_content, _payload = generate_dat_pdf(dat, base_url=base_url)
         path = store_dat_pdf_export(dat, pdf_content)

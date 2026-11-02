@@ -9,18 +9,23 @@ SPDX-License-Identifier: CC-BY-ND-4.0
 **Public visé :** développeurs, administrateurs fonctionnels et auditeurs.  
 **Objectif :** décrire les contrôles d'accès actuels sans supposer qu'un rôle d'interface suffit.  
 **Sources de vérité :** `dat/models.py`, `dat/permissions.py`, `dat/views.py`, `dat/workflow.py`, `dat/export_access.py`, `workflows/models.py`, `workflows/services.py`, `workflows/notifications.py`, `cintafactory/api/permissions.py`, `cintafactory/api/jobs.py`, `users/api.py`, `dat/api.py` et `diagrams/views.py`.  
-**Dernière vérification :** 24 août 2026.
+**Dernière vérification :** 27 octobre 2026.
 
 ## Règle générale
 
 Autorisation évaluée côté serveur. Masquer un bouton ne constitue jamais un contrôle d'accès.
 
-Le système combine quatre couches :
+Le système combine plusieurs couches :
 
 1. authentification Django ou OAuth2 ;
-2. visibilité du DAT ;
-3. rôle ou affectation métier ;
-4. permission Django par modèle pour l'API REST.
+2. autorisation API explicite (`User.can_use_api`) pour les endpoints REST ;
+3. visibilité du DAT ;
+4. rôle ou affectation métier ;
+5. permission propre à la ressource et à l'action.
+
+`can_use_api` vaut `False` par défaut. Seul un superadministrateur peut le modifier dans la gestion des utilisateurs. Le contrôle s'applique à l'API REST avec session Django ou OAuth2 ; il ne bloque pas les routes UI. Une désactivation bloque immédiatement les appels API, même avec un jeton OAuth existant.
+
+La navigation au navigateur vers une URL `/api/` renvoie la page 404 lorsque `can_use_api=False`, y compris pour Swagger, ReDoc, le schéma et l'authentification DRF. Les requêtes non navigateur sont refusées par les permissions API. Les pages UI du compte et de gestion des utilisateurs restent régies par leurs permissions habituelles.
 
 ## Identités privilégiées
 
@@ -48,7 +53,7 @@ Cette qualité permet notamment de gérer responsables de section et administrat
 
 Certaines fonctions sensibles vérifient directement la présence dans `DATAdmin`. L'accès sécurisé aux exports utilise cette définition stricte. Propriétaire, staff ou superutilisateur non inscrit explicitement ne satisfait donc pas nécessairement cette condition.
 
-La présence dans `DATAdmin` n'est toutefois pas une règle de visibilité dans `filter_dat_queryset_for_user()`. Un administrateur DAT explicite qui n'est ni administrateur global, ni propriétaire, ni participant, ni responsable de groupe d'un participant ne voit pas le DAT par ce seul enregistrement et ne peut pas atteindre ses endpoints filtrés.
+La présence dans `DATAdmin` rend aussi le DAT visible via `filter_dat_queryset_for_user()`, même si l'utilisateur n'en est ni le propriétaire ni un participant ou responsable de groupe. Les autres actions appliquent toujours leurs propres contrôles d'accès.
 
 ## Visibilité d'un DAT
 
@@ -57,6 +62,7 @@ Pour un utilisateur non administrateur global, `filter_dat_queryset_for_user()` 
 - utilisateur propriétaire ;
 - utilisateur participant du DAT ;
 - utilisateur responsable du groupe métier d'un participant.
+- utilisateur inscrit dans `DATAdmin` pour ce DAT.
 
 Utilisateur absent, anonyme ou schéma inattendu : aucun DAT retourné. Ce comportement est volontairement fermé par défaut.
 
@@ -66,8 +72,12 @@ Utilisateur absent, anonyme ou schéma inattendu : aucun DAT retourné. Ce compo
 | --- | --- |
 | Voir la liste « Mes DAT » | DAT visible selon règles ci-dessus. |
 | Créer application/DAT depuis interface métier | Utilisateur authentifié avec rôle `porteur-demande`. |
-| Consulter liste/détail du CRUD DAT | Utilisateur authentifié ; queryset filtré par visibilité DAT. |
-| Consulter liste/détail du CRUD application | Utilisateur authentifié ; toutes les applications sont actuellement exposées par ce CRUD. |
+| Consulter liste/détail du CRUD DAT via API | Utilisateur authentifié avec `can_use_api=True`, limité aux DAT visibles : propriétaire, participant, responsable de groupe métier d'un participant ou administrateur DAT explicite. |
+| Consulter liste/détail du CRUD application via API | Utilisateur authentifié avec `can_use_api=True` ; toutes les applications, comme dans le CRUD de gestion. |
+| Créer application/DAT via API | `can_use_api=True` et rôle `porteur-demande`, comme dans l'interface. Le propriétaire du DAT créé est l'utilisateur courant ; le statut et les champs d'export sont en lecture seule. |
+| Modifier application via API | Superutilisateur, staff ou rôle `admin`. |
+| Modifier DAT via API | Superutilisateur, staff ou rôle `admin`, ou propriétaire lorsque l'état de workflow autorise `owner_editable`. Propriétaire et statut restent en lecture seule. |
+| Supprimer application/DAT via API | Superutilisateur, staff ou rôle `admin`. |
 | Modifier ou supprimer via CRUD de gestion DAT/application | Superutilisateur, staff ou rôle `admin`. La création reste réservée au rôle `porteur-demande`. |
 | Utiliser liste administrative DAT, import et tableau de bord | Superutilisateur, staff ou rôle `admin`. |
 | Modifier responsables de section | Administrateur du DAT. |
@@ -106,33 +116,22 @@ Voir [Workflow.md](Workflow.md).
 
 ## API REST
 
-L'API utilise `GranularModelPermissions` :
+Chaque requête vers les ressources REST exige d'abord `can_use_api=True`. Les contrôles ci-dessous s'appliquent ensuite. Les endpoints utilisateurs et groupes sont réservés au superutilisateur pour toutes les méthodes, y compris `OPTIONS`. Les règles des autres ressources reproduisent les contrôles des vues correspondantes :
 
-| Méthode/action | Permission Django attendue |
+| Ressource/action | Contrôle d'accès |
 | --- | --- |
-| `GET` liste/détail utilisateur | `users.view_user` |
-| création utilisateur | `users.add_user` |
-| modification utilisateur | `users.change_user` |
-| suppression utilisateur | `users.delete_user` |
-| groupes | Permissions équivalentes sur `users.businessgroup`. |
-| applications | Permissions équivalentes sur `dat.application`. |
-| DAT | Permissions équivalentes sur `dat.dat`. |
+| Utilisateurs et groupes | `can_use_api=True` et superutilisateur pour toutes les méthodes. |
+| Applications | `can_use_api=True` ; tout utilisateur authentifié peut lire ; création `porteur-demande` ; modification/suppression par superutilisateur, staff ou rôle `admin`. |
+| DAT | `can_use_api=True` ; lecture filtrée par `filter_dat_queryset_for_user()` ; création `porteur-demande` ; modification par propriétaire si `owner_editable` ou gestionnaire global ; suppression par gestionnaire global. |
+| Jobs | `can_use_api=True` ; demandeur du job ; staff et superutilisateur voient tous. Actions opérateur réservées staff/superutilisateur. |
 
-Les endpoints jobs exigent seulement une authentification pour lecture, puis filtrent :
+Le queryset jobs applique ces filtres :
 
 - staff/superutilisateur : tous les jobs ;
-- autre utilisateur : jobs dont il est `requested_by` ;
+- autre utilisateur : seulement les jobs dont il est `requested_by` ;
 - `cancel`, `requeue`, `ignore` : staff ou superutilisateur.
 
-Contrôle objet des autres ViewSets appelle `user.has_perms(required, obj)`. Backend Django standard ne gère pas les permissions objet ; sans backend complémentaire, détail, modification et suppression peuvent être refusés malgré permission globale. Liste et création utilisent contrôle global sans objet.
-
-### Différence importante entre UI et API
-
-Les querysets REST `applications` et `dats` ne passent actuellement pas par `filter_dat_queryset_for_user()`. Sur les actions de liste, `dat.view_application` expose donc toutes les applications et `dat.view_dat` tous les DAT. Toute évolution API doit choisir explicitement entre permission globale de modèle et visibilité métier par DAT.
-
-`UserSerializer` expose `is_staff` et `is_superuser` en écriture. La garde actuelle est `users.change_user`, sans contrôle de champ distinct. Accorder cette permission à un rôle non superutilisateur peut permettre une élévation de privilèges.
-
-`DATSerializer` laisse également modifiables plusieurs champs internes d'export, notamment `pdf_export_path`, `pdf_export_requested_by` et `secure_export_requires_dual_admin_approval`. La garde REST est `dat.add_dat` globale à la création ou `dat.change_dat` avec le contrôle objet décrit ci-dessus à la modification ; ces permissions doivent donc rester administratives.
+Les endpoints de documentation `/api/schema/`, `/api/docs/` et `/api/redoc/` exigent un superutilisateur avec `can_use_api=True`. Seul un superadministrateur peut modifier ce champ dans la gestion des utilisateurs ; `/api/users/` le permet aussi si son propre accès API est actif. Les champs DAT `owner`, `status`, et métadonnées d'export sont en lecture seule dans le sérialiseur.
 
 ## Export sécurisé
 

@@ -22,14 +22,14 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
 from django.contrib.auth import views as auth_views
-from django.urls import include, path
+from django.urls import URLResolver, include, path
 from django.views.generic import RedirectView
 from drf_spectacular.views import (
     SpectacularAPIView,
     SpectacularRedocView,
     SpectacularSwaggerView,
 )
-from material.frontend import urls as material_urls
+from material.frontend import modules as material_modules
 
 from account.views import AccountLogoutView
 from cintafactory.admin_config import load_admin_config
@@ -88,7 +88,18 @@ urlpatterns = [
         name="password_reset_complete",
     ),
     path("oauth/", include("oauth2_provider.urls", namespace="oauth2_provider")),
-    path("", include(material_urls)),     # Material shell
+]
+
+# Keep explicit app routes authoritative; Material also registers these modules.
+_explicit_namespaces = {
+    pattern.namespace for pattern in urlpatterns if isinstance(pattern, URLResolver)
+}
+_material_patterns = [
+    pattern for pattern in material_modules.urls if pattern.namespace not in _explicit_namespaces
+]
+urlpatterns += [
+    path("accounts/", include("django.contrib.auth.urls")),
+    path("", include(_material_patterns)),
 ]
 
 if settings.DEBUG:

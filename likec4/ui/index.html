@@ -193,6 +193,7 @@
     integrity="sha384-xgEbYcV8275+SHiNp4AAv+asZ3e4k7NaDCajMhLZ0SwIeDHKG1huHcccDfFQW5KQ"
     crossorigin="anonymous"
   ></script>
+  <script src="security.js"></script>
   <script>
     const statusEl = document.getElementById('status');
     const saveBtn = document.getElementById('saveBtn');
@@ -207,7 +208,7 @@
     let activeView = initialViewParam ? String(initialViewParam).trim() : '';
     let currentBundleUrl = '';
 
-    const getFileLabel = () => activeFile || 'likec4/default.c4';
+    const getFileLabel = () => activeFile || 'Diagramme LikeC4';
     const getFileQuery = () => (activeFile ? `?file=${encodeURIComponent(activeFile)}` : '');
     const getViewLabel = () => activeView || (viewSelect && viewSelect.value) || 'index';
 
@@ -257,12 +258,13 @@
         currentBundleUrl = bundleUrl;
       }
       const viewId = getViewLabel();
-      const bundle = currentBundleUrl || 'likec4-webcomponent.js';
+      if (!currentBundleUrl) { iframe.src = 'about:blank'; return; }
+      const bundle = CintaLikeC4.scopedBundleUrl(currentBundleUrl, window.location.href);
       iframe.src = buildViewerUrl(bundle, viewId, cacheBust);
     };
 
     const setStatus = (text, accent = false) => {
-      statusEl.innerHTML = accent ? '<strong>' + text + '</strong>' : text;
+      CintaLikeC4.setStatusText(statusEl, text, accent);
     };
 
     const reloadDiagram = () => {
@@ -376,7 +378,7 @@
       if (!viewSelect) return;
       const views = extractViews(content);
       const current = activeView || viewSelect.value;
-      viewSelect.innerHTML = '';
+      viewSelect.replaceChildren();
       views.forEach((view) => {
         const option = document.createElement('option');
         option.value = view;
@@ -391,6 +393,11 @@
     const loadContent = async (editor) => {
       const res = await fetch(`c4${getFileQuery()}`);
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Chargement impossible');
+      if (data.file) updateFileContext(data.file);
+      const writable = data.can_write === true;
+      saveBtn.disabled = !writable;
+      editor.updateOptions({ readOnly: !writable });
       editor.setValue(data.content || '');
       updateViewOptions(data.content || '');
       if (data.bundle_url) {
@@ -418,7 +425,7 @@
         payload.png_path = response.png_path;
       }
       if (window.parent && window.parent !== window) {
-        window.parent.postMessage(payload, '*');
+        window.parent.postMessage(payload, window.location.origin);
       }
     };
 

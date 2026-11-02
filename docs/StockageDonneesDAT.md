@@ -7,7 +7,7 @@ SPDX-License-Identifier: CC-BY-ND-4.0
 # Stockage des données d'un DAT
 
 **Public visé :** développeurs, exploitants PostgreSQL et personnes responsables des exports DAT.
-**Objectif :** expliquer où et comment CintaFactory stocke le contenu d'un Dossier d'Architecture Technique (DAT), y compris les références draw.io et LikeC4.
+**Objectif :** expliquer où et comment DoDat stocke le contenu d'un Dossier d'Architecture Technique (DAT), y compris les références draw.io et LikeC4.
 **Sources de vérité :** `cintafactory/dat/models.py`, `cintafactory/dat/sections.py`, `cintafactory/dat/exporters.py`, `cintafactory/dat/importers.py`, `cintafactory/diagrams/models.py` et les migrations Django.
 **Dernière vérification :** 25 septembre 2026.
 

@@ -1,16 +1,19 @@
 {% load i18n static dat_extras %}
 {% get_current_language as LANGUAGE_CODE %}
 <!DOCTYPE html>
-<html lang="{{ LANGUAGE_CODE|default:'fr' }}">
-  <head>
-    {% block head %}
-      <meta charset="utf-8">
-      <meta http-equiv="X-UA-Compatible" content="IE=edge">
-      <meta name="viewport" content="width=device-width, initial-scale=1">
-      {% block turbolinks-cache-control %}<meta name="turbolinks-cache-control" content="no-cache">{% endblock %}
-      <title>{% block title %}{{ current_module.verbose_name|default:'Cintafactory' }}{% endblock %}</title>
-      {% block favicon %}<link href="{% static 'imgs/logo.ico' %}" rel="icon" type="image/x-icon">{% endblock %}
-      {% block css %}
+<html lang="{{ LANGUAGE_CODE|default:"fr" }}">
+    <head>
+        {% block head %}
+        <meta charset="utf-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0"/>
+        {% block turbolinks-cache-control %}<meta name="turbolinks-cache-control" content="no-cache">{% endblock %}
+        <title>{% block title %}{% endblock %} | {{ application_name }}</title>
+        {% block favicon %}<link href="{% static 'imgs/logo.ico' %}" rel="icon" type="image/x-icon">{% endblock %}
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+        {% block css %}
         {% include 'material/frontend/includes/material_css.html' %}
         <link rel="stylesheet" href="{% static 'css/global.css' %}">
         <link rel="stylesheet" href="{% static 'css/design-system.css' %}">

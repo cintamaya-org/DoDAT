@@ -9,7 +9,7 @@ SPDX-License-Identifier: CC-BY-ND-4.0
 **Public visé :** développeurs, exploitants, auditeurs et responsables sécurité.  
 **Objectif :** expliciter actifs, frontières de confiance, contrôles et limites connues.  
 **Périmètre :** application Django, API, uploads, exports, diagrammes, stockage et services internes.  
-**Dernière vérification :** 20 août 2026.
+**Dernière vérification :** 27 octobre 2026.
 
 Ce document décrit l'implémentation actuelle. Il ne remplace pas une analyse de risques, un test d'intrusion ou une politique `SECURITY.md`.
 
@@ -74,7 +74,10 @@ Services internes ne doivent pas être publiés directement en production. Entr�
 
 - session Django avec CSRF pour méthodes dangereuses ;
 - OAuth2 Bearer via `django-oauth-toolkit` ;
-- permissions Django par action.
+- accès REST par compte contrôlé par `User.can_use_api` : `False` par défaut, activable seulement par un superadministrateur ;
+- permissions par ressource identiques à l'interface de l'application ; contrôle de visibilité DAT côté serveur.
+
+Le contrôle `can_use_api` s'applique aux requêtes REST authentifiées par session comme par OAuth2. Le désactiver bloque les appels API suivants, même si des jetons OAuth restent valides ; les routes UI ne sont pas bloquées. Une navigation de navigateur vers `/api/` renvoie 404 pour un compte sans accès API, tandis que l'interface du compte reste disponible selon ses règles UI.
 
 `OAuthAccount` stocke access token, refresh token et profil brut. Chiffrement applicatif de ces colonnes n'est pas visible dans modèle actuel : protection repose sur DB, sauvegardes, accès administratifs et chiffrement infrastructure. Toute exportation DB doit être traitée comme secret.
 
@@ -84,20 +87,16 @@ Règles détaillées dans [Permissions.md](Permissions.md).
 
 Principes actuels :
 
-- filtrer DAT selon propriétaire, participant ou responsable de groupe ;
+- filtrer DAT selon propriétaire, participant, responsable de groupe ou administrateur DAT explicite ;
 - droits de section par affectation explicite ;
 - revue par administrateur global ou rôles de revue affectés ;
 - diagrammes draw.io limités au propriétaire ;
-- jobs utilisateurs filtrés par demandeur ;
+- Schéma OpenAPI, Swagger et ReDoc réservés aux superutilisateurs autorisés à utiliser l'API ; utilisateurs et groupes API également réservés aux superutilisateurs autorisés ;
+- toutes les ressources REST exigent `can_use_api=True` avant l'évaluation des permissions propres à la ressource ;
+- lectures API jobs limitées au demandeur, staff et superutilisateur ;
 - actions opérateur jobs réservées staff/superutilisateur.
 
-### Limite API connue
-
-Querysets REST DAT et applications ne reprennent pas le filtre « Mes DAT ». La permission globale `dat.view_dat` autorise le queryset complet exposé par API. Valider ce choix avant donner cette permission à un rôle non administratif.
-
-`UserSerializer` autorise aussi écriture de `is_staff` et `is_superuser` sous seule permission `users.change_user`. Ne pas déléguer cette permission à un administrateur limité avant ajout d'une autorisation de champ ou sérialiseur séparé.
-
-Contrôles API de détail appellent des permissions objet. Backend Django standard ne les implémente pas : comportement liste et comportement détail peuvent diverger. Définir explicitement backend/politique objet avant dépendre de ces endpoints.
+Les listes et détails DAT utilisent le même filtre serveur `filter_dat_queryset_for_user()` que l'application : propriétaire, participant, responsable du groupe métier d'un participant ou administrateur DAT explicite. Un identifiant deviné d'un DAT non visible renvoie une absence de ressource. Les créations et mutations des applications et DAT utilisent les mêmes rôles que leurs vues de gestion. `owner`, `status` et métadonnées d'export ne sont pas modifiables via le sérialiseur DAT.
 
 ## Entrées HTTP et navigateur
 

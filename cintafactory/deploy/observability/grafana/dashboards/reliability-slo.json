@@ -79,7 +79,7 @@
   "tags": ["plan6", "reliability", "slo"],
   "templating": {"list": []},
   "time": {"from": "now-24h", "to": "now"},
-  "title": "Cinta Reliability and SLO",
+  "title": "DoDat Reliability and SLO",
   "uid": "cinta-reliability-slo",
   "version": 1
 }

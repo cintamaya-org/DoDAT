@@ -1,633 +1,161 @@
 const http = require('http');
-const { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } = require('fs').promises;
-const { createHash, timingSafeEqual } = require('crypto');
-const { dirname, join, posix, relative, resolve, sep } = require('path');
-const { spawn } = require('child_process');
-const { URL } = require('url');
+const { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } = require('fs').promises;
+const { dirname, join, relative, resolve, sep } = require('path');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
 const { tmpdir } = require('os');
 const { seaweedAuthHeaders } = require('./seaweedfs_auth');
+const { DEFAULT_LIMITS, RequestError, authorizeScope, validateSource, readResponseText, readJson, outputPrefix, createQueue } = require('./scope');
 
-const EXPORT_HOST = process.env.LIKEC4_EXPORT_HOST || '0.0.0.0';
-const EXPORT_PORT = Number.parseInt(process.env.LIKEC4_EXPORT_PORT || '9000', 10);
-const MAX_BODY_BYTES = Number.parseInt(process.env.LIKEC4_EXPORT_MAX_BODY_BYTES || '1048576', 10);
-
-const stripTrailingSlashes = (value) => {
-  let result = String(value || '');
-  let end = result.length;
-  while (end > 0 && result[end - 1] === '/') {
-    end -= 1;
-  }
-  return end === result.length ? result : result.slice(0, end);
-};
-
-const stripLeadingSlashes = (value) => {
-  const result = String(value || '');
-  let start = 0;
-  while (start < result.length && result[start] === '/') {
-    start += 1;
-  }
-  return start === 0 ? result : result.slice(start);
-};
-
-const stripBoundarySlashes = (value) => {
-  const withoutLeading = stripLeadingSlashes(value);
-  return stripTrailingSlashes(withoutLeading);
-};
-
-const SEAWEEDFS_FILER_URL = stripTrailingSlashes(process.env.SEAWEEDFS_FILER_URL);
-const SEAWEEDFS_BASE_DIR = stripBoundarySlashes(process.env.SEAWEEDFS_BASE_DIR);
-const LIKEC4_METADATA_URL = process.env.LIKEC4_METADATA_URL || '';
-const LIKEC4_METADATA_TOKEN = (process.env.LIKEC4_METADATA_TOKEN || '').trim();
-const LIKEC4_API_TOKEN = (process.env.LIKEC4_API_TOKEN || '').trim();
-const EXPORT_ROOT = stripTrailingSlashes(process.env.LIKEC4_EXPORT_TMP || '');
-const LOCAL_EXPORT_DIR = stripTrailingSlashes(process.env.LIKEC4_EXPORT_LOCAL_DIR || '/var/likec4-exports');
-const EXPORT_FORMAT = process.env.LIKEC4_EXPORT_FORMAT || 'png';
-const EXPORT_VIEW = process.env.LIKEC4_EXPORT_VIEW || '';
-const MAX_RETRIES = Number.parseInt(process.env.LIKEC4_EXPORT_MAX_RETRIES || '3', 10);
-const PRIVATE_DIR_MODE = 0o700;
-const parseBool = (value, defaultValue = true) => {
-  if (value === undefined || value === null || value === '') {
-    return defaultValue;
-  }
-  const normalized = String(value).trim().toLowerCase();
-  if (['0', 'false', 'no', 'off'].includes(normalized)) {
-    return false;
-  }
-  if (['1', 'true', 'yes', 'on'].includes(normalized)) {
-    return true;
-  }
-  return defaultValue;
-};
-
-const DELETE_OLD_EXPORTS = parseBool(process.env.LIKEC4_EXPORT_DELETE_OLD, true);
-
-const ensurePrivateExportRoot = async (dir) => {
-  const resolved = resolve(dir);
-  await mkdir(resolved, { recursive: true, mode: PRIVATE_DIR_MODE });
-  const stats = await lstat(resolved);
-  if (stats.isSymbolicLink()) {
-    throw new Error(`LIKEC4_EXPORT_TMP must not be a symlink: ${resolved}`);
-  }
-  if (!stats.isDirectory()) {
-    throw new Error(`LIKEC4_EXPORT_TMP must be a directory: ${resolved}`);
-  }
-  if (typeof process.getuid === 'function' && stats.uid !== process.getuid()) {
-    throw new Error(`LIKEC4_EXPORT_TMP must be owned by current user: ${resolved}`);
-  }
-  if ((stats.mode & 0o077) !== 0) {
-    await chmod(resolved, PRIVATE_DIR_MODE);
-  }
-  return resolved;
-};
-
-const ensurePrivateWorkDir = async (dir) => {
-  const stats = await lstat(dir);
-  if (!stats.isDirectory() || stats.isSymbolicLink()) {
-    throw new Error(`Export work dir must be a private directory: ${dir}`);
-  }
-  if ((stats.mode & 0o077) !== 0) {
-    await chmod(dir, PRIVATE_DIR_MODE);
-  }
+const execFileAsync = promisify(execFile);
+const PNG_SIGNATURE = Buffer.from('89504e470d0a1a0a', 'hex');
+const MAX_PNG_BYTES = 32 * 1024 * 1024;
+const MAX_PNG_FILES = 128;
+const privateRoot = async root => {
+  const dir = resolve(root);
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const info = await lstat(dir);
+  if (!info.isDirectory() || info.isSymbolicLink() || (process.getuid && info.uid !== process.getuid())) throw new Error('Invalid export root');
+  await chmod(dir, 0o700);
   return dir;
 };
-
-const createPrivateWorkDir = async (jobId) => {
-  const prefix = `likec4-export-${jobId}-`;
-  if (!EXPORT_ROOT) {
-    return ensurePrivateWorkDir(await mkdtemp(join(tmpdir(), prefix)));
-  }
-  const root = await ensurePrivateExportRoot(EXPORT_ROOT);
-  return ensurePrivateWorkDir(await mkdtemp(join(root, prefix)));
+const createWorkDir = async () => {
+  const root = process.env.LIKEC4_EXPORT_TMP ? await privateRoot(process.env.LIKEC4_EXPORT_TMP) : tmpdir();
+  return mkdtemp(join(root, 'likec4-export-'));
 };
-
-const sanitizeStoragePath = (input) => {
-  const raw = String(input ?? '').trim();
-  if (!raw) return '';
-  const unified = stripBoundarySlashes(raw.replace(/\\/g, '/'));
-  if (!unified) return '';
-  const segments = unified.split('/');
-  if (segments.some(segment => !segment || segment === '.' || segment === '..')) {
-    return '';
-  }
-  const normalized = posix.normalize(unified);
-  if (!normalized || normalized === '.') return '';
-  return normalized;
+const safeLocalJoin = (base, relativePath) => {
+  if (typeof relativePath !== 'string' || !relativePath.split('/').every(part => part && part !== '.' && part !== '..') || /[\\:\x00]/.test(relativePath)) throw new Error('Invalid local output path');
+  const root = resolve(base);
+  const target = resolve(root, relativePath);
+  if (!target.startsWith(`${root}${sep}`)) throw new Error('Invalid local output path');
+  return target;
 };
-
-const requireCleanStoragePath = (input, label = 'storage_path') => {
-  const cleaned = sanitizeStoragePath(input);
-  if (!cleaned) {
-    throw new Error(`Invalid ${label}`);
+const findPngFiles = async (dir, depth = 0) => {
+  if (depth > 4) return [];
+  const files = [];
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) files.push(...await findPngFiles(path, depth + 1));
+    else if (entry.isFile() && entry.name.toLowerCase().endsWith('.png')) files.push(path);
+    if (files.length > MAX_PNG_FILES) throw new Error('Too many PNG outputs');
   }
-  return cleaned;
+  return files;
 };
-
-const encodeSeaweedPath = (path) => {
-  const clean = stripLeadingSlashes(path);
-  const full = SEAWEEDFS_BASE_DIR ? `${SEAWEEDFS_BASE_DIR}/${clean}` : clean;
-  return full
-    .split('/')
-    .map(segment => encodeURIComponent(segment))
-    .join('/');
-};
-
-const buildSeaweedUrl = (path) => {
-  if (!SEAWEEDFS_FILER_URL) {
-    throw new Error('SEAWEEDFS_FILER_URL not configured');
-  }
-  const cleaned = requireCleanStoragePath(path, 'SeaweedFS path');
-  return `${SEAWEEDFS_FILER_URL}/${encodeSeaweedPath(cleaned)}`;
-};
-
-const seaweedPath = (path) => {
-  const clean = stripLeadingSlashes(path);
-  return SEAWEEDFS_BASE_DIR ? `${SEAWEEDFS_BASE_DIR}/${clean}` : clean;
-};
-
-const readFromSeaweed = async (path) => {
-  const url = buildSeaweedUrl(path);
-  const response = await fetch(url, { method: 'GET', headers: seaweedAuthHeaders(seaweedPath(path), 'GET') });
-  if (response.status === 404) {
-    throw new Error(`SeaweedFS file not found: ${path}`);
-  }
-  if (!response.ok) {
-    throw new Error(`SeaweedFS read failed (${response.status})`);
-  }
-  return response.text();
-};
-
-const headFromSeaweed = async (path) => {
-  const url = buildSeaweedUrl(path);
-  const response = await fetch(url, { method: 'HEAD', headers: seaweedAuthHeaders(seaweedPath(path), 'HEAD') });
-  if (response.status === 404) {
-    throw new Error(`SeaweedFS file not found: ${path}`);
-  }
-  if (!response.ok) {
-    throw new Error(`SeaweedFS head failed (${response.status})`);
-  }
-  const length = response.headers.get('content-length') || '0';
-  const contentType = response.headers.get('content-type') || 'text/plain';
-  const size = Number.parseInt(length, 10);
-  return { size: Number.isFinite(size) ? size : 0, contentType };
-};
-
-const writeToSeaweed = async (path, buffer, contentType) => {
-  const url = buildSeaweedUrl(path);
-  const response = await fetch(url, {
-    method: 'PUT',
-    headers: {
-      ...seaweedAuthHeaders(seaweedPath(path), 'PUT'),
-      'Content-Type': contentType,
-      'Content-Length': String(buffer.length),
-    },
-    body: buffer,
-  });
-  if (!response.ok) {
-    throw new Error(`SeaweedFS write failed (${response.status})`);
-  }
-};
-
-const likec4PngPathFor = (storagePath) => {
-  const cleaned = requireCleanStoragePath(storagePath);
-  const parts = cleaned.split('/').filter(Boolean);
-  if (parts.length >= 3 && parts[0] === 'diagrams') {
-    return `diagrams/${parts[1]}/views/thumb.png`;
-  }
-  const baseName = posix.basename(cleaned || 'diagram.c4');
-  const base = baseName.toLowerCase().endsWith('.c4') ? baseName.slice(0, -3) : baseName;
-  return `diagrams/likec4/${base}/views/thumb.png`;
-};
-
-const likec4ViewsDirFor = (storagePath) => {
-  const cleaned = requireCleanStoragePath(storagePath);
-  const parts = cleaned.split('/').filter(Boolean);
-  if (parts.length >= 3 && parts[0] === 'diagrams') {
-    return `diagrams/${parts[1]}/views`;
-  }
-  const baseName = posix.basename(cleaned || 'diagram.c4');
-  const base = baseName.toLowerCase().endsWith('.c4') ? baseName.slice(0, -3) : baseName;
-  return `diagrams/likec4/${base}/views`;
-};
-
-const safeLocalJoin = (baseDir, relativePath) => {
-  const cleaned = stripLeadingSlashes(String(relativePath || '').replace(/\\/g, '/'));
-  if (!cleaned) return '';
-  const segments = cleaned.split('/').filter(Boolean);
-  if (!segments.length || segments.some(segment => segment === '.' || segment === '..')) {
-    return '';
-  }
-  const normalized = posix.normalize(segments.join('/'));
-  if (!normalized || normalized === '.' || normalized.startsWith('..') || normalized.includes('/..') || normalized.includes(':')) {
-    return '';
-  }
-  const resolvedBase = resolve(baseDir);
-  const resolvedTarget = resolve(baseDir, normalized);
-  if (resolvedTarget === resolvedBase || !resolvedTarget.startsWith(`${resolvedBase}${sep}`)) {
-    return '';
-  }
-  return resolvedTarget;
-};
-
-const normalizeRelativePath = (baseDir, filePath) => {
-  const rel = relative(baseDir, filePath);
-  const posixRel = posix.normalize(rel.split(sep).join('/'));
-  if (!posixRel || posixRel === '.' || posixRel.startsWith('..') || posixRel.includes('/..')) {
-    return '';
-  }
-  return posixRel;
-};
-
-const runCommand = (cmd, args, cwd) => new Promise((resolve, reject) => {
-  console.log(`LikeC4 export: run command: ${cmd} ${args.join(' ')} (cwd=${cwd})`);
-  const child = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
-  console.log(`LikeC4 export: 1`);
-  let stdout = '';
-  let stderr = '';
-  console.log(`LikeC4 export:2`);
-  child.stdout.on('data', chunk => {
-    stdout += chunk.toString();
-  });
-  console.log(`LikeC4 export: 3`);
-  child.stderr.on('data', chunk => {
-    stderr += chunk.toString();
-  });
-  console.log(`LikeC4 export: 4`);
-  child.on('error', reject);
-  console.log(`LikeC4 export: 5`);
-  child.on('close', code => {
-    if (code === 0) {
-      if (stdout.trim()) {
-        console.log(`LikeC4 export: command stdout: ${stdout.trim()}`);
-      }
-      if (stderr.trim()) {
-        console.warn(`LikeC4 export: command stderr: ${stderr.trim()}`);
-      }
-      console.log(`LikeC4 export: 666`);
-      console.log(`LikeC4 export: CODE : ${code}`);
-      console.log(`LikeC4 export:  stdout: ${String(stdout)}`);
-      console.log(`LikeC4 export: 777`);
-      resolve({ stdout, stderr });
-    } else {
-      reject(new Error(`Command failed (${code}): ${cmd} ${args.join(' ')}\n${stderr}`));
-    }
-  });
-});
-
-const findPngFiles = async (dir, depth = 0, maxDepth = 4) => {
-  if (depth > maxDepth) return [];
-  let entries;
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const results = [];
-  for (const entry of entries) {
-    const fullPath = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      results.push(...await findPngFiles(fullPath, depth + 1, maxDepth));
-    } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.png')) {
-      results.push(fullPath);
-    }
-  }
-  return results;
-};
-
-const selectPng = (paths) => {
-  if (!paths.length) return null;
-  if (EXPORT_VIEW) {
-    const preferred = paths.find(path => path.toLowerCase().includes(EXPORT_VIEW.toLowerCase()));
-    if (preferred) return preferred;
-  }
-  return paths.sort()[0];
-};
-
-const exportLikeC4 = async (inputPath, workDir) => {
+const exportLikeC4 = async (workDir, exec = execFileAsync) => {
   const outputDir = join(workDir, 'out');
-  console.log(`LikeC4 export: preparing output dir ${outputDir}`);
-  await mkdir(outputDir, { recursive: true });
-  const viewArgs = EXPORT_VIEW ? ['--filter', EXPORT_VIEW] : [];
-  const formatToken = EXPORT_FORMAT || 'png';
-  const sourceArg = '.';
-  const candidates = [
-    ['export', formatToken, '-o', outputDir, sourceArg, ...viewArgs],
-    ['export', formatToken, '-o', outputDir, ...viewArgs, sourceArg],
-  ];
-  let lastError = null;
-  for (const args of candidates) {
-    try {
-      console.log(`LikeC4 export: trying likec4 ${args.join(' ')}`);
-      await runCommand('likec4', args, workDir);
-      const pngs = [
-        ...await findPngFiles(outputDir),
-        ...await findPngFiles(workDir),
-      ];
-      console.log(`LikeC4 export: found PNGs: ${pngs.length ? pngs.join(', ') : 'none'}`);
-      const uniquePngs = Array.from(new Set(pngs));
-      const selected = selectPng(uniquePngs) || uniquePngs[0] || null;
-      if (selected) {
-        console.log(`LikeC4 export: selected PNG ${selected}`);
-        return { pngs: uniquePngs, selected, outputDir };
-      }
-      lastError = new Error(`No PNG output detected after: likec4 ${args.join(' ')}`);
-    } catch (err) {
-      console.warn(`LikeC4 export: command failed: ${err.message}`);
-      lastError = err;
-    }
-  }
-  throw lastError || new Error('LikeC4 export failed');
+  await mkdir(outputDir, { mode: 0o700 });
+  const view = process.env.LIKEC4_EXPORT_VIEW;
+  const args = ['export', 'png', '-o', outputDir, '.', ...(view ? ['--filter', view] : [])];
+  await exec(process.env.LIKEC4_BIN || 'likec4', args, { cwd: workDir, timeout: Number(process.env.LIKEC4_RENDER_TIMEOUT_MS || 120000), maxBuffer: 1024 * 1024 });
+  const pngs = (await findPngFiles(outputDir)).sort();
+  if (!pngs.length) throw new Error('No PNG output');
+  return { outputDir, pngs };
 };
-
-const postMetadata = async ({ filePath, size, contentType, pngPath, pngSize, pngContentType, pngPaths }) => {
-  if (!LIKEC4_METADATA_URL) {
-    console.warn('LIKEC4_METADATA_URL not configured; skipping metadata update.');
-    return;
-  }
-  const headers = { 'Content-Type': 'application/json' };
-  const url = LIKEC4_METADATA_URL;
-  const payload = {
-    path: filePath,
-    size,
-    content_type: contentType,
-    png_path: pngPath,
-    png_size: pngSize,
-    png_content_type: pngContentType,
+const createStorage = () => {
+  const filer = String(process.env.SEAWEEDFS_FILER_URL || '').replace(/\/+$/, '');
+  const base = String(process.env.SEAWEEDFS_BASE_DIR || '').replace(/^\/+|\/+$/g, '');
+  const location = path => base ? `${base}/${path}` : path;
+  const url = path => {
+    if (!/^https?:\/\//.test(filer)) throw new RequestError(503, 'storage_not_configured');
+    return `${filer}/${location(path).split('/').map(encodeURIComponent).join('/')}`;
   };
-  if (LIKEC4_METADATA_TOKEN) {
-    headers['X-LikeC4-Token'] = LIKEC4_METADATA_TOKEN;
-  }
-  if (Array.isArray(pngPaths) && pngPaths.length) {
-    payload.png_paths = pngPaths;
-  }
-  const response = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    const body = await response.text().catch(() => '');
-    throw new Error(`Metadata update failed (${response.status}) ${body}`);
-  }
+  return {
+    read: async path => {
+      const response = await fetch(url(path), { headers: seaweedAuthHeaders(location(path), 'GET'), signal: AbortSignal.timeout(30000), redirect: 'error' });
+      if (response.status === 404) throw new RequestError(404, 'source_not_found');
+      if (!response.ok) throw new RequestError(502, 'storage_read_failed');
+      return readResponseText(response, DEFAULT_LIMITS.source);
+    },
+    write: async (path, body) => {
+      const response = await fetch(url(path), { method: 'PUT', headers: { ...seaweedAuthHeaders(location(path), 'PUT'), 'Content-Type': 'image/png', 'Content-Length': String(body.length) }, body, signal: AbortSignal.timeout(30000), redirect: 'error' });
+      if (!response.ok) throw new RequestError(502, 'storage_write_failed');
+      if (response.body) await response.body.cancel();
+    },
+  };
 };
-
-const processJob = async (payload) => {
-  const storagePath = requireCleanStoragePath(payload.storage_path);
-  console.log(`Export start: ${storagePath}`);
-  console.log('LikeC4 export: reading source from SeaweedFS');
-  const content = await readFromSeaweed(storagePath);
-  console.log('LikeC4 export: reading metadata from SeaweedFS');
-  const { size, contentType } = await headFromSeaweed(storagePath);
-  const jobId = createHash('sha256').update(`${storagePath}-${Date.now()}`).digest('hex').slice(0, 12);
-  console.log('LikeC4 export: creating private work dir');
-  const workDir = await createPrivateWorkDir(jobId);
-  const inputPath = join(workDir, 'diagram.c4');
-  console.log(`LikeC4 export: created work dir ${workDir}`);
+const postMetadata = async payload => {
+  const url = process.env.LIKEC4_METADATA_URL;
+  const token = process.env.LIKEC4_METADATA_TOKEN;
+  if (!url || !token) throw new RequestError(503, 'callback_not_configured');
+  const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-LikeC4-Token': token }, body: JSON.stringify(payload), signal: AbortSignal.timeout(30000), redirect: 'error' });
+  if (!response.ok) throw new RequestError(response.status === 409 ? 409 : 502, response.status === 409 ? 'stale_revision' : 'metadata_failed');
+  if (response.body) await response.body.cancel();
+};
+const processJob = async (scope, { storage = createStorage(), render = exportLikeC4, metadata = postMetadata, localDir = process.env.LIKEC4_EXPORT_LOCAL_DIR || '/var/likec4-exports' } = {}) => {
+  // Hash is checked before invoking CLI or writing any output; stale jobs cannot publish a different source.
+  const content = validateSource(await storage.read(scope.storage_path), scope.revision);
+  const workDir = await createWorkDir();
   try {
-    console.log(`LikeC4 export: writing input file ${inputPath}`);
-    await writeFile(inputPath, content ?? '', 'utf8');
-    console.log('LikeC4 export: running likec4 CLI');
-    const exportResult = await exportLikeC4(inputPath, workDir);
-    const pngFiles = exportResult.pngs || [];
-    const selected = exportResult.selected || pngFiles[0] || null;
-    const outputDir = exportResult.outputDir || workDir;
-    const primaryPngPath = likec4PngPathFor(storagePath);
-    const viewsBaseDir = likec4ViewsDirFor(storagePath);
-    let existingLocalPngs = [];
-    if (LOCAL_EXPORT_DIR && DELETE_OLD_EXPORTS) {
-      const localViewsDir = safeLocalJoin(LOCAL_EXPORT_DIR, viewsBaseDir);
-      if (!localViewsDir) {
-        throw new Error(`Invalid local export path for ${viewsBaseDir}`);
+    await writeFile(join(workDir, 'diagram.c4'), content, { encoding: 'utf8', mode: 0o600 });
+    const { outputDir, pngs } = await render(workDir);
+    if (!pngs.length || pngs.length > MAX_PNG_FILES) throw new Error('Invalid PNG output count');
+    const prefix = outputPrefix(scope);
+    const paths = [];
+    let primary;
+    let aggregate = 0;
+    for (const png of pngs) {
+      const info = await lstat(png);
+      const suffix = relative(outputDir, png).split(sep).join('/');
+      if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_PNG_BYTES || !suffix.endsWith('.png')) throw new Error('Invalid PNG output');
+      const path = `${prefix}/${suffix}`;
+      // The exact same containment test governs both remote and optional local output names.
+      safeLocalJoin(workDir, path);
+      aggregate += info.size;
+      if (aggregate > 64 * 1024 * 1024) throw new Error('PNG output too large');
+      const bytes = await readFile(png);
+      if (!bytes.subarray(0, 8).equals(PNG_SIGNATURE)) throw new Error('Invalid PNG content');
+      await storage.write(path, bytes);
+      if (localDir) {
+        const target = safeLocalJoin(localDir, path);
+        await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+        await writeFile(target, bytes, { mode: 0o600 });
       }
-      existingLocalPngs = await findPngFiles(localViewsDir);
+      paths.push(path);
+      if (!primary) primary = { path, bytes };
     }
-    if (LOCAL_EXPORT_DIR) {
-      const localC4Path = safeLocalJoin(LOCAL_EXPORT_DIR, storagePath);
-      if (!localC4Path) {
-        throw new Error(`Invalid local export path for ${storagePath}`);
-      }
-      console.log(`LikeC4 export: writing local .c4 ${localC4Path}`);
-      await mkdir(dirname(localC4Path), { recursive: true });
-      await writeFile(localC4Path, content ?? '', 'utf8');
+    if (localDir) {
+      const source = safeLocalJoin(localDir, `diagrams/likec4/${scope.diagram_id}/revisions/${scope.revision}/source.c4`);
+      await mkdir(dirname(source), { recursive: true, mode: 0o700 });
+      await writeFile(source, content, { encoding: 'utf8', mode: 0o600 });
     }
-    if (!pngFiles.length) {
-      throw new Error('LikeC4 export produced no PNG files.');
-    }
-    let primaryBuffer = null;
-    const uploadedPaths = [];
-    const viewPaths = [];
-    const newLocalPngs = new Set();
-    for (const pngFile of pngFiles) {
-      const isPrimary = selected && pngFile === selected;
-      console.log(`LikeC4 export: reading PNG file ${pngFile}`);
-      const pngBuffer = await readFile(pngFile);
-      const relativePng = normalizeRelativePath(outputDir, pngFile);
-      const viewSuffix = relativePng || posix.basename(pngFile);
-      const viewTargetPath = `${viewsBaseDir}/${viewSuffix}`;
-      if (LOCAL_EXPORT_DIR) {
-        const localPngPath = safeLocalJoin(LOCAL_EXPORT_DIR, viewTargetPath);
-        if (!localPngPath) {
-          throw new Error(`Invalid local export path for ${viewTargetPath}`);
-        }
-        console.log(`LikeC4 export: writing local PNG ${localPngPath}`);
-        await mkdir(dirname(localPngPath), { recursive: true });
-        await writeFile(localPngPath, pngBuffer);
-        newLocalPngs.add(localPngPath);
-      }
-      console.log(`LikeC4 export: uploading PNG to SeaweedFS ${viewTargetPath}`);
-      await writeToSeaweed(viewTargetPath, pngBuffer, 'image/png');
-      uploadedPaths.push(viewTargetPath);
-      viewPaths.push(viewTargetPath);
-      if (isPrimary) {
-        primaryBuffer = pngBuffer;
-        if (primaryPngPath !== viewTargetPath) {
-          if (LOCAL_EXPORT_DIR) {
-            const localPrimaryPath = safeLocalJoin(LOCAL_EXPORT_DIR, primaryPngPath);
-            if (!localPrimaryPath) {
-              throw new Error(`Invalid local export path for ${primaryPngPath}`);
-            }
-            console.log(`LikeC4 export: writing local PNG ${localPrimaryPath}`);
-            await mkdir(dirname(localPrimaryPath), { recursive: true });
-            await writeFile(localPrimaryPath, pngBuffer);
-            newLocalPngs.add(localPrimaryPath);
-          }
-          console.log(`LikeC4 export: uploading PNG to SeaweedFS ${primaryPngPath}`);
-          await writeToSeaweed(primaryPngPath, pngBuffer, 'image/png');
-          uploadedPaths.push(primaryPngPath);
-        }
-      }
-    }
-    if (!primaryBuffer) {
-      primaryBuffer = await readFile(selected || pngFiles[0]);
-    }
-    const uniqueUploadedPaths = Array.from(new Set(uploadedPaths));
-    const uniqueViewPaths = Array.from(new Set(viewPaths));
-    console.log('LikeC4 export: posting metadata');
-    await postMetadata({
-      filePath: storagePath,
-      size,
-      contentType,
-      pngPath: primaryPngPath,
-      pngSize: primaryBuffer.length,
-      pngContentType: 'image/png',
-      pngPaths: uniqueViewPaths,
-    });
-    if (LOCAL_EXPORT_DIR && DELETE_OLD_EXPORTS && existingLocalPngs.length) {
-      const toDelete = existingLocalPngs.filter(path => !newLocalPngs.has(path));
-      for (const oldPath of toDelete) {
-        try {
-          await rm(oldPath, { force: true });
-        } catch (err) {
-          console.warn(`LikeC4 export: failed to delete local PNG ${oldPath}: ${err.message}`);
-        }
-      }
-    }
-    console.log(`Export done: ${storagePath} -> ${primaryPngPath} (+${uniqueViewPaths.length} view PNGs)`);
-    return {
-      storage_path: storagePath,
-      png_path: primaryPngPath,
-      png_size: primaryBuffer.length,
-      png_content_type: 'image/png',
-      png_paths: uniqueViewPaths,
+    const payload = {
+      diagram_id: scope.diagram_id, path: scope.storage_path, revision: scope.revision,
+      size: Buffer.byteLength(content), content_type: 'text/plain',
+      png_path: primary.path, png_paths: paths, png_size: primary.bytes.length, png_content_type: 'image/png',
     };
-  } finally {
-    try {
-      await rm(workDir, { recursive: true, force: true });
-    } catch {
-      // ignore cleanup errors
-    }
-  }
+    await metadata(payload);
+    return { storage_path: scope.storage_path, diagram_id: scope.diagram_id, revision: scope.revision, png_path: primary.path, png_paths: paths, png_size: primary.bytes.length, png_content_type: 'image/png' };
+  } finally { await rm(workDir, { recursive: true, force: true }); }
 };
-
-const readBody = (req) => new Promise((resolve, reject) => {
-  let size = 0;
-  const chunks = [];
-  req.on('data', (chunk) => {
-    size += chunk.length;
-    if (size > MAX_BODY_BYTES) {
-      reject(new Error('Payload too large'));
-      req.destroy();
-      return;
-    }
-    chunks.push(chunk);
-  });
-  req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-  req.on('error', reject);
-});
-
-const readJsonBody = async (req) => {
-  const raw = await readBody(req);
-  if (!raw) return {};
-  try {
-    return JSON.parse(raw);
-  } catch {
-    throw new Error('Invalid JSON payload');
-  }
-};
-
-const getAuthToken = (req) => {
-  const header = req.headers.authorization || '';
-  if (header.toLowerCase().startsWith('bearer ')) {
-    return header.slice(7).trim();
-  }
-  const tokenHeader = req.headers['x-likec4-token'];
-  if (tokenHeader) {
-    return String(tokenHeader).trim();
-  }
-  return '';
-};
-
-const tokensMatch = (provided, expected) => {
-  const providedDigest = createHash('sha256').update(String(provided || ''), 'utf8').digest();
-  const expectedDigest = createHash('sha256').update(String(expected || ''), 'utf8').digest();
-  return timingSafeEqual(providedDigest, expectedDigest);
-};
-
-const requireApiAuth = (req, res) => {
-  if (!LIKEC4_API_TOKEN) {
-    sendJson(res, 500, { ok: false, error: 'Server not configured' });
-    return false;
-  }
-  const provided = getAuthToken(req);
-  if (!provided || !tokensMatch(provided, LIKEC4_API_TOKEN)) {
-    sendJson(res, 401, { ok: false, error: 'Unauthorized' });
-    return false;
-  }
-  return true;
-};
-
 const sendJson = (res, status, payload) => {
-  const body = JSON.stringify(payload);
-  res.writeHead(status, {
-    'Content-Type': 'application/json',
-    'Content-Length': Buffer.byteLength(body),
-  });
-  res.end(body);
+  res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+  res.end(JSON.stringify(payload));
 };
-
-const runExportWithRetries = async (payload) => {
-  const attempts = Math.max(0, Number.isFinite(MAX_RETRIES) ? MAX_RETRIES : 0) + 1;
-  let lastError = null;
-  for (let idx = 1; idx <= attempts; idx += 1) {
+const createHandler = ({ apiToken = process.env.LIKEC4_API_TOKEN || '', run = processJob } = {}) => {
+  const queue = createQueue(8);
+  return async (req, res) => {
     try {
-      return await processJob(payload);
+      const url = new URL(req.url, 'http://localhost');
+      if (req.method === 'GET' && url.pathname === '/health') return sendJson(res, 200, { ok: true });
+      if (req.method !== 'POST' || url.pathname !== '/export') throw new RequestError(404, 'not_found');
+      const scope = authorizeScope(req, apiToken, 'export');
+      const payload = await readJson(req);
+      authorizeScope(req, apiToken, 'export', undefined, payload);
+      const result = await queue(() => run(scope));
+      return sendJson(res, 200, { ok: true, ...result });
     } catch (err) {
-      lastError = err;
-      console.error(`Export failed (attempt ${idx}/${attempts}): ${err.message}`);
+      const status = err instanceof RequestError ? err.status : 500;
+      const error = err instanceof RequestError ? err.code : 'export_failed';
+      return sendJson(res, status, { ok: false, error });
     }
-  }
-  throw lastError || new Error('LikeC4 export failed');
+  };
 };
-
-const start = async () => {
-  if (!SEAWEEDFS_FILER_URL) {
-    console.error('SEAWEEDFS_FILER_URL must be configured.');
-    process.exit(1);
-  }
-  const server = http.createServer(async (req, res) => {
-    let pathname = '/';
-    try {
-      pathname = new URL(req.url, `http://${req.headers.host || 'localhost'}`).pathname;
-    } catch {
-      pathname = req.url || '/';
-    }
-    if (req.method === 'GET' && pathname === '/health') {
-      sendJson(res, 200, { ok: true });
-      return;
-    }
-    if (req.method !== 'POST' || pathname !== '/export') {
-      res.statusCode = 404;
-      res.end();
-      return;
-    }
-    if (!requireApiAuth(req, res)) {
-      return;
-    }
-    let payload = null;
-    try {
-      payload = await readJsonBody(req);
-    } catch (err) {
-      const status = err.message === 'Payload too large' ? 413 : 400;
-      sendJson(res, status, { ok: false, error: err.message });
-      return;
-    }
-    const storagePath = sanitizeStoragePath(payload?.storage_path);
-    if (!storagePath) {
-      sendJson(res, 400, { ok: false, error: 'Invalid storage_path' });
-      return;
-    }
-    try {
-      const result = await runExportWithRetries({ ...payload, storage_path: storagePath });
-      sendJson(res, 200, { ok: true, ...result });
-    } catch (err) {
-      sendJson(res, 500, { ok: false, error: err.message });
-    }
-  });
-  server.listen(EXPORT_PORT, EXPORT_HOST, () => {
-    console.log(`LikeC4 exporter listening on ${EXPORT_HOST}:${EXPORT_PORT}`);
-  });
+const start = () => {
+  const server = http.createServer(createHandler());
+  server.requestTimeout = 30000;
+  server.headersTimeout = 10000;
+  server.listen(Number(process.env.LIKEC4_EXPORT_PORT || 9000), process.env.LIKEC4_EXPORT_HOST || '0.0.0.0');
+  return server;
 };
-
-start().catch((err) => {
-  console.error('Exporter crashed:', err);
-  process.exit(1);
-});
+if (require.main === module) start();
+module.exports = { createHandler, processJob, exportLikeC4, safeLocalJoin, start };

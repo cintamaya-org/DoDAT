@@ -176,6 +176,10 @@ class Role(models.Model):
 
 class User(AbstractUser):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    can_use_api = models.BooleanField(
+        default=False,
+        help_text="Autorise cet utilisateur à appeler l'API REST avec OAuth.",
+    )
     profile_picture = models.ImageField(
         upload_to=build_profile_picture_storage_name,
         storage=get_profile_picture_storage(),

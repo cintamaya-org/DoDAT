@@ -81,6 +81,25 @@ def get_dat_pdf_export_path(dat) -> str:
     return os.path.join("dat_exports", str(dat.pk), basename)
 
 
+def validated_dat_pdf_export_path(dat) -> str | None:
+    """Accept historical PDF filenames, but only within this DAT's namespace."""
+    path = dat.pdf_export_path or get_dat_pdf_export_path(dat)
+    if not isinstance(path, str):
+        return None
+    parts = path.split("/")
+    if (
+        len(parts) != 3
+        or parts[:2] != ["dat_exports", str(dat.pk)]
+        or not parts[2].lower().endswith(".pdf")
+        or parts[2] in {".pdf", "..pdf"}
+        or any(character in path for character in ("\\", "%"))
+        or any(ord(character) < 32 or ord(character) == 127 for character in path)
+    ):
+        logger.warning("Rejected invalid PDF export reference for DAT %s", dat.pk)
+        return None
+    return path
+
+
 @lru_cache(maxsize=1)
 def get_dat_export_storage() -> SeaweedFSStorage:
     return SeaweedFSStorage()
@@ -111,8 +130,10 @@ def store_dat_pdf_export(dat, content: bytes, *, refresh_modified: bool = True) 
 
 
 def dat_pdf_export_exists(dat) -> bool:
+    path = validated_dat_pdf_export_path(dat)
+    if path is None:
+        return False
     storage = get_dat_export_storage()
-    path = dat.pdf_export_path or get_dat_pdf_export_path(dat)
     try:
         return storage.exists(path)
     except Exception as exc:  # pragma: no cover - defensive guard for runtime storage outages
@@ -121,8 +142,10 @@ def dat_pdf_export_exists(dat) -> bool:
 
 
 def dat_pdf_export_modified_at(dat):
+    path = validated_dat_pdf_export_path(dat)
+    if path is None:
+        return None
     storage = get_dat_export_storage()
-    path = dat.pdf_export_path or get_dat_pdf_export_path(dat)
     try:
         exists = storage.exists(path)
     except Exception as exc:  # pragma: no cover - defensive guard for runtime storage outages
@@ -139,8 +162,10 @@ def dat_pdf_export_modified_at(dat):
 
 
 def open_dat_pdf_export(dat):
+    path = validated_dat_pdf_export_path(dat)
+    if path is None:
+        return None
     storage = get_dat_export_storage()
-    path = dat.pdf_export_path or get_dat_pdf_export_path(dat)
     try:
         exists = storage.exists(path)
     except Exception as exc:

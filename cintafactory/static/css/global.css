@@ -3534,6 +3534,32 @@ body.dat-modal-open {
     min-width: 200px;
 }
 
+.dat-list__architect-assignment {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    height: auto;
+    margin: 0.35rem 0 0;
+    padding: 0.25rem 0.5rem;
+    border: 1px solid currentColor;
+    line-height: 1.4;
+    white-space: normal;
+    text-align: left;
+}
+
+.dat-list__architect-assignment .material-icons {
+    flex-shrink: 0;
+    font-size: 1rem;
+}
+
+.dat-list__architect-assignment--assigned {
+    color: var(--cinta-color-success);
+}
+
+.dat-list__architect-assignment--unassigned {
+    color: var(--cinta-color-info);
+}
+
 .dat-list__error {
     margin: 0.25rem 0 0;
     color: #c00;

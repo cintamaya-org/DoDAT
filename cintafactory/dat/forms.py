@@ -11,11 +11,13 @@ from typing import Dict, List, Optional, Set
 from django import forms
 from django.contrib.auth import get_user_model
 from django.core.validators import RegexValidator
+from django.db import transaction
 from django.urls import reverse, reverse_lazy
 from django.utils.safestring import mark_safe
 
 
 from users.models import Role
+from diagrams.references import prepare_diagram_references
 
 from .constants import (
     DAT_PORTEUR_ROLE_SLUG,
@@ -102,6 +104,9 @@ def _attach_drawio_support(entry: DATPart, widget: RepeatableTableWidget) -> Non
         return
     attrs = widget.attrs or {}
     attrs["data_drawio_create_url"] = reverse("dat:schema_create_diagram", args=[dat.pk])
+    attrs["data_dat_id"] = str(dat.pk)
+    attrs["data_diagram_section_id"] = str(section.pk)
+    attrs["data_likec4_create_url"] = reverse("diagrams:likec4_create")
     attrs["data_drawio_section_slug"] = section.slug
     attrs["data_drawio_sub_section_slug"] = sub_section.slug
     placeholder_uuid = uuid.UUID(int=0)
@@ -538,17 +543,36 @@ class DATSubSectionForm(forms.Form):
                 "field_name": field_name,
             }
 
+    def clean(self):
+        cleaned = super().clean()
+        for entry_info in self.entries:
+            name = entry_info["field_name"]
+            if name not in cleaned:
+                continue
+            entry = entry_info["entry"]
+            try:
+                prepare_diagram_references(entry, entry.prepare_value(cleaned[name]), self.user)
+            except forms.ValidationError as exc:
+                self.add_error(name, exc)
+        return cleaned
+
+    @transaction.atomic
     def save(self):
         if not self.is_valid():
             raise ValueError("Cannot save an invalid form.")
         changes: dict[str, dict[str, str]] = {}
+        # Revalidate the entire submission before attaching or reading any source.
+        pending = []
         for entry_info in self.entries:
             entry = entry_info["entry"]
-            field_name = entry_info["field_name"]
-            if field_name not in self.cleaned_data:
-                continue
-            new_value = self.cleaned_data[field_name]
-            prepared = entry.prepare_value(new_value)
+            name = entry_info["field_name"]
+            if name in self.cleaned_data:
+                prepared = entry.prepare_value(self.cleaned_data[name])
+                prepare_diagram_references(entry, prepared, self.user)
+                pending.append((entry, prepared))
+        copies = {}
+        for entry, prepared in pending:
+            prepared = prepare_diagram_references(entry, prepared, self.user, attach=True, copies=copies)
             if prepared == entry.value:
                 continue
             before_display = entry.render_value(entry.value)

@@ -20,6 +20,7 @@ from django.contrib.messages import get_messages
 from django.contrib.messages.storage.fallback import FallbackStorage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db.models import ProtectedError
+from django.http import Http404
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -80,6 +81,7 @@ from .drawio_parser import MAX_XML_CHARS
 from .tasks import _run_pdf_generation
 from .utils import dat_pdf_export_exists, dat_pdf_export_modified_at, format_user_display, open_dat_pdf_export
 from workflows.models import UserNotification
+from workflows.services import ensure_workflow_instance
 
 def get_default_business_direction():
     direction, _ = BusinessDirection.objects.get_or_create(
@@ -596,6 +598,119 @@ class DatCreationPermissionTest(TestCase):
         self.client.force_login(self.porteur)
         response = self.client.get(self.application_add_url)
         self.assertEqual(response.status_code, 200)
+
+
+class DatUpdatePermissionTest(TestCase):
+    def setUp(self) -> None:
+        self.role = create_role(DAT_PORTEUR_ROLE_SLUG, "Porteur de la demande")
+        self.owner = get_user_model().objects.create_user(
+            username="update-owner", password="pwd", role=self.role,
+        )
+        self.other = get_user_model().objects.create_user(
+            username="update-other", password="pwd", role=self.role,
+        )
+        self.admin = get_user_model().objects.create_user(
+            username="update-admin", password="pwd", is_staff=True,
+        )
+        self.referent = get_user_model().objects.create_user(
+            username="update-referent",
+            password="pwd",
+            role=create_role("architecte-referent", "Architecte référent"),
+        )
+        self.application = Application.objects.create(
+            code="update-app",
+            name="Update App",
+            business_direction=get_default_business_direction(),
+        )
+        self.dat = DAT.objects.create(
+            reference="DAT-UPDATE-1",
+            title="Original title",
+            application=self.application,
+            owner=self.owner,
+        )
+        DATParticipant.objects.create(dat=self.dat, role=self.role, user=self.owner)
+        self.url = reverse("dat:dat_change", args=[self.dat.pk])
+        self.data = {
+            "reference": self.dat.reference,
+            "title": "Updated title",
+            "application": self.application.pk,
+            "description": "Updated description",
+            "secure_export_requires_dual_admin_approval": "on",
+            DATForm.participant_field_name(DAT_PORTEUR_ROLE_SLUG): self.owner.pk,
+            DATForm.participant_field_name("architecte-referent"): self.referent.pk,
+        }
+
+    def _set_status(self, status):
+        instance = ensure_workflow_instance(self.dat)
+        instance.current_state = status
+        instance.save(update_fields=["current_state"])
+        DAT.objects.filter(pk=self.dat.pk).update(status=status, title="Original title")
+
+    def test_owner_can_open_edit_form_in_owner_editable_states(self):
+        self.client.force_login(self.owner)
+        for status in (DATStatus.NOUVELLE_DEMANDE, DATStatus.EN_COURS, DATStatus.RESERVE):
+            with self.subTest(status=status):
+                self._set_status(status)
+                response = self.client.get(self.url)
+                self.assertEqual(response.status_code, 200)
+                self.assertTemplateUsed(response, "dat/dat_form.html")
+                self.assertContains(self.client.get(reverse("dat:my_list")), self.url)
+
+    def test_owner_can_save_changes_in_owner_editable_states(self):
+        self.client.force_login(self.owner)
+        for status in (DATStatus.NOUVELLE_DEMANDE, DATStatus.EN_COURS, DATStatus.RESERVE):
+            with self.subTest(status=status):
+                self._set_status(status)
+                response = self.client.post(self.url, self.data)
+                self.assertEqual(response.status_code, 302)
+                self.dat.refresh_from_db()
+                self.assertEqual(self.dat.title, "Updated title")
+                self.assertEqual(self.dat.description, "Updated description")
+                self.assertEqual(self.dat.owner, self.owner)
+                self.assertEqual(self.dat.status, status)
+
+    def test_owner_cannot_edit_during_review_or_after_closure(self):
+        self.client.force_login(self.owner)
+        for status in (DATStatus.EN_ATTENTE_DE_REVUE, DATStatus.VALIDER, DATStatus.REFUSE):
+            with self.subTest(status=status):
+                self._set_status(status)
+                self.assertEqual(self.client.get(self.url).status_code, 403)
+                self.assertEqual(self.client.post(self.url, self.data).status_code, 403)
+                self.dat.refresh_from_db()
+                self.assertEqual(self.dat.title, "Original title")
+                self.assertNotContains(self.client.get(reverse("dat:my_list")), self.url)
+
+    def test_other_porteur_cannot_edit_unassigned_dat(self):
+        self.client.force_login(self.other)
+        self.assertEqual(self.client.get(self.url).status_code, 404)
+        self.assertEqual(self.client.post(self.url, self.data).status_code, 404)
+        self.dat.refresh_from_db()
+        self.assertEqual(self.dat.title, "Original title")
+
+    def test_participant_who_is_not_owner_cannot_edit_dat(self):
+        DATParticipant.objects.filter(dat=self.dat, role=self.role).update(user=self.other)
+        self.client.force_login(self.other)
+        self.assertEqual(self.client.get(self.url).status_code, 403)
+        self.assertEqual(self.client.post(self.url, self.data).status_code, 403)
+        self.dat.refresh_from_db()
+        self.assertEqual(self.dat.title, "Original title")
+        self.assertNotContains(self.client.get(reverse("dat:my_list")), self.url)
+
+    def test_admin_can_still_edit_closed_dat(self):
+        self._set_status(DATStatus.VALIDER)
+        self.client.force_login(self.admin)
+        self.assertEqual(self.client.get(self.url).status_code, 200)
+        response = self.client.post(self.url, self.data)
+        self.assertEqual(response.status_code, 302)
+        self.dat.refresh_from_db()
+        self.assertEqual(self.dat.title, "Updated title")
+
+    def test_owner_cannot_delete_dat_or_edit_application(self):
+        self.client.force_login(self.owner)
+        delete_url = reverse("dat:dat_delete", args=[self.dat.pk])
+        self.assertEqual(self.client.post(delete_url).status_code, 403)
+        application_url = reverse("dat:application_change", args=[self.application.pk])
+        self.assertEqual(self.client.get(application_url).status_code, 403)
 
 
 class DatCreationNotificationTest(SimpleTestCase):
@@ -1806,6 +1921,7 @@ class CreateSchemaDiagramViewTest(TestCase):
         architecture_section = self.dat.sections.get(metadata__slug="architecture")
         DATSectionParticipant.objects.create(dat=self.dat, section=architecture_section, user=self.user)
         self.url = reverse("dat:schema_create_diagram", args=[self.dat.pk])
+        self.parse_url = reverse("dat:schema_parse_diagram", args=[self.dat.pk])
 
     def test_rejects_invalid_diagram_title(self):
         self.client.force_login(self.user)
@@ -1976,6 +2092,85 @@ class CreateSchemaDiagramViewTest(TestCase):
         self.assertTrue(payload.get("ok"))
         self.assertEqual(payload["diagram"]["title"], "Cartographie depuis referer")
 
+    def test_parse_returns_missing_diagrams_for_invalid_or_empty_json(self):
+        self.client.force_login(self.user)
+        for body in (b"{", b"{}"):
+            with self.subTest(body=body):
+                response = self.client.post(self.parse_url, data=body, content_type="application/json")
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json()["error"], "missing_diagrams")
+
+    def test_parse_rejects_malformed_and_unsafe_reference_lists(self):
+        self.client.force_login(self.user)
+        for payload in (
+            {"diagram_ids": "not-a-list"},
+            {"diagram_ids": ["not-a-uuid"]},
+            {"likec4_paths": ["../outside.c4"]},
+        ):
+            with self.subTest(payload=payload):
+                response = self.client.post(
+                    self.parse_url,
+                    data=json.dumps(payload),
+                    content_type="application/json",
+                )
+                self.assertEqual(response.status_code, 404)
+
+    def test_parse_resolves_every_diagram_before_reading_any_source(self):
+        self.client.force_login(self.user)
+        first_id, second_id = uuid.uuid4(), uuid.uuid4()
+        first_diagram = SimpleNamespace(read_xml=mock.Mock(return_value="<diagram />"))
+        with (
+            mock.patch.object(dat_views, "get_dat_diagram", side_effect=[first_diagram, Http404]),
+            mock.patch.object(dat_views, "parse_architecture_diagram") as parse_architecture,
+        ):
+            response = self.client.post(
+                self.parse_url,
+                data=json.dumps({"diagram_ids": [str(first_id), str(second_id)]}),
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 404)
+        first_diagram.read_xml.assert_not_called()
+        parse_architecture.assert_not_called()
+
+    def test_parse_stops_when_likec4_graph_exceeds_safe_limit(self):
+        self.client.force_login(self.user)
+        with (
+            mock.patch.object(dat_views, "get_dat_diagram", return_value=SimpleNamespace()),
+            mock.patch.object(dat_views, "_fetch_likec4_flow_matrix", return_value={"error": "graph_too_large"}),
+        ):
+            response = self.client.post(
+                self.parse_url,
+                data=json.dumps({"likec4_paths": ["diagrams/schema.c4"]}),
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(response.json()["error"], "graph_too_large")
+
+    def test_parse_updates_schema_repeaters_for_authorized_diagram(self):
+        self.client.force_login(self.user)
+        diagram_id = uuid.uuid4()
+        diagram = SimpleNamespace(read_xml=mock.Mock(return_value="<diagram />"))
+        briques = [{"name": "API"}]
+        flux = [{"source": "API", "target": "Database"}]
+        with (
+            mock.patch.object(dat_views, "get_dat_diagram", return_value=diagram),
+            mock.patch.object(dat_views, "parse_architecture_diagram", return_value=(briques, flux)) as parse_architecture,
+            mock.patch.object(dat_views, "dedupe_architecture_rows", return_value=(briques, flux)),
+            mock.patch.object(dat_views, "_update_repeater_part", return_value=(False, {})) as update_part,
+        ):
+            response = self.client.post(
+                self.parse_url,
+                data=json.dumps({"diagram_ids": [str(diagram_id)]}),
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["parsed"], {"flux": 1, "briques": 1})
+        parse_architecture.assert_called_once_with("<diagram />")
+        self.assertEqual(update_part.call_count, 2)
+
 
 class DatPdfExportNotificationTest(TestCase):
     def setUp(self) -> None:
@@ -1992,6 +2187,7 @@ class DatPdfExportNotificationTest(TestCase):
             application=self.application,
             status=DATStatus.NOUVELLE_DEMANDE,
             owner=self.user,
+            secure_export_requires_dual_admin_approval=False,
         )
         self.client.force_login(self.user)
 
@@ -2281,6 +2477,82 @@ class DatReserveNotificationTest(TestCase):
             ).exists()
         )
 
+    def test_reserve_author_does_not_receive_own_validation_notification(self):
+        self._set_reserve()
+        self.client.force_login(self.assignee)
+
+        response = self.client.post(self.status_url, data={"status": SECTION_STATUS_VALIDATED_VALUE})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(
+            UserNotification.objects.filter(
+                user=self.assignee,
+                notification_type__title="Réserve à lever",
+            ).exists()
+        )
+
+    def test_section_responsible_can_record_responsible_validation(self):
+        self.client.force_login(self.assignee)
+        assignee_response = self.client.post(
+            self.status_url,
+            data={"status": SECTION_STATUS_VALIDATED_VALUE},
+        )
+        self.assertEqual(assignee_response.status_code, 302)
+
+        self.client.force_login(self.manager)
+        responsible_url = reverse(
+            "dat:section_responsible_status",
+            args=[self.dat.pk, self.section_slug],
+        )
+        response = self.client.post(
+            responsible_url,
+            data={"status": SECTION_STATUS_VALIDATED_VALUE},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        status_part = dat_views._find_section_status_part(DAT.objects.get(pk=self.dat.pk))
+        architecture_row = next(
+            row for row in status_part.value if row.get("section_slug") == self.section_slug
+        )
+        self.assertEqual(architecture_row["statut_responsable"], SECTION_STATUS_VALIDATED_VALUE)
+
+    def test_reserve_author_can_clear_own_reserve(self):
+        self._set_reserve()
+        clear_url = reverse("dat:section_reserve_clear", args=[self.dat.pk, self.section_slug])
+
+        response = self.client.post(clear_url)
+
+        self.assertEqual(response.status_code, 302)
+        status_part = dat_views._find_section_status_part(DAT.objects.get(pk=self.dat.pk))
+        architecture_row = next(
+            row for row in status_part.value if row.get("section_slug") == self.section_slug
+        )
+        self.assertEqual(architecture_row["reserve_message"], "")
+        self.assertIsNone(architecture_row["reserve_by_id"])
+
+    def test_reserve_author_can_update_own_reserve(self):
+        self._set_reserve()
+
+        response = self.client.post(
+            self.reserve_url,
+            data={"reserve_message": "Message corrigé."},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        status_part = dat_views._find_section_status_part(DAT.objects.get(pk=self.dat.pk))
+        architecture_row = next(
+            row for row in status_part.value if row.get("section_slug") == self.section_slug
+        )
+        self.assertEqual(architecture_row["reserve_message"], "Message corrigé.")
+
+    def test_user_cannot_clear_reserve_they_do_not_own(self):
+        self.client.force_login(self.assignee)
+        clear_url = reverse("dat:section_reserve_clear", args=[self.dat.pk, self.section_slug])
+
+        response = self.client.post(clear_url)
+
+        self.assertEqual(response.status_code, 403)
+
 
 class SectionStatusGroupResponsibleTest(TestCase):
     def setUp(self) -> None:
@@ -2507,7 +2779,7 @@ class DatSectionsSyncTests(TestCase):
         self.assertFalse(dat_sections_need_sync(self.dat))
 
 
-class DatPartFieldCoverageTests(SimpleTestCase):
+class DatPartFieldCoverageTests(TestCase):
     @staticmethod
     def _part(data_type, config=None, *, required=False):
         return SimpleNamespace(
@@ -2667,6 +2939,14 @@ class DatImportFormCoverageTests(SimpleTestCase):
 
 
 class DatViewHelperCoverageTests(SimpleTestCase):
+    def test_user_id_comparison_matches_uuid_and_json_string(self):
+        user_id = uuid.uuid4()
+
+        self.assertTrue(dat_views._user_ids_match(user_id, str(user_id)))
+        self.assertFalse(dat_views._user_ids_match(None, user_id))
+        self.assertFalse(dat_views._user_ids_match(user_id, ""))
+        self.assertFalse(dat_views._user_ids_match(user_id, uuid.uuid4()))
+
     def test_section_status_map_normalizes_rows_and_uses_custom_choices(self):
         status_part = DATPart(
             key="suivi_sections",
@@ -2892,7 +3172,7 @@ class DatViewHelperCoverageTests(SimpleTestCase):
             [first, second],
         )
         self.assertEqual(dat_views._normalize_diagram_ids("not-a-list"), [])
-        self.assertEqual(dat_views._normalize_likec4_path(" /models/context.c4 "), "models/context.c4")
+        self.assertEqual(dat_views._normalize_likec4_path(" /models/context.c4 "), "")
         self.assertEqual(dat_views._normalize_likec4_path("../outside.c4"), "")
         self.assertEqual(dat_views._normalize_likec4_path("model.txt"), "")
         self.assertEqual(
@@ -2934,10 +3214,14 @@ class DatViewHelperCoverageTests(SimpleTestCase):
         self.assertEqual(dat_views._likec4_rows_from_flow_matrix([]), ([], []))
 
     def test_flow_matrix_fetch_handles_configuration_responses_and_network_errors(self):
+        diagram = SimpleNamespace(
+            pk=uuid.UUID("21cf4380-3a36-4885-a4d7-fb56ebf04c7f"),
+            storage_path="diagrams/likec4/21cf4380-3a36-4885-a4d7-fb56ebf04c7f/source.c4",
+        )
         with override_settings(LIKEC4_EDITOR_URL=""):
-            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("model.c4"))
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix(diagram))
         with override_settings(LIKEC4_EDITOR_URL="file:///tmp/editor"):
-            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("model.c4"))
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix(diagram))
 
         response = mock.MagicMock()
         response.status = 200
@@ -2945,19 +3229,21 @@ class DatViewHelperCoverageTests(SimpleTestCase):
         with override_settings(
             LIKEC4_EDITOR_URL="https://editor.example/",
             LIKEC4_API_TOKEN="test-token",
-        ), mock.patch("dat.views.urlopen") as urlopen:
+        ), mock.patch("dat.views.refresh_revision", return_value="a" * 64), mock.patch(
+            "dat.views.urlopen"
+        ) as urlopen:
             urlopen.return_value.__enter__.return_value = response
-            self.assertEqual(dat_views._fetch_likec4_flow_matrix("models/one.c4"), {"flows": []})
+            self.assertEqual(dat_views._fetch_likec4_flow_matrix(diagram), {"flows": []})
             request = urlopen.call_args.args[0]
             self.assertEqual(urlsplit(request.full_url).path, "/flow-matrix")
-            self.assertEqual(parse_qs(urlsplit(request.full_url).query), {"file": ["models/one.c4"]})
+            self.assertEqual(parse_qs(urlsplit(request.full_url).query), {"file": [diagram.storage_path]})
             self.assertEqual(request.get_header("X-likec4-token"), "test-token")
 
             response.status = 503
-            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("models/one.c4"))
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix(diagram))
             response.status = 200
             response.read.return_value = b"not-json"
-            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("models/one.c4"))
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix(diagram))
 
             urlopen.side_effect = HTTPError(
                 "https://editor.example/flow-matrix",
@@ -2966,9 +3252,9 @@ class DatViewHelperCoverageTests(SimpleTestCase):
                 hdrs=None,
                 fp=BytesIO(b"error body"),
             )
-            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("models/one.c4"))
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix(diagram))
             urlopen.side_effect = OSError("network unavailable")
-            self.assertIsNone(dat_views._fetch_likec4_flow_matrix("models/one.c4"))
+            self.assertIsNone(dat_views._fetch_likec4_flow_matrix(diagram))
 
     def test_drawio_repeater_detection_and_repeater_update_report_changes(self):
         sub_section = SimpleNamespace(
@@ -3318,6 +3604,7 @@ class DatImportServiceCoverageTests(SimpleTestCase):
 
         part = SimpleNamespace(
             key="field",
+            config={},
             prepare_value=mock.Mock(side_effect=lambda value: value),
             update_value=mock.Mock(),
         )

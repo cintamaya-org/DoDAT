@@ -6,7 +6,34 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from rest_framework.permissions import DjangoModelPermissions
+from rest_framework.permissions import BasePermission, DjangoModelPermissions
+
+
+def is_authenticated_superuser(user: object) -> bool:
+    return bool(
+        getattr(user, "is_authenticated", False)
+        and getattr(user, "is_superuser", False)
+    )
+
+
+class IsSuperuser(BasePermission):
+    """Allow access only to authenticated Django superusers."""
+
+    def has_permission(self, request, view) -> bool:
+        return is_authenticated_superuser(getattr(request, "user", None))
+
+
+class CanUseAPI(BasePermission):
+    """Require an authenticated user whose API access was explicitly enabled."""
+
+    message = "API access is disabled for this account."
+
+    def has_permission(self, request, view) -> bool:
+        user = getattr(request, "user", None)
+        return bool(
+            getattr(user, "is_authenticated", False)
+            and getattr(user, "can_use_api", False)
+        )
 
 
 class GranularModelPermissions(DjangoModelPermissions):

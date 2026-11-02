@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import socket
+import struct
 from types import SimpleNamespace
 from unittest import mock
 
@@ -49,6 +50,82 @@ class AttachmentSecurityValidationTests(SimpleTestCase):
         emit_metric.assert_called_once()
         _, kwargs = emit_metric.call_args
         self.assertEqual(kwargs["dimensions"]["outcome"], "scanner_timeout")
+
+    @override_settings(CLAMAV_HOST="clamav", CLAMAV_PORT=3310, CLAMAV_TIMEOUT=1, CLAMAV_RETRY_COUNT=0)
+    @mock.patch("dat.attachments.socket.create_connection")
+    @mock.patch("dat.attachments.emit_baseline_metric")
+    @mock.patch("dat.attachments._probe_clamav")
+    def test_scan_streams_bounded_instream_chunks_and_resets_upload(
+        self, _probe, emit_metric, create_connection
+    ):
+        payload = b"a" * (64 * 1024) + b"end"
+        uploaded = SimpleUploadedFile("safe.txt", payload, content_type="text/plain")
+        uploaded.read(1)
+
+        scanner_socket = mock.MagicMock()
+        scanner_socket.__enter__.return_value = scanner_socket
+        scanner_socket.recv.return_value = b"stream: OK\0"
+        create_connection.return_value = scanner_socket
+
+        scan_file_with_clamav(uploaded)
+
+        self.assertEqual(
+            scanner_socket.sendall.call_args_list,
+            [
+                mock.call(b"zINSTREAM\0"),
+                mock.call(struct.pack("!I", 64 * 1024)),
+                mock.call(b"a" * (64 * 1024)),
+                mock.call(struct.pack("!I", 3)),
+                mock.call(b"end"),
+                mock.call(struct.pack("!I", 0)),
+            ],
+        )
+        scanner_socket.recv.assert_called_once_with(4096)
+        create_connection.assert_called_once_with(("clamav", 3310), timeout=1)
+        self.assertEqual(uploaded.tell(), 0)
+        emit_metric.assert_called_once()
+        self.assertEqual(emit_metric.call_args.kwargs["dimensions"]["outcome"], "ok")
+
+    @override_settings(CLAMAV_HOST="clamav", CLAMAV_PORT=3310, CLAMAV_TIMEOUT=1, CLAMAV_RETRY_COUNT=0)
+    @mock.patch("dat.attachments.socket.create_connection")
+    @mock.patch("dat.attachments.emit_baseline_metric")
+    @mock.patch("dat.attachments._probe_clamav")
+    def test_scan_sends_zero_length_stream_terminator_for_empty_upload(
+        self, _probe, emit_metric, create_connection
+    ):
+        uploaded = SimpleUploadedFile("empty.txt", b"", content_type="text/plain")
+        scanner_socket = mock.MagicMock()
+        scanner_socket.__enter__.return_value = scanner_socket
+        scanner_socket.recv.return_value = b"stream: OK\0"
+        create_connection.return_value = scanner_socket
+
+        scan_file_with_clamav(uploaded)
+
+        self.assertEqual(
+            scanner_socket.sendall.call_args_list,
+            [mock.call(b"zINSTREAM\0"), mock.call(struct.pack("!I", 0))],
+        )
+        self.assertEqual(emit_metric.call_args.kwargs["dimensions"]["outcome"], "ok")
+
+    @override_settings(CLAMAV_HOST="clamav", CLAMAV_PORT=3310, CLAMAV_TIMEOUT=1, CLAMAV_RETRY_COUNT=0)
+    @mock.patch("dat.attachments.socket.create_connection")
+    @mock.patch("dat.attachments.emit_baseline_metric")
+    @mock.patch("dat.attachments._probe_clamav")
+    def test_scan_fails_closed_on_incomplete_instream_response(
+        self, _probe, emit_metric, create_connection
+    ):
+        uploaded = SimpleUploadedFile("safe.txt", b"safe payload", content_type="text/plain")
+        scanner_socket = mock.MagicMock()
+        scanner_socket.__enter__.return_value = scanner_socket
+        scanner_socket.recv.return_value = b""
+        create_connection.return_value = scanner_socket
+
+        with self.assertRaises(AttachmentSecurityError) as ctx:
+            scan_file_with_clamav(uploaded)
+
+        self.assertEqual(ctx.exception.failure_state, "scanner_unavailable")
+        self.assertEqual(uploaded.tell(), 0)
+        self.assertEqual(emit_metric.call_args.kwargs["dimensions"]["outcome"], "scanner_unavailable")
 
     @mock.patch("dat.attachments.get_attachment_storage")
     @override_settings(ATTACHMENT_QUARANTINE_ENABLED="1", ATTACHMENT_QUARANTINE_MAX_BYTES=1024)

@@ -27,6 +27,9 @@ from .logging.logging_utils import build_logging_dict
 BASE_DIR = Path(__file__).resolve().parent.parent
 PROJECT_DIR = Path(__file__).resolve().parent
 
+# Public branding is independent of persistent Django and deployment identifiers.
+APPLICATION_NAME = "DoDat"
+
 load_dotenv(BASE_DIR / ".env", override=False)
 load_dotenv(BASE_DIR.parent / ".env", override=False)
 
@@ -145,6 +148,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "cintafactory.middleware.HideDisabledApiBrowserPagesMiddleware",
     "cintafactory.middleware.RateLimitMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
@@ -210,6 +214,7 @@ TEMPLATES = [
                 'django.template.context_processors.csrf',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                "cintafactory.context_processors.application_branding",
                 "cintafactory.context_processors.frontend_dev_logger",
                 "material.frontend.context_processors.modules",
                 "workflows.context_processors.workflow_notifications",
@@ -377,8 +382,6 @@ CLAMAV_PORT = int(os.getenv("CLAMAV_PORT", "3310"))
 CLAMAV_TIMEOUT = int(os.getenv("CLAMAV_TIMEOUT", "30"))
 CLAMAV_RETRY_COUNT = int(os.getenv("CLAMAV_RETRY_COUNT", "5"))
 CLAMAV_RETRY_DELAY = float(os.getenv("CLAMAV_RETRY_DELAY", "1.0"))
-CLAMAV_SCAN_DIR = os.getenv("CLAMAV_SCAN_DIR", "/clamav_scan")
-
 OAUTH_HTTP_TIMEOUT = int(os.getenv("OAUTH_HTTP_TIMEOUT", "10"))
 OAUTH_ALLOW_EMAIL_LINKING = os.getenv("OAUTH_ALLOW_EMAIL_LINKING", "1").lower() in {"1", "true", "yes", "on"}
 ENDPOINT_RATE_LIMIT_PER_IP_PER_MINUTE = int(os.getenv("ENDPOINT_RATE_LIMIT_PER_IP_PER_MINUTE", "30"))
@@ -490,15 +493,20 @@ REST_FRAMEWORK = {
         "oauth2_provider.contrib.rest_framework.OAuth2Authentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": (
+        "cintafactory.api.permissions.CanUseAPI",
         "cintafactory.api.permissions.GranularModelPermissions",
     ),
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
 SPECTACULAR_SETTINGS = {
-    "TITLE": "CintaFactory API",
-    "DESCRIPTION": "API documentation for CintaFactory.",
+    "TITLE": f"{APPLICATION_NAME} API",
+    "DESCRIPTION": f"API documentation for {APPLICATION_NAME}.",
     "VERSION": "1.0.0",
+    "SERVE_PERMISSIONS": [
+        "cintafactory.api.permissions.CanUseAPI",
+        "cintafactory.api.permissions.IsSuperuser",
+    ],
     "SERVE_INCLUDE_SCHEMA": False,
 }
 

@@ -4,7 +4,7 @@ Container image that bundles the LikeC4 CLI with Graphviz (built from source) an
 
 ## Tech used
 - Docker/Docker Compose to build and run the LikeC4 CLI image.
-- Node.js server (plain http + fs) to serve the editor UI and proxy file read/write.
+- Node.js 22.23.4 LTS server (plain http + fs) to serve the editor UI and proxy file read/write.
 - Graphviz built from source (latest release) for rendering diagrams.
 - Playwright + Chromium runtime pulled during image build (required by LikeC4).
 - LikeC4 CLI installed globally in the image.
@@ -19,6 +19,7 @@ Container image that bundles the LikeC4 CLI with Graphviz (built from source) an
   ```bash
   docker build \
     -t likec4-cli \
+    --build-arg NODE_VERSION=22.23.4 \
     --build-arg GRAPHVIZ_VERSION=10.0.1 \
     --build-arg PLAYWRIGHT_VER=1.56.1 \
     --build-arg LIKEC4_VER=0.66.0 \
