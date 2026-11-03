@@ -1007,8 +1007,13 @@ class DatVisibilityRestrictionTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["selected_section_slug"], "architecture")
         content = response.content.decode()
-        self.assertIn('class="dat-section-status-pill chip dat-section-link"', content)
-        self.assertNotIn('class="dat-section-status-pill chip dat-section-link">\n        <div', content)
+        self.assertInHTML(
+            '<a href="?section=architecture" '
+            'class="dat-section-link active-section" '
+            'aria-current="page">Architecture</a>',
+            content,
+        )
+        self.assertContains(response, 'id="section-architecture"')
 
     def test_unassigned_user_cannot_view_my_detail_page(self):
         self.client.force_login(self.other)

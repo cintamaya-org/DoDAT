@@ -389,6 +389,43 @@ class ProxySecurityTests(TestCase):
         self.assertIn("'unsafe-inline'", csp)
         self.assertIn("'unsafe-eval'", csp)
         self.assertIn("https://cdn.jsdelivr.net", csp)
+        self.assertNotIn("http: https:", csp)
+        self.assertNotIn("ws: wss:", csp)
+
+    def test_viewer_requires_scoped_access_and_forwards_sandbox_policy(self):
+        class Response:
+            status = 200
+            headers = {
+                "Content-Type": "text/html; charset=utf-8",
+                "Content-Security-Policy": "default-src 'none'; sandbox allow-scripts; script-src 'nonce-test' blob:;",
+            }
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _size=-1):
+                return b'<script nonce="test"></script>'
+
+        url = reverse("diagrams:likec4_proxy", args=["viewer.html"])
+        bundle = f"bundles/{self.diagram.pk}/{self.diagram.revision}/likec4-webcomponent.js"
+        self.client.force_login(self.user)
+        with self.settings(LIKEC4_EDITOR_URL="https://likec4.example.test"):
+            with patch("diagrams.views.urlopen", return_value=Response()):
+                response = self.client.get(url, {"bundle": bundle})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response["Content-Security-Policy"], Response.headers["Content-Security-Policy"])
+            self.assertEqual(response["Referrer-Policy"], "same-origin")
+            with patch("diagrams.views.urlopen") as upstream:
+                self.assertEqual(self.client.get(url, {"bundle": bundle.replace(str(self.diagram.pk), str(uuid.uuid4()))}).status_code, 404)
+                upstream.assert_not_called()
+            Response.headers = {"Content-Type": "text/html"}
+            with patch("diagrams.views.urlopen", return_value=Response()):
+                response = self.client.get(url, {"bundle": bundle})
+            self.assertEqual(response.status_code, 502)
+            self.assertIn("sandbox allow-scripts", response["Content-Security-Policy"])
 
     def test_likec4_proxy_post_adds_api_token(self):
         class Response:

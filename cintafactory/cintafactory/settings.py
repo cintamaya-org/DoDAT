@@ -27,6 +27,9 @@ from .logging.logging_utils import build_logging_dict
 BASE_DIR = Path(__file__).resolve().parent.parent
 PROJECT_DIR = Path(__file__).resolve().parent
 
+# Public branding is independent of persistent Django and deployment identifiers.
+APPLICATION_NAME = "DoDat"
+
 load_dotenv(BASE_DIR / ".env", override=False)
 load_dotenv(BASE_DIR.parent / ".env", override=False)
 
@@ -211,6 +214,7 @@ TEMPLATES = [
                 'django.template.context_processors.csrf',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                "cintafactory.context_processors.application_branding",
                 "cintafactory.context_processors.frontend_dev_logger",
                 "material.frontend.context_processors.modules",
                 "workflows.context_processors.workflow_notifications",
@@ -496,8 +500,8 @@ REST_FRAMEWORK = {
 }
 
 SPECTACULAR_SETTINGS = {
-    "TITLE": "CintaFactory API",
-    "DESCRIPTION": "API documentation for CintaFactory.",
+    "TITLE": f"{APPLICATION_NAME} API",
+    "DESCRIPTION": f"API documentation for {APPLICATION_NAME}.",
     "VERSION": "1.0.0",
     "SERVE_PERMISSIONS": [
         "cintafactory.api.permissions.CanUseAPI",

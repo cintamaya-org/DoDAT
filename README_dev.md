@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 Baptiste COQUELET <github.com/BaptisteCoquelet>
 # SPDX-License-Identifier: CC-BY-ND-4.0
 
-# CintaFactory Developer Guide
+# DoDat Developer Guide
 
 Tests de charge et génération de données synthétiques : [`docs/LoadTesting.md`](docs/LoadTesting.md).
 
@@ -172,3 +172,4 @@ curl -fsS http://localhost:3100/ready >/dev/null && echo loki_ok
 - `params_dev/PLAN6_DASHBOARD_RUNBOOK.md`
 - `params_dev/PLAN5_ALERTING_RUNBOOK.md`
 - `params_dev/PLAN5_BACKUP_DR_RUNBOOK.md`
+

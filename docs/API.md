@@ -4,7 +4,7 @@ SPDX-FileCopyrightText: 2026 Baptiste COQUELET <github.com/BaptisteCoquelet>
 SPDX-License-Identifier: CC-BY-ND-4.0
 -->
 
-# API CintaFactory
+# API DoDat
 
 **Public visé :** développeurs d'intégration et mainteneurs backend.  
 **Objectif :** expliquer conventions, authentification, ressources et permissions de l'API REST.  
@@ -53,7 +53,7 @@ Les routes `django-oauth-toolkit` sont montées sous `/oauth/`. Tout utilisateur
 2. Échanger le code contre un jeton en envoyant une requête `application/x-www-form-urlencoded` à `/oauth/token/`. Pour un client confidentiel, authentifier la requête avec `client_id` et `client_secret` (HTTP Basic dans cet exemple) :
 
 ```bash
-curl -X POST https://cintafactory.example/oauth/token/ \
+curl -X POST https://dodat.example/oauth/token/ \
   -u "$OAUTH_CLIENT_ID:$OAUTH_CLIENT_SECRET" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=authorization_code" \
@@ -195,7 +195,7 @@ La réponse contient uniquement les DAT visibles pour l'utilisateur authentifié
 curl \
   -H "Authorization: Bearer $CINTA_ACCESS_TOKEN" \
   -H "Accept: application/json" \
-  https://cintafactory.example/api/dats/
+  https://dodat.example/api/dats/
 ```
 
 ### Créer une application
@@ -211,7 +211,7 @@ curl \
     "description": "Application de paiement",
     "business_direction": "00000000-0000-0000-0000-000000000000"
   }' \
-  https://cintafactory.example/api/applications/
+  https://dodat.example/api/applications/
 ```
 
 UUID nul ci-dessus est un emplacement d'exemple. Le remplacer par identifiant d'une direction métier existante ; sinon API renvoie une erreur de validation.
@@ -221,7 +221,7 @@ UUID nul ci-dessus est un emplacement d'exemple. Le remplacer par identifiant d'
 ```bash
 curl \
   -H "Authorization: Bearer $CINTA_ACCESS_TOKEN" \
-  https://cintafactory.example/api/jobs/00000000-0000-0000-0000-000000000000/
+  https://dodat.example/api/jobs/00000000-0000-0000-0000-000000000000/
 ```
 
 Variable `CINTA_ACCESS_TOKEN` doit être injectée localement ; ne jamais écrire jeton réel dans dépôt ou historique shell partagé.

@@ -1,15 +1,14 @@
 // Django owns user authorization; this service accepts only explicitly scoped calls.
 const { createServer } = require('http');
-const { access, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile, lstat, chmod } = require('fs').promises;
+const { mkdir, mkdtemp, readFile, rename, rm, rmdir, writeFile, lstat, chmod } = require('fs').promises;
 const { createReadStream } = require('fs');
-const { execFile } = require('child_process');
 const { tmpdir } = require('os');
 const { extname, join, basename, resolve, sep } = require('path');
-const { promisify } = require('util');
 const { seaweedAuthHeaders } = require('./worker/seaweedfs_auth');
-const { DEFAULT_LIMITS, RequestError, authorizeScope, validateSource, readResponseText, readJson, createQueue } = require('./worker/scope');
+const { DEFAULT_LIMITS, RequestError, authorizeScope, validateSource, readResponseText, readJson, createQueue, renderingEnabled } = require('./worker/scope');
 
-const execFileAsync = promisify(execFile);
+const { createRenderClient } = require('./worker/render_protocol');
+const { viewerResponse } = require('./worker/viewer_policy');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2' };
 const bundleName = 'likec4-webcomponent.js';
 const assetPath = value => typeof value === 'string' && value.split('/').every(part => /^[a-zA-Z0-9_.-]+$/.test(part) && part !== '.' && part !== '..');
@@ -20,50 +19,62 @@ const privateDirectory = async dir => {
   await chmod(dir, 0o700);
   return dir;
 };
-const manifestFiles = async (dir, prefix = '') => {
-  const files = [];
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
-    const name = prefix ? `${prefix}/${entry.name}` : entry.name;
-    if (!assetPath(name)) continue;
-    if (entry.isDirectory()) files.push(...await manifestFiles(join(dir, entry.name), name));
-    else if (entry.isFile() && MIME[extname(entry.name)]) files.push(name);
-  }
-  return files;
-};
-const createRenderer = ({ rootDir, exec = execFileAsync, binary = process.env.LIKEC4_BIN || 'likec4', timeout = 120000, maxPending = 8 } = {}) => {
-  const enqueue = createQueue(maxPending);
+const createRenderer = ({ rootDir, renderJob = createRenderClient(), maxPending = 8, maxCacheBytes = 128 * 1024 * 1024, cacheTtl = 3600000 } = {}) => {
+  const enqueue = createQueue(maxPending, 'codegen');
   const inflight = new Map();
+  const cache = new Map();
+  let cachedBytes = 0;
   let rootPromise;
   const root = () => {
     if (!rootPromise) rootPromise = rootDir ? privateDirectory(resolve(rootDir)) : mkdtemp(join(tmpdir(), 'likec4-scoped-'));
     return rootPromise;
   };
   const directory = async scope => join(await root(), scope.diagram_id, scope.revision);
+  const remove = async dir => {
+    await rm(dir, { recursive: true, force: true });
+    await rmdir(join(dir, '..')).catch(error => { if (!['ENOTEMPTY', 'ENOENT'].includes(error.code)) throw error; });
+  };
+  const evict = async incoming => {
+    for (const [key, entry] of cache) {
+      if (cachedBytes + incoming <= maxCacheBytes && cache.size < 64 && entry.expires > Date.now()) continue;
+      cache.delete(key);
+      cachedBytes -= entry.size;
+      await remove(entry.dir);
+    }
+  };
   const render = (content, scope) => {
     validateSource(content, scope.revision);
     const key = `${scope.diagram_id}/${scope.revision}`;
     if (inflight.has(key)) return inflight.get(key);
     const job = enqueue(async () => {
       const dir = await directory(scope);
-      try {
-        const manifest = JSON.parse(await readFile(join(dir, 'manifest.json'), 'utf8'));
-        if (manifest.includes(bundleName)) {
-          await access(join(dir, 'output', bundleName));
-          return { bundle_url: `bundles/${key}/${bundleName}`, revision: scope.revision };
-        }
-      } catch { /* No published output for this revision yet. */ }
+      await evict(0);
+      if (cache.has(key)) {
+        const entry = cache.get(key);
+        cache.delete(key); cache.set(key, entry);
+        return { bundle_url: `bundles/${key}/${bundleName}`, revision: scope.revision };
+      }
       await privateDirectory(dir);
       const work = await mkdtemp(join(dir, 'work-'));
       const output = join(work, 'output');
       await mkdir(output, { mode: 0o700 });
       try {
-        await writeFile(join(work, 'diagram.c4'), content, { encoding: 'utf8', mode: 0o600 });
-        await exec(binary, ['codegen', 'webcomponent', '-o', join(output, bundleName)], { cwd: work, timeout, maxBuffer: 1024 * 1024 });
-        const files = await manifestFiles(output);
-        if (!files.includes(bundleName)) throw new Error('Missing generated bundle');
+        const rendered = await renderJob(content, scope, 'codegen');
+        if (rendered.length !== 1 || rendered[0].name !== bundleName || rendered[0].bytes.length > Math.min(maxCacheBytes, DEFAULT_LIMITS.response)) throw new Error('Invalid bundle');
+        for (const { name, bytes } of rendered) {
+          if (name !== bundleName) throw new Error('Unexpected bundle asset');
+          await writeFile(join(output, name), bytes, { flag: 'wx', mode: 0o600 });
+        }
+        await evict(rendered[0].bytes.length);
+        const files = [bundleName];
         await rename(output, join(dir, 'output'));
         await writeFile(join(dir, 'manifest.json'), JSON.stringify(files), { mode: 0o600 });
+        cache.set(key, { dir, size: rendered[0].bytes.length, expires: Date.now() + cacheTtl });
+        cachedBytes += rendered[0].bytes.length;
         return { bundle_url: `bundles/${key}/${bundleName}`, revision: scope.revision };
+      } catch (error) {
+        await remove(dir);
+        throw error;
       } finally { await rm(work, { recursive: true, force: true }); }
     }).finally(() => inflight.delete(key));
     inflight.set(key, job);
@@ -140,11 +151,12 @@ const stripComments = (text) => {
   return result;
 };
 
-const findClosingBrace = (text, openIndex) => {
+const findClosingBrace = (text, openIndex, budget) => {
   let depth = 0;
   let inSingle = false;
   let inDouble = false;
   for (let i = openIndex; i < text.length; i++) {
+    if (--budget.remaining < 0) throw new RequestError(413, 'graph_too_large');
     const ch = text[i];
     const prev = i > 0 ? text[i - 1] : '';
     if (ch === '\'' && !inDouble && prev !== '\\') {
@@ -192,7 +204,6 @@ const parseKeyValues = (text) => {
       i++;
     }
     if (i === whitespaceStart || text[i] !== '\'') {
-      i = keyStart + 1;
       continue;
     }
 
@@ -230,7 +241,6 @@ const parseRelations = (text, maxRelations = DEFAULT_LIMITS.relations) => {
       i++;
     }
     if (text[i] !== '-' || text[i + 1] !== '>') {
-      i = fromStart + 1;
       continue;
     }
     i += 2;
@@ -239,7 +249,6 @@ const parseRelations = (text, maxRelations = DEFAULT_LIMITS.relations) => {
       i++;
     }
     if (!isIdentifierStart(text[i])) {
-      i = fromStart + 1;
       continue;
     }
 
@@ -278,6 +287,8 @@ const parseRelations = (text, maxRelations = DEFAULT_LIMITS.relations) => {
 const parseComponents = (content, alreadyCleaned = false) => {
   const cleaned = alreadyCleaned ? content : stripComments(content);
   const components = [];
+  // Nested bodies overlap; bound total scanning across the entire document.
+  const budget = { remaining: DEFAULT_LIMITS.source * 4 };
   const compRegex = /component\s+([A-Za-z_][\w-]*)\s*'([^']*)'\s*\{/g;
   let match;
 
@@ -285,8 +296,8 @@ const parseComponents = (content, alreadyCleaned = false) => {
     const name = match[1];
     const title = match[2];
     const openIdx = match.index + match[0].lastIndexOf('{');
-    const closeIdx = findClosingBrace(cleaned, openIdx);
-    if (closeIdx === -1) continue;
+    const closeIdx = findClosingBrace(cleaned, openIdx, budget);
+    if (closeIdx === -1) break;
     const body = cleaned.slice(openIdx + 1, closeIdx);
 
     // Extract metadata blocks
@@ -296,7 +307,7 @@ const parseComponents = (content, alreadyCleaned = false) => {
     let metaMatch;
     while ((metaMatch = metaRegex.exec(body)) !== null) {
       const metaOpen = metaMatch.index + metaMatch[0].lastIndexOf('{');
-      const metaClose = findClosingBrace(body, metaOpen);
+      const metaClose = findClosingBrace(body, metaOpen, budget);
       if (metaClose === -1) break;
       const metaBody = body.slice(metaOpen + 1, metaClose);
       parseKeyValues(metaBody).forEach(({ key, value }) => {
@@ -399,7 +410,7 @@ const createHandler = ({ storage = createStorage(), renderer = createRenderer({ 
         return sendJson(res, payload, { 'Content-Disposition': 'attachment; filename="flows.json"' });
       }
       let output;
-      try { output = await renderer.render(content, scope); }
+      try { output = renderingEnabled() ? await renderer.render(content, scope) : { render_error: 'Diagram rendering disabled' }; }
       catch (err) {
         if (err instanceof RequestError) throw err;
         output = { render_error: 'LikeC4 rendering failed' };
@@ -425,6 +436,10 @@ const createHandler = ({ storage = createStorage(), renderer = createRenderer({ 
     const name = assets[path];
     if (!name) throw new RequestError(404, 'not_found');
     const body = await readFile(join(__dirname, 'ui', name));
+    if (name === 'viewer.html') {
+      const viewer = viewerResponse(body.toString('utf8'));
+      return send(res, 200, req.method === 'HEAD' ? '' : viewer.body, { 'Content-Type': MIME['.html'], 'Content-Security-Policy': viewer.policy, 'Referrer-Policy': 'same-origin' });
+    }
     return send(res, 200, req.method === 'HEAD' ? '' : body, { 'Content-Type': MIME[extname(name)] });
   } catch (err) {
     const status = err instanceof RequestError ? err.status : 500;

@@ -1,5 +1,7 @@
 {% extends current_module.base_template %}
 {% load material_form material_frontend static %}
+{% block title %}{% if object.pk %}Modifier un DAT{% else %}Créer un DAT{% endif %}{% endblock %}
+{% block page_title %}{% if object.pk %}Modifier un DAT{% else %}Créer un DAT{% endif %}{% endblock %}
 {% block extrahead %}
   {{ block.super }}
   <script src="{% static 'js/dat_dat_form.js' %}"></script>

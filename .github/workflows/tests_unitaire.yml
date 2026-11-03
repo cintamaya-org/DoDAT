@@ -11,7 +11,10 @@ on:
       - "pyproject.toml"
       - "uv.lock"
       - ".coveragerc"
+      - "sonar-project.properties"
       - ".github/workflows/tests_unitaire.yml"
+      - "docker-compose*.yml"
+      - "deploy/**"
   pull_request:
     branches:
       - main
@@ -78,7 +81,14 @@ jobs:
           node-version: "22"
 
       - name: Tests LikeC4 sans dépendances
-        run: node --test likec4/tests/*.test.js
+        run: |
+          mkdir -p coverage
+          node --test --experimental-test-coverage \
+            --test-coverage-include='likec4/**/*.js' \
+            --test-coverage-exclude='likec4/tests/**' \
+            --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=lcov --test-reporter-destination=coverage/likec4.lcov \
+            likec4/tests/*.test.js
 
       - name: Vérification de la configuration Django
         run: uv run python cintafactory/manage.py check
@@ -103,7 +113,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: coverage-${{ github.sha }}
-          path: coverage.xml
+          path: |
+            coverage.xml
+            coverage/likec4.lcov
           retention-days: 14
 
       - name: SonarQube
@@ -113,3 +125,53 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+  likec4-isolation:
+    name: "LikeC4 — offline render and browser isolation"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Effective deployment security controls
+        run: |
+          python3 deploy/scripts/test_likec4_isolation.py
+          bash deploy/scripts/test_least_privilege.sh
+          bash deploy/scripts/test_network_segmentation.sh
+      - name: Frozen toolchain and immutable broker builds
+        run: |
+          docker build --target renderer -t cintafactory-likec4-security:renderer likec4
+          docker build --target broker -t cintafactory-likec4-security:broker likec4
+      - name: Real offline CLI and sandboxed browser
+        run: |
+          docker compose --env-file /dev/null -p cinta-likec4-security -f likec4/tests/compose.integration.yml up -d --no-build likec4-codegen likec4-png
+          docker compose --env-file /dev/null -p cinta-likec4-security -f likec4/tests/compose.integration.yml run --rm --no-deps integration
+          python3 likec4/tests/runtime.integration.py
+      - name: Custom UID/GID runtime
+        env:
+          APP_UID: "2001"
+          APP_GID: "2001"
+          LIKEC4_TEST_RENDERER_IMAGE: cintafactory-likec4-security:renderer-uid
+        run: |
+          docker build --target renderer --build-arg APP_UID=2001 --build-arg APP_GID=2001 -t "$LIKEC4_TEST_RENDERER_IMAGE" likec4
+          docker compose --env-file /dev/null -p cinta-likec4-security-uid -f likec4/tests/compose.integration.yml up -d --no-build likec4-codegen likec4-png
+          docker compose --env-file /dev/null -p cinta-likec4-security-uid -f likec4/tests/compose.integration.yml run --rm --no-deps integration
+          python3 likec4/tests/runtime.integration.py --project cinta-likec4-security-uid --uid 2001
+      - name: Image vulnerability checks
+        run: |
+          mkdir -p "$RUNNER_TEMP/likec4-scan"
+          for target in broker renderer; do
+            docker save "cintafactory-likec4-security:$target" -o "$RUNNER_TEMP/likec4-scan/$target.tar"
+            docker run --rm -v "$RUNNER_TEMP/likec4-scan:/scan" aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c image --input "/scan/$target.tar" --cache-dir /scan/cache --scanners vuln --ignore-unfixed --severity HIGH,CRITICAL --format json --output "/scan/$target.json" --exit-code 1
+            rm "$RUNNER_TEMP/likec4-scan/$target.tar"
+          done
+      - name: Retain image scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: likec4-image-security
+          path: ${{ runner.temp }}/likec4-scan/*.json
+      - name: Stop disposable workers
+        if: always()
+        run: |
+          docker compose --env-file /dev/null -p cinta-likec4-security -f likec4/tests/compose.integration.yml down -v
+          APP_UID=2001 APP_GID=2001 LIKEC4_TEST_RENDERER_IMAGE=cintafactory-likec4-security:renderer-uid docker compose --env-file /dev/null -p cinta-likec4-security-uid -f likec4/tests/compose.integration.yml down -v

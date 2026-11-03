@@ -14,6 +14,7 @@ from django.test import SimpleTestCase, override_settings
 
 from . import exporters
 from .exporters import DATExportModelBuilder
+from .pdf import generate_dat_pdf, render_pdf_from_html
 from diagrams.models import LikeC4Diagram
 
 
@@ -23,6 +24,146 @@ def _response(status, body):
     response.read.return_value = body
     response.__enter__.return_value = response
     return response
+
+
+class RepeaterPreviewSecurityTests(SimpleTestCase):
+    def setUp(self):
+        self.builder = DATExportModelBuilder()
+
+    def _build_part(self, rows, config=None):
+        part = SimpleNamespace(
+            pk=uuid.uuid4(), key="schemas", label="Schemas", required=False,
+            data_type=exporters.DATPartEntryType.REPEATER, value=rows, order=0,
+            config=config or {}, _get_current_entry=lambda: None,
+            render_value=lambda value: value,
+        )
+        return self.builder.build_parts(SimpleNamespace(parts=SimpleNamespace(all=lambda: [part])))[0]
+
+    def test_stored_preview_urls_are_not_used_and_source_rows_stay_unchanged(self):
+        for diagram in (
+            {"images": [{"src": "http://127.0.0.1/internal"}]},
+            {"data_uri": "file:///private/image.png"},
+            {"thumbnail_url": "https://internal.example/image.png"},
+        ):
+            with self.subTest(diagram=diagram):
+                rows = [{"name": "User content", "diagram_previews": [{"diagram": diagram}]}]
+                result = self._build_part(rows)
+                self.assertEqual(result["diagram_previews"], [])
+                self.assertNotIn("diagram_previews", result["display_value"][0])
+                self.assertEqual(result["display_value"][0]["name"], "User content")
+                self.assertEqual(result["value"], rows)
+                self.assertEqual(rows[0]["diagram_previews"], [{"diagram": diagram}])
+
+    def test_valid_diagram_previews_are_regenerated_instead_of_mixed_with_stored_values(self):
+        identifier = uuid.uuid4()
+        trusted = {"title": "Authorized diagram", "images": [{"src": "data:image/png;base64,cG5n"}]}
+        rows = [{"diagram_id": str(identifier), "diagram_previews": [{"diagram": {"data_uri": "file:///private.png"}}]}]
+        with mock.patch.object(self.builder, "_load_diagram_previews", return_value={identifier: trusted}):
+            result = self._build_part(rows, {"columns": [{"key": "diagram_id", "drawio": True}]})
+        self.assertEqual(len(result["diagram_previews"]), 1)
+        self.assertEqual(result["diagram_previews"][0]["diagram"], trusted)
+        self.assertEqual(rows[0]["diagram_previews"][0]["diagram"]["data_uri"], "file:///private.png")
+
+
+class PDFResourceSecurityTests(SimpleTestCase):
+    def test_fetcher_rejects_external_files_and_non_png_data_before_opening_resources(self):
+        with mock.patch("weasyprint.HTML") as html:
+            render_pdf_from_html("<p>DAT</p>", base_url="https://app.example/")
+        fetcher = html.call_args.kwargs["url_fetcher"]
+        with mock.patch("urllib.request.OpenerDirector.open") as open_resource:
+            for url in (
+                "http://127.0.0.1/internal", "https://internal.example/image.png",
+                "file:///private/image.png", "FILE:///private/image.png",
+                "//internal.example/image.png", "../private.png",
+                "data:image/svg+xml,<svg/>", "data:text/html,private",
+            ):
+                with self.subTest(url=url), self.assertRaises(ValueError):
+                    fetcher(url)
+        open_resource.assert_not_called()
+
+    def test_real_pdf_keeps_embedded_pngs_without_http_or_file_access(self):
+        from PIL import Image
+
+        image = BytesIO()
+        Image.new("RGB", (2, 2), "blue").save(image, format="PNG")
+        image_url = "data:image/png;base64," + base64.b64encode(image.getvalue()).decode("ascii")
+        html = (
+            '<p>Approved DAT</p><img src="' + image_url + '">'
+            '<img src="http://127.0.0.1/internal"><img src="file:///private.png">'
+        )
+        with (
+            mock.patch("urllib.request.HTTPHandler.http_open") as http_open,
+            mock.patch("urllib.request.HTTPSHandler.https_open") as https_open,
+            mock.patch("urllib.request.FileHandler.file_open") as file_open,
+        ):
+            document = render_pdf_from_html(html)
+        http_open.assert_not_called()
+        https_open.assert_not_called()
+        file_open.assert_not_called()
+        self.assertTrue(document.startswith(b"%PDF"))
+        self.assertIn(b"/Subtype /Image", document)
+
+
+class GenerateDatPDFTests(SimpleTestCase):
+    def test_builds_refreshable_export_and_passes_payload_and_base_url_to_renderer(self):
+        dat = SimpleNamespace(pk=17, reference="DAT-17", title="Architecture")
+        payload = {"participants": [{"name": "Reviewer"}], "sections": [
+            None, {"sub_sections": [None, {"parts": [{"title": "Design"}]}]},
+        ]}
+        builder = SimpleNamespace(build=mock.Mock(return_value=payload), refresh_likec4_exports=False, likec4_export_source="")
+        with (
+            mock.patch("dat.pdf.get_dat_export_model_builder", return_value=builder),
+            mock.patch("dat.pdf.render_to_string", return_value="<p>Approved DAT</p>") as template,
+            mock.patch("dat.pdf.render_pdf_from_html", return_value=b"%PDF-result") as render,
+        ):
+            document, exported = generate_dat_pdf(dat, base_url="https://app.example/")
+        self.assertEqual(document, b"%PDF-result")
+        self.assertIs(exported, payload)
+        self.assertTrue(builder.refresh_likec4_exports)
+        self.assertEqual(builder.likec4_export_source, "dat_pdf:17")
+        builder.build.assert_called_once_with(dat)
+        template.assert_called_once_with("dat/exports/dat_export_pdf.html", {"dat": dat, "export": payload})
+        render.assert_called_once_with("<p>Approved DAT</p>", base_url="https://app.example/")
+
+    def test_legacy_builders_and_empty_sections_keep_working(self):
+        for dat in (
+            SimpleNamespace(pk=17, reference="", title="Legacy DAT"),
+            SimpleNamespace(pk=17, reference=None, title=None),
+        ):
+            with self.subTest(title=dat.title):
+                builder = SimpleNamespace(build=mock.Mock(return_value={"sections": None, "participants": None}))
+                with (
+                    mock.patch("dat.pdf.get_dat_export_model_builder", return_value=builder),
+                    mock.patch("dat.pdf.render_to_string", return_value="<p>DAT</p>"),
+                    mock.patch("dat.pdf.render_pdf_from_html", return_value=b"%PDF") as render,
+                ):
+                    document, payload = generate_dat_pdf(dat)
+                self.assertEqual(document, b"%PDF")
+                self.assertIsNone(payload["sections"])
+                self.assertFalse(hasattr(builder, "refresh_likec4_exports"))
+                render.assert_called_once_with("<p>DAT</p>", base_url=None)
+
+    def test_builder_failure_does_not_attempt_pdf_rendering(self):
+        builder = SimpleNamespace(build=mock.Mock(side_effect=RuntimeError("storage unavailable")))
+        with (
+            mock.patch("dat.pdf.get_dat_export_model_builder", return_value=builder),
+            mock.patch("dat.pdf.render_to_string") as template,
+            mock.patch("dat.pdf.render_pdf_from_html") as render,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "storage unavailable"):
+                generate_dat_pdf(SimpleNamespace(pk=17, title="DAT"))
+        template.assert_not_called()
+        render.assert_not_called()
+
+    def test_pdf_backend_failure_is_propagated_to_export_job(self):
+        builder = SimpleNamespace(build=mock.Mock(return_value={}))
+        with (
+            mock.patch("dat.pdf.get_dat_export_model_builder", return_value=builder),
+            mock.patch("dat.pdf.render_to_string", return_value="<p>DAT</p>"),
+            mock.patch("dat.pdf.render_pdf_from_html", side_effect=RuntimeError("render failed")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "render failed"):
+                generate_dat_pdf(SimpleNamespace(pk=17, title="DAT"))
 
 
 class DatExportModelBuilderTests(SimpleTestCase):

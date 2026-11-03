@@ -315,6 +315,11 @@ class DATExportModelBuilder:
     def _attach_repeater_diagram_previews(self, part: DATPart, rows):
         if not rows or not isinstance(rows, list):
             return rows
+        # Stored rows are untrusted; previews must come from the scoped loaders.
+        rows = copy.deepcopy(rows)
+        for row in rows:
+            if isinstance(row, dict):
+                row.pop("diagram_previews", None)
         rows = self._attach_drawio_previews(part, rows)
         rows = self._attach_likec4_previews(part, rows)
         return rows

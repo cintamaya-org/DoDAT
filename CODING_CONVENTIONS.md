@@ -4,7 +4,7 @@ SPDX-FileCopyrightText: 2026 Baptiste COQUELET <github.com/BaptisteCoquelet>
 SPDX-License-Identifier: CC-BY-ND-4.0
 -->
 
-# Norme de Nommage - CintaFactory
+# Norme de Nommage - DoDat
 
 **Version 1.1**  
 Date : 21/10/2025

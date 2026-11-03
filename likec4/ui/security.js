@@ -18,7 +18,30 @@
     }
     return url.toString();
   };
-  const api = { setStatusText, scopedBundleUrl };
+  const fetchBundle = async (url, fetcher = fetch) => {
+    const response = await fetcher(url, { credentials: 'same-origin', redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(150000) });
+    if (!response.ok) { const error = new Error('Diagram bundle unavailable.'); error.status = response.status; throw error; }
+    if (!response.headers.get('content-type')?.includes('javascript')) throw new Error('Diagram bundle unavailable.');
+    const limit = 8 * 1024 * 1024;
+    const reader = response.body.getReader();
+    const chunks = [];
+    let size = 0;
+    try {
+      if (Number(response.headers.get('content-length')) > limit) throw new Error('Diagram bundle too large.');
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > limit) throw new Error('Diagram bundle too large.');
+        chunks.push(value);
+      }
+    } catch (error) { await reader.cancel(); throw error; }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  };
+  const api = { setStatusText, scopedBundleUrl, fetchBundle };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.CintaLikeC4 = api;
 })(typeof window !== 'undefined' ? window : globalThis);
