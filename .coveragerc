@@ -18,6 +18,9 @@ omit =
     cintafactory/dat_viewflow/apps.py
     cintafactory/diagrams/apps.py
     cintafactory/workflows/apps.py
+    # Declarative registrations only; admin modules with behavior stay covered.
+    cintafactory/dat/admin.py
+    cintafactory/dat_viewflow/admin.py
 
 [report]
 skip_empty = True
