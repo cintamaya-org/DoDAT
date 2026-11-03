@@ -112,7 +112,7 @@ Middleware applique :
 
 Mode strict active redirection HTTPS, HSTS et cookies sécurisés. Vérifications système peuvent bloquer configuration faible en production.
 
-Éditeur LikeC4 reçoit une CSP plus permissive (`http`, `https`, WebSocket, `unsafe-inline`, `unsafe-eval`) pour fonctionner. Cette route doit rester authentifiée et isolée ; réduire cette exception si intégration le permet.
+L'éditeur LikeC4 reste authentifié et conserve les exceptions nécessaires à Monaco (`unsafe-inline`, `unsafe-eval`, domaines CDN explicites). Les destinations générales HTTP/HTTPS/WebSocket sont supprimées. Le viewer généré reçoit une CSP distincte avec `sandbox allow-scripts`, sans `allow-same-origin`, et aucune connexion réseau autorisée pour ses assets. Le parent transmet uniquement les octets du bundle déjà autorisé ; aucun pont de requêtes privilégiées n'est exposé. Une navigation du viewer en top-level conserve le sandbox via l'en-tête HTTP.
 
 ## CSRF, redirections et proxy
 
@@ -175,7 +175,9 @@ SeaweedFS reçoit JWT HS256 limités :
 
 Clés lecture et écriture sont distinctes. URLs publiques peuvent porter JWT en query string ; elles risquent fuite via logs, historique navigateur ou Referer. TTL court et `Referrer-Policy` réduisent risque, sans l'annuler.
 
-Services Node normalisent chemins et refusent traversal, segments `.`/`..`, chemins absolus et certaines syntaxes ambiguës. Répertoires temporaires LikeC4 utilisent permissions privées et rejettent liens symboliques au niveau racine configurée.
+Services Node normalisent chemins et refusent traversal, segments `.`/`..`, chemins absolus et certaines syntaxes ambiguës. Les brokers LikeC4 ne lancent plus le CLI : deux renderers sans réseau ni credentials traitent un seul fichier `diagram.c4` par job. Les volumes IPC limitent taille/inodes et séparent accès lecture/écriture. Les résultats sont non fiables : identité/révision, manifestes, tailles, liens et signature PNG sont contrôlés avant publication. Les sous-processus sont terminés dans un namespace PID privé, y compris leurs groupes détachés. Code applicatif immuable, limites CPU/mémoire/PID/tmpfs et sandbox Chromium restent obligatoires.
+
+Ces contrôles réduisent l'impact d'une vulnérabilité LikeC4/Chromium ; ils ne prouvent pas absence de vulnérabilité dans les moteurs. Les assets distants sont bloqués. Le sandbox navigateur ne garantit pas absence totale de trafic : un script compromis peut encore naviguer son propre cadre. Voir [LikeC4](../likec4/README.md) pour tests et procédure de désactivation du rendu.
 
 ## Proxies draw.io et LikeC4
 

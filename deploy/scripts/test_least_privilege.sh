@@ -42,19 +42,7 @@ assert_block_has "docker-compose.scaling.dev.yml" "worker" "no-new-privileges:tr
 assert_block_has "docker-compose.scaling.dev.yml" "worker" "cap_drop:"
 assert_block_has "docker-compose.scaling.dev.yml" "worker" "- ALL"
 
-assert_block_has "docker-compose.scaling.dev.yml" "likec4" "security_opt:"
-assert_block_has "docker-compose.scaling.dev.yml" "likec4" "no-new-privileges:true"
-assert_block_has "docker-compose.scaling.dev.yml" "likec4" "cap_drop:"
-assert_block_has "docker-compose.scaling.dev.yml" "likec4" "- ALL"
-assert_block_has "docker-compose.scaling.dev.yml" "likec4" "user:"
-assert_block_has "docker-compose.scaling.dev.yml" "likec4" "read_only: true"
 
-assert_block_has "docker-compose.scaling.dev.yml" "likec4-exporter" "security_opt:"
-assert_block_has "docker-compose.scaling.dev.yml" "likec4-exporter" "no-new-privileges:true"
-assert_block_has "docker-compose.scaling.dev.yml" "likec4-exporter" "cap_drop:"
-assert_block_has "docker-compose.scaling.dev.yml" "likec4-exporter" "- ALL"
-assert_block_has "docker-compose.scaling.dev.yml" "likec4-exporter" "user:"
-assert_block_has "docker-compose.scaling.dev.yml" "likec4-exporter" "read_only: true"
 
 # Deploy base stack: same profile for app + LikeC4 services.
 assert_block_has "deploy/docker-compose.base.yml" "web" "security_opt:"
@@ -62,18 +50,8 @@ assert_block_has "deploy/docker-compose.base.yml" "web" "no-new-privileges:true"
 assert_block_has "deploy/docker-compose.base.yml" "web" "cap_drop:"
 assert_block_has "deploy/docker-compose.base.yml" "web" "- ALL"
 
-assert_block_has "deploy/docker-compose.base.yml" "likec4" "security_opt:"
-assert_block_has "deploy/docker-compose.base.yml" "likec4" "no-new-privileges:true"
-assert_block_has "deploy/docker-compose.base.yml" "likec4" "cap_drop:"
-assert_block_has "deploy/docker-compose.base.yml" "likec4" "- ALL"
-assert_block_has "deploy/docker-compose.base.yml" "likec4" "user:"
-assert_block_has "deploy/docker-compose.base.yml" "likec4" "read_only: true"
 
-assert_block_has "deploy/docker-compose.base.yml" "likec4-exporter" "security_opt:"
-assert_block_has "deploy/docker-compose.base.yml" "likec4-exporter" "no-new-privileges:true"
-assert_block_has "deploy/docker-compose.base.yml" "likec4-exporter" "cap_drop:"
-assert_block_has "deploy/docker-compose.base.yml" "likec4-exporter" "- ALL"
-assert_block_has "deploy/docker-compose.base.yml" "likec4-exporter" "user:"
-assert_block_has "deploy/docker-compose.base.yml" "likec4-exporter" "read_only: true"
+
+python3 deploy/scripts/test_likec4_isolation.py
 
 echo "PASS: least-privilege policy checks passed."
