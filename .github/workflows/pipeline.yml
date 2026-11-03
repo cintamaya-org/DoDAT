@@ -1,0 +1,151 @@
+name: Pipeline
+
+on:
+  pull_request:
+    branches: [ dev, main ]
+
+permissions:
+  contents: read
+
+jobs:
+  Gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Importation du repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Lancement du scan
+        id: Gitleaks
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/code ghcr.io/gitleaks/gitleaks:latest detect --source="/code" --verbose --report-format=json --report-path="/code/gitleaks.json" --exit-code 0
+          touch gitleaks.json
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks
+          path: gitleaks.json
+
+  SbomScan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Importation du repo
+        uses: actions/checkout@v4
+
+      - name: Build local de l'image
+        run: docker build -t app-local:${{ github.sha }} -f dockerfile .
+
+      - name: Syft
+        uses: anchore/sbom-action@v0
+        with:
+          image: app-local:${{ github.sha }}
+          format: cyclonedx-json
+          output-file: SBOM.json
+
+      - name: Grype JSON
+        uses: anchore/scan-action@v3
+        id: GrypeJson
+        with:
+          image: app-local:${{ github.sha }}
+          fail-build: false
+          output-format: json
+      - run: mv ${{ steps.GrypeJson.outputs.json }} SCA.json
+
+      - name: Grype TXT
+        uses: anchore/scan-action@v3
+        id: GrypeTxt
+        with:
+          image: app-local:${{ github.sha }}
+          fail-build: false
+          output-format: table
+      - run: mv ${{ steps.GrypeTxt.outputs.table }} SCA.txt
+
+      - name: Grant
+        run: |
+          wget -q https://github.com/anchore/grant/releases/download/v0.1.0/grant_0.1.0_linux_amd64.tar.gz
+          tar -xzf grant_0.1.0_linux_amd64.tar.gz
+          sudo mv grant /usr/local/bin/
+          grant check SBOM.json > LICENCE.txt || true
+
+      - name: Déplacement des rapports
+        run: mkdir -p reports && mv SBOM.json reports/ && mv SCA.json reports/ && mv SCA.txt reports/ && mv LICENCE.txt reports/
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-reports
+          path: reports/
+
+  SonarQube:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Importation du repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: SonarQube
+        uses: sonarsource/sonarqube-scan-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          args: >
+            -Dsonar.projectKey=${{ github.event.repository.name }}
+            -Dsonar.projectName="${{ github.event.repository.name }}"
+
+  Hadolint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Importation du repo
+        uses: actions/checkout@v4
+
+      - name: Hadolint
+        uses: hadolint/hadolint-action@3.1.0
+        with:
+          dockerfile: dockerfile
+          no-fail: true
+
+  RapportVps:
+    needs: [Gitleaks, SbomScan]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Telechargement des artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ github.event.repository.name }}
+
+      - name: Organisation des rapports
+        run: |
+          DATE=$(date +%Y-%m-%d)
+          mkdir -p ${{ github.event.repository.name }}/syft ${{ github.event.repository.name }}/grype ${{ github.event.repository.name }}/grant ${{ github.event.repository.name }}/gitleaks
+          mv ${{ github.event.repository.name }}/sbom-reports/SBOM.json ${{ github.event.repository.name }}/syft/${DATE}_SBOM.json
+          mv ${{ github.event.repository.name }}/sbom-reports/SCA.json ${{ github.event.repository.name }}/grype/${DATE}_SCA.json
+          mv ${{ github.event.repository.name }}/sbom-reports/SCA.txt ${{ github.event.repository.name }}/grype/${DATE}_SCA.txt
+          mv ${{ github.event.repository.name }}/sbom-reports/LICENCE.txt ${{ github.event.repository.name }}/grant/${DATE}_LICENCE.txt
+          mv ${{ github.event.repository.name }}/gitleaks/gitleaks.json ${{ github.event.repository.name }}/gitleaks/${DATE}_SECRETS.json
+          rm -rf ${{ github.event.repository.name }}/sbom-reports
+
+      - name: Envoi des rapports sur le VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_CHECK_IP }}
+          username: ${{ secrets.VPS_CHECK_HOST }}
+          key: ${{ secrets.VPS_CHECK_KEY }}
+          port: ${{ secrets.VPS_CHECK_PORT }}
+          source: "${{ github.event.repository.name }}/*"
+          target: "/home/debian/${{ github.event.repository.name }}"
+          strip_components: 1
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-reports
+          path: reports/
