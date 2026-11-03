@@ -1,102 +1,128 @@
 {% extends current_module.base_template %}
+{% load l10n %}
 
-{% block page_title %}Tableau de bord des DAT{% endblock %}
-
-{% comment %} {% block breadcrumbs_items %}
-  <a class="active">Gestion des DAT (admin)</a>
-{% endblock %} {% endcomment %}
+{% block title %}Pilotage des DAT{% endblock %}
+{% block page_eyebrow %}Dossier d'Architecture Technique{% endblock %}
+{% block page_title %}Pilotage des DAT{% endblock %}
 
 {% block content %}
-<div class="row">
-  <div class="col s12 m4">
-    <div class="card cinta-card">
-      <div class="card-content">
-        <span class="card-title">Total des DAT</span>
-        <h4 class="u-mt-1">{{ total_dats }}</h4>
-      </div>
-      <div class="card-action">
-        <a href="{% url 'dat:admin_list' %}" class="btn waves-effect waves-light cinta-btn-primary">
-          <i class="material-icons left">settings</i>
-        </a>
-      </div>
+<section class="dat-dashboard" aria-label="Pilotage des DAT">
+  <div class="page-header">
+    <div>
+      <h2 class="page-header__title">Vue d'ensemble</h2>
+      <p class="page-header__subtitle">Activité et répartition des dossiers d'architecture technique.</p>
+    </div>
+    <div class="page-header__actions">
+      <a href="{% url 'dat:admin_list' %}" class="btn waves-effect waves-light cinta-btn-primary">
+        <i class="material-icons" aria-hidden="true">topic</i>Gérer les DAT
+      </a>
     </div>
   </div>
 
-  <div class="col s12 m8">
-    <div class="card cinta-card">
+  <div class="dat-dashboard__metrics">
+    <article class="dat-dashboard__metric">
+      <div class="dat-dashboard__metric-icon" aria-hidden="true"><i class="material-icons">description</i></div>
+      <div>
+        <p class="dat-dashboard__metric-label">Total des DAT</p>
+        <p class="dat-dashboard__metric-value">{{ total_dats }}</p>
+      </div>
+    </article>
+    <article class="dat-dashboard__metric">
+      <div class="dat-dashboard__metric-icon dat-dashboard__metric-icon--green" aria-hidden="true"><i class="material-icons">calendar_month</i></div>
+      <div>
+        <p class="dat-dashboard__metric-label">Créés ce mois</p>
+        <p class="dat-dashboard__metric-value">{{ current_month_count }}</p>
+      </div>
+    </article>
+  </div>
+
+  <div class="dat-dashboard__grid">
+    <section class="card cinta-card dat-dashboard__panel dat-dashboard__panel--activity">
       <div class="card-content">
-        <span class="card-title">Activite mensuelle (6 derniers mois)</span>
+        <div class="dat-dashboard__panel-heading">
+          <div>
+            <h3 class="card-title">Activité mensuelle</h3>
+            <p class="dat-dashboard__panel-subtitle">DAT créés au cours des six derniers mois</p>
+          </div>
+          <span class="dat-dashboard__panel-icon material-icons" aria-hidden="true">trending_up</span>
+        </div>
         <div class="dat-dashboard__chart">
-          <svg viewBox="0 0 100 100" preserveAspectRatio="none" class="dat-dashboard__chart-bg">
-            <polygon points="{{ monthly_chart_area_points|default:'0,100 100,100' }}" fill="rgba(41,121,255,0.2)"></polygon>
-            <polyline points="{{ monthly_chart_points|default:'0,100 100,100' }}" fill="none" stroke="rgba(41,121,255,0.7)" stroke-width="2"></polyline>
+          <svg viewBox="0 0 100 100" preserveAspectRatio="none" class="dat-dashboard__chart-bg" role="img" aria-label="Évolution du nombre de DAT créés sur six mois">
+            <title>Évolution des créations de DAT</title>
+            <polygon points="{{ monthly_chart_area_points|default:'0,100 100,100' }}" fill="rgba(59,130,246,0.12)"></polygon>
+            <polyline points="{{ monthly_chart_points|default:'0,100 100,100' }}" fill="none" stroke="#2563eb" stroke-width="2"></polyline>
           </svg>
         </div>
-        <div class="row u-mt-1">
+        <div class="dat-dashboard__months">
           {% for month in monthly_activity %}
-            <div class="col s6 m4 dat-dashboard__month">
-              <div class="dat-dashboard__month-label">{{ month.label }}</div>
-              <div class="dat-dashboard__month-count">{{ month.count }}</div>
+            <div class="dat-dashboard__month">
+              <span class="dat-dashboard__month-label">{{ month.label }}</span>
+              <strong class="dat-dashboard__month-count">{{ month.count }}</strong>
             </div>
           {% endfor %}
         </div>
       </div>
-    </div>
-  </div>
-</div>
+    </section>
 
-<div class="row">
-  {% comment %} <div class="col s12 m6">
-    <div class="card cinta-card">
+    <section class="card cinta-card dat-dashboard__panel">
       <div class="card-content">
-        <span class="card-title">Repartition par statut</span>
+        <div class="dat-dashboard__panel-heading">
+          <div>
+            <h3 class="card-title">Répartition par statut</h3>
+            <p class="dat-dashboard__panel-subtitle">État actuel des dossiers</p>
+          </div>
+          <span class="dat-dashboard__panel-icon material-icons" aria-hidden="true">donut_small</span>
+        </div>
         {% if status_summary %}
-          <ul class="collection">
+          <div class="dat-dashboard__status-list">
             {% for item in status_summary %}
-              <li class="collection-item">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
-                  <span style="font-weight:500;">{{ item.label }}</span>
-                  <span>{{ item.count }}</span>
+              <div class="dat-dashboard__status-item">
+                <div class="dat-dashboard__status-heading">
+                  <span>{{ item.label }}</span>
+                  <strong>{{ item.count }}</strong>
                 </div>
-                <div class="progress" style="margin:0;">
-                  <div class="determinate" style="width: {{ item.percentage }}%;"></div>
+                <div class="dat-dashboard__status-track" role="progressbar" aria-label="{{ item.label }}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ item.percentage|unlocalize }}">
+                  <span style="width: {{ item.percentage|unlocalize }}%"></span>
                 </div>
-              </li>
+              </div>
             {% endfor %}
-          </ul>
+          </div>
         {% else %}
-          <p class="grey-text">Pas encore de donnees DAT.</p>
+          <p class="dat-dashboard__empty">Aucun statut de workflow n'est configuré.</p>
         {% endif %}
       </div>
-    </div>
-  </div> {% endcomment %}
+    </section>
 
-  <div class="col">
-    <div class="card cinta-card">
+    <section class="card cinta-card dat-dashboard__panel dat-dashboard__panel--owners">
       <div class="card-content">
-        <span class="card-title">Contributeurs principaux</span>
+        <div class="dat-dashboard__panel-heading">
+          <div>
+            <h3 class="card-title">Contributeurs principaux</h3>
+            <p class="dat-dashboard__panel-subtitle">Responsables associés au plus grand nombre de DAT</p>
+          </div>
+          <span class="dat-dashboard__panel-icon material-icons" aria-hidden="true">groups</span>
+        </div>
         {% if top_owners %}
-          <table class="highlight">
-            <thead>
-              <tr>
-                <th>Responsable</th>
-                <th class="right-align">DAT</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for owner in top_owners %}
-                <tr>
-                  <td>{{ owner.owner__username|default:"Inconnu" }}</td>
-                  <td class="right-align">{{ owner.total }}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
+          <div class="table-wrapper">
+            <table class="highlight">
+              <thead>
+                <tr><th scope="col">Responsable</th><th scope="col" class="right-align">DAT</th></tr>
+              </thead>
+              <tbody>
+                {% for owner in top_owners %}
+                  <tr>
+                    <td>{{ owner.owner__username|default:"Inconnu" }}</td>
+                    <td class="right-align"><strong>{{ owner.total }}</strong></td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
         {% else %}
-          <p class="grey-text">Pas encore de donnees sur les responsables.</p>
+          <p class="dat-dashboard__empty">Aucun responsable associé à un DAT.</p>
         {% endif %}
       </div>
-    </div>
+    </section>
   </div>
-</div>
+</section>
 {% endblock %}

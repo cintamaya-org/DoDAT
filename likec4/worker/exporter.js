@@ -1,13 +1,12 @@
 const http = require('http');
 const { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } = require('fs').promises;
 const { dirname, join, relative, resolve, sep } = require('path');
-const { execFile } = require('child_process');
-const { promisify } = require('util');
 const { tmpdir } = require('os');
 const { seaweedAuthHeaders } = require('./seaweedfs_auth');
-const { DEFAULT_LIMITS, RequestError, authorizeScope, validateSource, readResponseText, readJson, outputPrefix, createQueue } = require('./scope');
+const { DEFAULT_LIMITS, RequestError, authorizeScope, validateSource, readResponseText, readJson, outputPrefix, createQueue, renderingEnabled } = require('./scope');
 
-const execFileAsync = promisify(execFile);
+const { createRenderClient } = require('./render_protocol');
+const renderJob = createRenderClient();
 const PNG_SIGNATURE = Buffer.from('89504e470d0a1a0a', 'hex');
 const MAX_PNG_BYTES = 32 * 1024 * 1024;
 const MAX_PNG_FILES = 128;
@@ -30,25 +29,17 @@ const safeLocalJoin = (base, relativePath) => {
   if (!target.startsWith(`${root}${sep}`)) throw new Error('Invalid local output path');
   return target;
 };
-const findPngFiles = async (dir, depth = 0) => {
-  if (depth > 4) return [];
-  const files = [];
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) files.push(...await findPngFiles(path, depth + 1));
-    else if (entry.isFile() && entry.name.toLowerCase().endsWith('.png')) files.push(path);
-    if (files.length > MAX_PNG_FILES) throw new Error('Too many PNG outputs');
-  }
-  return files;
-};
-const exportLikeC4 = async (workDir, exec = execFileAsync) => {
+const exportLikeC4 = async (workDir, scope) => {
   const outputDir = join(workDir, 'out');
   await mkdir(outputDir, { mode: 0o700 });
-  const view = process.env.LIKEC4_EXPORT_VIEW;
-  const args = ['export', 'png', '-o', outputDir, '.', ...(view ? ['--filter', view] : [])];
-  await exec(process.env.LIKEC4_BIN || 'likec4', args, { cwd: workDir, timeout: Number(process.env.LIKEC4_RENDER_TIMEOUT_MS || 120000), maxBuffer: 1024 * 1024 });
-  const pngs = (await findPngFiles(outputDir)).sort();
-  if (!pngs.length) throw new Error('No PNG output');
+  const files = await renderJob(await readFile(join(workDir, 'diagram.c4'), 'utf8'), scope, 'png');
+  const pngs = [];
+  for (const { name, bytes } of files) {
+    const path = safeLocalJoin(outputDir, name);
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    await writeFile(path, bytes, { flag: 'wx', mode: 0o600 });
+    pngs.push(path);
+  }
   return { outputDir, pngs };
 };
 const createStorage = () => {
@@ -87,7 +78,7 @@ const processJob = async (scope, { storage = createStorage(), render = exportLik
   const workDir = await createWorkDir();
   try {
     await writeFile(join(workDir, 'diagram.c4'), content, { encoding: 'utf8', mode: 0o600 });
-    const { outputDir, pngs } = await render(workDir);
+    const { outputDir, pngs } = await render(workDir, scope);
     if (!pngs.length || pngs.length > MAX_PNG_FILES) throw new Error('Invalid PNG output count');
     const prefix = outputPrefix(scope);
     const paths = [];
@@ -132,7 +123,7 @@ const sendJson = (res, status, payload) => {
   res.end(JSON.stringify(payload));
 };
 const createHandler = ({ apiToken = process.env.LIKEC4_API_TOKEN || '', run = processJob } = {}) => {
-  const queue = createQueue(8);
+  const queue = createQueue(8, 'png');
   return async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');
@@ -141,6 +132,7 @@ const createHandler = ({ apiToken = process.env.LIKEC4_API_TOKEN || '', run = pr
       const scope = authorizeScope(req, apiToken, 'export');
       const payload = await readJson(req);
       authorizeScope(req, apiToken, 'export', undefined, payload);
+      if (!renderingEnabled()) throw new RequestError(503, 'render_disabled');
       const result = await queue(() => run(scope));
       return sendJson(res, 200, { ok: true, ...result });
     } catch (err) {

@@ -74,18 +74,21 @@ const readJson = async (req, maxBytes = DEFAULT_LIMITS.source + 65536) => {
   } catch { throw new RequestError(400, 'invalid_json'); }
 };
 const outputPrefix = scope => `diagrams/likec4/${scope.diagram_id}/views/${scope.revision}`;
-const createQueue = (maxPending = 8) => {
+const renderingEnabled = () => !['0', 'false', 'off', 'no'].includes(String(process.env.LIKEC4_RENDER_ENABLED || '1').toLowerCase());
+const createQueue = (maxPending = 8, name = 'render') => {
   let active = false;
   const pending = [];
+  const emit = () => console.info(JSON.stringify({ event: 'likec4.queue', queue: name, active, pending: pending.length }));
   const next = () => {
     if (active || !pending.length) return;
     active = true;
     const { task, resolve, reject } = pending.shift();
-    Promise.resolve().then(task).then(resolve, reject).finally(() => { active = false; next(); });
+    emit();
+    Promise.resolve().then(task).then(resolve, reject).finally(() => { active = false; emit(); next(); });
   };
   return task => {
     if (active && pending.length >= maxPending) return Promise.reject(new RequestError(503, 'render_queue_full'));
-    return new Promise((resolve, reject) => { pending.push({ task, resolve, reject }); next(); });
+    return new Promise((resolve, reject) => { pending.push({ task, resolve, reject }); if (active) emit(); next(); });
   };
 };
-module.exports = { DEFAULT_LIMITS, RequestError, revisionOf, validStoragePath, authorizeScope, validateSource, readBounded, readResponseText, readJson, outputPrefix, createQueue };
+module.exports = { DEFAULT_LIMITS, RequestError, revisionOf, validStoragePath, authorizeScope, validateSource, readBounded, readResponseText, readJson, outputPrefix, createQueue, renderingEnabled };

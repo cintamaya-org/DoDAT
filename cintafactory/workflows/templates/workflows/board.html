@@ -1,6 +1,9 @@
 {% extends "material/frontend/base_module.html" %}
 {% load static %}
 
+{% block title %}{% if request.resolver_match.url_name == "my_tasks" %}Mes tâches{% else %}Tableau des workflows{% endif %}{% endblock %}
+{% block page_title %}{% if request.resolver_match.url_name == "my_tasks" %}Mes tâches{% else %}Tableau des workflows{% endif %}{% endblock %}
+
 {% comment %} {% block title %}{{ workflow.name }}{% endblock %} {% endcomment %}
 
 {% block extrahead %}

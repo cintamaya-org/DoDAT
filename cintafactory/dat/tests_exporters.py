@@ -14,7 +14,7 @@ from django.test import SimpleTestCase, override_settings
 
 from . import exporters
 from .exporters import DATExportModelBuilder
-from .pdf import render_pdf_from_html
+from .pdf import generate_dat_pdf, render_pdf_from_html
 from diagrams.models import LikeC4Diagram
 
 
@@ -102,6 +102,68 @@ class PDFResourceSecurityTests(SimpleTestCase):
         file_open.assert_not_called()
         self.assertTrue(document.startswith(b"%PDF"))
         self.assertIn(b"/Subtype /Image", document)
+
+
+class GenerateDatPDFTests(SimpleTestCase):
+    def test_builds_refreshable_export_and_passes_payload_and_base_url_to_renderer(self):
+        dat = SimpleNamespace(pk=17, reference="DAT-17", title="Architecture")
+        payload = {"participants": [{"name": "Reviewer"}], "sections": [
+            None, {"sub_sections": [None, {"parts": [{"title": "Design"}]}]},
+        ]}
+        builder = SimpleNamespace(build=mock.Mock(return_value=payload), refresh_likec4_exports=False, likec4_export_source="")
+        with (
+            mock.patch("dat.pdf.get_dat_export_model_builder", return_value=builder),
+            mock.patch("dat.pdf.render_to_string", return_value="<p>Approved DAT</p>") as template,
+            mock.patch("dat.pdf.render_pdf_from_html", return_value=b"%PDF-result") as render,
+        ):
+            document, exported = generate_dat_pdf(dat, base_url="https://app.example/")
+        self.assertEqual(document, b"%PDF-result")
+        self.assertIs(exported, payload)
+        self.assertTrue(builder.refresh_likec4_exports)
+        self.assertEqual(builder.likec4_export_source, "dat_pdf:17")
+        builder.build.assert_called_once_with(dat)
+        template.assert_called_once_with("dat/exports/dat_export_pdf.html", {"dat": dat, "export": payload})
+        render.assert_called_once_with("<p>Approved DAT</p>", base_url="https://app.example/")
+
+    def test_legacy_builders_and_empty_sections_keep_working(self):
+        for dat in (
+            SimpleNamespace(pk=17, reference="", title="Legacy DAT"),
+            SimpleNamespace(pk=17, reference=None, title=None),
+        ):
+            with self.subTest(title=dat.title):
+                builder = SimpleNamespace(build=mock.Mock(return_value={"sections": None, "participants": None}))
+                with (
+                    mock.patch("dat.pdf.get_dat_export_model_builder", return_value=builder),
+                    mock.patch("dat.pdf.render_to_string", return_value="<p>DAT</p>"),
+                    mock.patch("dat.pdf.render_pdf_from_html", return_value=b"%PDF") as render,
+                ):
+                    document, payload = generate_dat_pdf(dat)
+                self.assertEqual(document, b"%PDF")
+                self.assertIsNone(payload["sections"])
+                self.assertFalse(hasattr(builder, "refresh_likec4_exports"))
+                render.assert_called_once_with("<p>DAT</p>", base_url=None)
+
+    def test_builder_failure_does_not_attempt_pdf_rendering(self):
+        builder = SimpleNamespace(build=mock.Mock(side_effect=RuntimeError("storage unavailable")))
+        with (
+            mock.patch("dat.pdf.get_dat_export_model_builder", return_value=builder),
+            mock.patch("dat.pdf.render_to_string") as template,
+            mock.patch("dat.pdf.render_pdf_from_html") as render,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "storage unavailable"):
+                generate_dat_pdf(SimpleNamespace(pk=17, title="DAT"))
+        template.assert_not_called()
+        render.assert_not_called()
+
+    def test_pdf_backend_failure_is_propagated_to_export_job(self):
+        builder = SimpleNamespace(build=mock.Mock(return_value={}))
+        with (
+            mock.patch("dat.pdf.get_dat_export_model_builder", return_value=builder),
+            mock.patch("dat.pdf.render_to_string", return_value="<p>DAT</p>"),
+            mock.patch("dat.pdf.render_pdf_from_html", side_effect=RuntimeError("render failed")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "render failed"):
+                generate_dat_pdf(SimpleNamespace(pk=17, title="DAT"))
 
 
 class DatExportModelBuilderTests(SimpleTestCase):

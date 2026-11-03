@@ -1194,6 +1194,12 @@ def likec4_proxy(request, path: str = ""):
             if content_type:
                 response["Content-Type"] = content_type
             response["X-Content-Type-Options"] = "nosniff"
+            if normalized_path == "viewer.html":
+                policy = resp.headers.get("Content-Security-Policy", "")
+                if "sandbox allow-scripts;" not in policy or "allow-same-origin" in policy:
+                    return JsonResponse({"ok": False, "error": "viewer_policy_missing"}, status=502)
+                response["Content-Security-Policy"] = policy
+                response["Referrer-Policy"] = "same-origin"
             for header_name in ("Cache-Control", "ETag", "Last-Modified", "Expires", "Content-Disposition"):
                 header_val = resp.headers.get(header_name)
                 if header_val:

@@ -1,0 +1,236 @@
+{% load dat_extras %}
+<section id="section-validation" class="dat-validation-workspace" aria-labelledby="dat-validation-title">
+  <article class="card cinta-card dat-validation-overview">
+    <div class="card-content">
+      <div class="dat-validation-panel-heading">
+        <div>
+          <h2 id="dat-validation-title" class="dat-validation-title">Suivi des sections</h2>
+          <p class="dat-validation-subtitle">État, avancement, responsable et dernière activité de chaque section.</p>
+        </div>
+        <div class="dat-validation-overview__actions">
+          {% if dat_is_reviewable and can_review_dat %}
+            <a href="#dat-validation-decisions" class="btn waves-effect waves-light cinta-btn-primary">
+              <i class="material-icons" aria-hidden="true">rate_review</i>
+              Lancer la revue
+            </a>
+          {% elif dat_is_reviewable %}
+            <span class="dat-validation-status dat-validation-status--review">En attente de revue</span>
+          {% else %}
+            <span class="dat-validation-status dat-validation-status--neutral">{{ dat.get_status_display }}</span>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="table-wrapper dat-validation-table-wrapper">
+        <table class="dat-validation-table">
+          <thead>
+            <tr>
+              <th scope="col">Section</th>
+              <th scope="col">État</th>
+              <th scope="col">Responsable</th>
+              <th scope="col">Avancement</th>
+              <th scope="col">Dernière activité</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in validation_section_rows %}
+              <tr>
+                <th scope="row">
+                  <a class="dat-validation-section-link" href="?section={{ row.slug }}">{{ row.title|lower|capfirst }}</a>
+                  {% if row.comment %}<small class="dat-validation-row-note">{{ row.comment }}</small>{% endif %}
+                </th>
+                <td>
+                  <div class="dat-validation-state">
+                    <span class="dat-validation-status dat-validation-status--{{ row.status_tone }}">{{ row.status_label }}</span>
+                    {% if row.responsible_status_label %}
+                      <span class="dat-validation-state__secondary">Référent · {{ row.responsible_status_label }}</span>
+                    {% endif %}
+                    {% if row.reserve_message %}
+                      <span class="dat-validation-state__reserve">{{ row.reserve_message }}</span>
+                      {% if row.reserve_by_display %}<small class="dat-validation-row-note">Par {{ row.reserve_by_display }}</small>{% endif %}
+                    {% endif %}
+                    {% if row.can_validate_responsible %}
+                      <form method="post" action="{% url 'dat:section_responsible_status' dat.pk row.slug %}" class="dat-validation-inline-form">
+                        {% csrf_token %}
+                        <input type="hidden" name="status" value="{{ row.validated_value }}">
+                        <button type="submit" class="btn-flat waves-effect">Valider comme référent</button>
+                      </form>
+                    {% endif %}
+                    {% if row.can_clear_reserve %}
+                      <form method="post" action="{% url 'dat:section_reserve_clear' dat.pk row.slug %}" class="dat-validation-inline-form">
+                        {% csrf_token %}
+                        <button type="submit" class="btn-flat waves-effect">Lever la réserve</button>
+                      </form>
+                    {% elif row.can_create_reserve %}
+                      <form method="post" action="{% url 'dat:section_reserve' dat.pk row.slug %}" class="dat-reserve-create-form dat-validation-inline-form" data-section-title="{{ row.title|lower|capfirst }}">
+                        {% csrf_token %}
+                        <input type="hidden" name="reserve_message" value="">
+                        <button type="submit" class="btn-flat waves-effect">Mettre en réserve</button>
+                      </form>
+                    {% endif %}
+                  </div>
+                </td>
+                <td>{{ row.responsible_display }}</td>
+                <td>
+                  {% if row.progress != None %}
+                    <div class="dat-validation-progress" role="progressbar" aria-label="Avancement de {{ row.title }}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ row.progress }}" title="{{ row.progress_detail }}">
+                      <span style="width: {{ row.progress }}%"></span>
+                    </div>
+                    <strong class="dat-validation-progress__value">{{ row.progress }}%</strong>
+                    <small class="dat-validation-row-note">{{ row.progress_detail }}</small>
+                  {% else %}
+                    <span class="dat-validation-progress__unknown">—</span>
+                    <small class="dat-validation-row-note">{{ row.progress_detail }}</small>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if row.last_activity %}
+                    <time datetime="{{ row.last_activity|date:'c' }}">{{ row.last_activity|date:'d/m/Y H:i' }}</time>
+                  {% else %}
+                    <span class="text-muted">—</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="5" class="dat-validation-empty">Aucune section avec suivi de validation n’est configurée.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </article>
+
+  <div class="dat-validation-lower-grid">
+    <article class="card cinta-card dat-validation-panel">
+      <div class="card-content">
+        <div class="dat-validation-panel-heading">
+          <div>
+            <h3 class="dat-validation-panel-title">Workflow de validation</h3>
+            <p class="dat-validation-subtitle">Étapes configurées pour ce DAT</p>
+          </div>
+          <span class="material-icons dat-validation-panel-icon" aria-hidden="true">schema</span>
+        </div>
+
+        {% if validation_workflow_steps %}
+          <ol class="dat-validation-timeline">
+            {% for step in validation_workflow_steps %}
+              <li class="dat-validation-timeline__item dat-validation-timeline__item--{{ step.tone }}{% if step.is_current %} is-current{% endif %}{% if forloop.last %} is-last{% endif %}">
+                <span class="dat-validation-timeline__marker" aria-hidden="true">
+                  {% if step.tone == "validated" %}<i class="material-icons">check</i>
+                  {% elif step.tone == "blocked" %}<i class="material-icons">priority_high</i>
+                  {% elif step.tone == "review" %}<span>{{ forloop.counter }}</span>
+                  {% elif step.tone == "in_progress" %}<i class="material-icons">schedule</i>
+                  {% else %}<span>{{ forloop.counter }}</span>{% endif %}
+                </span>
+                <div class="dat-validation-timeline__body">
+                  <div class="dat-validation-timeline__heading">
+                    <strong>{{ step.title }}</strong>
+                    <span class="dat-validation-timeline__state">{{ step.state_label }}</span>
+                  </div>
+                  {% if step.description %}<p>{{ step.description }}</p>{% endif %}
+                </div>
+              </li>
+            {% endfor %}
+          </ol>
+        {% else %}
+          <p class="dat-validation-empty">Aucun workflow de validation n’est configuré.</p>
+        {% endif %}
+
+        <div id="dat-validation-decisions" class="dat-validation-decisions">
+          <h4>Décision de revue</h4>
+          {% if dat_is_reviewable and can_review_dat %}
+            <div class="dat-validation-decisions__actions">
+              <form method="post" action="{% url 'dat:my_validation_decision' dat.pk %}">
+                {% csrf_token %}
+                <input type="hidden" name="decision" value="approve">
+                <button type="submit" class="btn waves-effect waves-light cinta-btn-primary">
+                  <i class="material-icons" aria-hidden="true">task_alt</i>Valider
+                </button>
+              </form>
+              <form method="post" action="{% url 'dat:my_validation_decision' dat.pk %}">
+                {% csrf_token %}
+                <input type="hidden" name="decision" value="reject">
+                <button type="submit" class="btn btn-flat waves-effect cinta-btn-secondary">
+                  <i class="material-icons" aria-hidden="true">highlight_off</i>Refuser
+                </button>
+              </form>
+              <form method="post" action="{% url 'dat:my_validation_decision' dat.pk %}">
+                {% csrf_token %}
+                <input type="hidden" name="decision" value="request_changes">
+                <button type="submit" class="btn btn-flat waves-effect cinta-btn-secondary">
+                  <i class="material-icons" aria-hidden="true">undo</i>Mettre en réserve
+                </button>
+              </form>
+            </div>
+          {% elif dat_is_reviewable %}
+            <p class="dat-validation-empty">La revue est ouverte. Seuls les réviseurs autorisés peuvent prendre une décision.</p>
+          {% elif dat_requires_corrections %}
+            <p class="dat-validation-empty">Le DAT est en réserve. Les sections doivent être mises à jour et validées avant une nouvelle revue.</p>
+          {% elif dat_is_terminal %}
+            <p class="dat-validation-empty">Ce DAT est clôturé. Les décisions ne sont plus modifiables.</p>
+          {% else %}
+            <p class="dat-validation-empty">Les décisions seront disponibles lorsque toutes les sections auront été validées.</p>
+          {% endif %}
+        </div>
+      </div>
+    </article>
+
+    <article class="card cinta-card dat-validation-panel">
+      <div class="card-content">
+        <div class="dat-validation-panel-heading">
+          <div>
+            <h3 class="dat-validation-panel-title">Journal de traçabilité</h3>
+            <p class="dat-validation-subtitle">Dernières modifications et décisions enregistrées</p>
+          </div>
+          <span class="material-icons dat-validation-panel-icon" aria-hidden="true">history</span>
+        </div>
+
+        {% if validation_traceability_entries %}
+          <ol class="dat-validation-activity">
+            {% for item in validation_traceability_entries|slice:":5" %}
+              <li class="dat-validation-activity__item">
+                <time datetime="{{ item.timestamp|date:'c' }}">{{ item.timestamp|date:'H:i' }}</time>
+                <div>
+                  <strong>{{ item.actor }}</strong>
+                  {% if item.kind == "reserve" %}
+                    {{ item.entry.get_action_display|lower }} sur {{ item.entry.section_title|default:item.entry.section_slug|default:"une section" }}.
+                  {% else %}
+                    {% with details=item.entry.details %}
+                      {% if item.entry.action == history_actions.CREATED %}
+                        a créé le DAT.
+                      {% elif item.entry.action == history_actions.STATUS_CHANGED %}
+                        a changé le statut du DAT{% if details.to %} vers {{ details.to }}{% endif %}.
+                      {% elif item.entry.action == history_actions.OWNER_CHANGED %}
+                        a modifié le responsable du DAT.
+                      {% elif item.entry.action == history_actions.SECTION_UPDATED %}
+                        a mis à jour {{ details.sub_section.title|default:details.section.title|default:"une section" }}.
+                      {% elif item.entry.action == history_actions.RESPONSIBLE_VALIDATION %}
+                        a mis à jour la validation de {{ details.section.title|default:"la section" }}.
+                      {% elif item.entry.action == history_actions.UPDATED %}
+                        a modifié le dossier.
+                      {% else %}
+                        {{ item.entry.get_action_display|lower }}.
+                      {% endif %}
+                    {% endwith %}
+                  {% endif %}
+                  <small>{{ item.timestamp|date:'d/m/Y' }}</small>
+                </div>
+              </li>
+            {% endfor %}
+          </ol>
+        {% else %}
+          <p class="dat-validation-empty">Aucune activité n’a encore été enregistrée.</p>
+        {% endif %}
+
+        <div class="dat-validation-activity__links">
+          <a href="#dat-history-modal" class="dat-validation-history-link dat-modal-trigger" data-modal-target="dat-history-modal">
+            Voir toute la traçabilité <span aria-hidden="true">→</span>
+          </a>
+          <a href="#dat-reserve-history-modal" class="dat-validation-history-link dat-modal-trigger" data-modal-target="dat-reserve-history-modal">
+            Réserves et validations
+          </a>
+        </div>
+      </div>
+    </article>
+  </div>
+</section>

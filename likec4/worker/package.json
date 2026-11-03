@@ -1,7 +1,10 @@
 {
-  "name": "likec4-exporter",
+  "name": "likec4-renderer",
   "version": "1.0.0",
   "private": true,
-  "description": "LikeC4 PNG export worker",
-  "dependencies": {}
+  "description": "Locked toolchain for the offline LikeC4 renderers",
+  "packageManager": "pnpm@12.6.0",
+  "dependencies": {
+    "likec4": "1.60.0"
+  }
 }

@@ -1,3 +1,7 @@
+include:
+  - path: ./likec4/compose.renderers.yml
+    env_file: ./likec4/compose.root.env
+
 services:
   web:
     build:
@@ -118,50 +122,27 @@ services:
       - app-internal
 
   likec4:
-    image: likec4-cli
+    extends:
+      file: ./likec4/compose.brokers.yml
+      service: likec4
     container_name: ${APP_NAME}_likec4
     restart: unless-stopped
-    build:
-      context: ./likec4
-      dockerfile: Dockerfile
-      args:
-        GRAPHVIZ_VERSION: ${LIKEC4_GRAPHVIZ_VERSION:-}
-        PLAYWRIGHT_VER: ${LIKEC4_PLAYWRIGHT_VER:-}
-        LIKEC4_VER: ${LIKEC4_VER:-}
-    entrypoint: ["/bin/sh", "-c"]
-    command: ["node server.js & mkdir -p ${LIKEC4_PREVIEW_DIR:-/tmp/likec4-previews} && touch ${LIKEC4_PREVIEW_DIR:-/tmp/likec4-previews}/bootstrap.c4 && /usr/local/bin/likec4 dev ${LIKEC4_PREVIEW_DIR:-/tmp/likec4-previews} --host 0.0.0.0"]
-    security_opt:
-      - no-new-privileges:true
     environment:
-      LIKEC4_C4_FILE: ${LIKEC4_C4_FILE:-likec4/default.c4}
       LIKEC4_EDITOR_PORT: ${LIKEC4_EDITOR_PORT:-4173}
-      LIKEC4_PREVIEW_DIR: ${LIKEC4_PREVIEW_DIR:-/tmp/likec4-previews}
       SEAWEEDFS_FILER_URL: ${SEAWEEDFS_FILER_URL:-http://seaweedfs:8888}
       SEAWEEDFS_BASE_DIR: ${SEAWEEDFS_BASE_DIR:-media}
       SEAWEEDFS_JWT_WRITE_KEY: ${SEAWEEDFS_JWT_WRITE_KEY:?Set SEAWEEDFS_JWT_WRITE_KEY in .env}
       SEAWEEDFS_JWT_READ_KEY: ${SEAWEEDFS_JWT_READ_KEY:?Set SEAWEEDFS_JWT_READ_KEY in .env}
-      LIKEC4_METADATA_URL: http://web:${APP_PORT:-8000}/diagrams/likec4/metadata/
-      LIKEC4_METADATA_TOKEN: ${LIKEC4_METADATA_TOKEN:?Set LIKEC4_METADATA_TOKEN in .env}
       LIKEC4_API_TOKEN: ${LIKEC4_API_TOKEN:?Set LIKEC4_API_TOKEN in .env}
-    volumes:
-      - ./likec4:/data
     networks:
       - app-internal
 
   likec4-exporter:
-    image: likec4-cli
+    extends:
+      file: ./likec4/compose.brokers.yml
+      service: likec4-exporter
     container_name: ${APP_NAME}_likec4_exporter
     restart: unless-stopped
-    build:
-      context: ./likec4
-      dockerfile: Dockerfile
-      args:
-        GRAPHVIZ_VERSION: ${LIKEC4_GRAPHVIZ_VERSION:-}
-        PLAYWRIGHT_VER: ${LIKEC4_PLAYWRIGHT_VER:-}
-        LIKEC4_VER: ${LIKEC4_VER:-}
-    command: ["node", "/opt/likec4-worker/exporter.js"]
-    security_opt:
-      - no-new-privileges:true
     environment:
       LIKEC4_EXPORT_PORT: ${LIKEC4_EXPORT_PORT:-9000}
       LIKEC4_EXPORT_FORMAT: ${LIKEC4_EXPORT_FORMAT:-png}
