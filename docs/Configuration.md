@@ -191,9 +191,13 @@ Réglages Django `DAT_ATTACHMENT_MAX_SIZE_BYTES`, `ATTACHMENT_QUARANTINE_ENABLED
 
 ### Services Node
 
-Principales variables : `LIKEC4_EDITOR_PORT`, `LIKEC4_C4_FILE`, `LIKEC4_PREVIEW_DIR`, `LIKEC4_METADATA_URL`, `LIKEC4_BIN`, `LIKEC4_RENDER_TIMEOUT_MS`, `LIKEC4_EXPORT_HOST`, `LIKEC4_EXPORT_PORT`, `LIKEC4_EXPORT_MAX_BODY_BYTES`, `LIKEC4_EXPORT_TMP`, `LIKEC4_EXPORT_LOCAL_DIR`, `LIKEC4_EXPORT_FORMAT`, `LIKEC4_EXPORT_VIEW`, `LIKEC4_EXPORT_MAX_RETRIES`.
+Variables des brokers : `LIKEC4_EDITOR_PORT`, `LIKEC4_EXPORT_HOST`, `LIKEC4_EXPORT_PORT`, `LIKEC4_EXPORT_TMP`, `LIKEC4_EXPORT_LOCAL_DIR`, `LIKEC4_EXPORT_VIEW`, `LIKEC4_RENDER_ENABLED`, `LIKEC4_RENDER_INPUT` et `LIKEC4_RENDER_OUTPUT`. `LIKEC4_RENDER_ENABLED=0` désactive les nouveaux rendus, en conservant lecture/édition des sources. Désactiver aussi `LIKEC4_EXPORT_ENABLED` côté Django pendant un incident.
 
-Tokens `LIKEC4_METADATA_TOKEN` et `LIKEC4_API_TOKEN` doivent être identiques dans Django, éditeur et exporter. Valeurs de développement interdites en production.
+`LIKEC4_API_TOKEN` doit correspondre entre Django et les deux brokers. `LIKEC4_METADATA_TOKEN` correspond seulement entre Django et exporter ; l'éditeur ne le reçoit plus. Les renderers hors réseau ne reçoivent aucun token ni clé de stockage.
+
+Les renderers `likec4-codegen` et `likec4-png` utilisent `LIKEC4_RENDER_OPERATION` fixé par Compose et les volumes IPC privés. Les anciens overrides `LIKEC4_BIN`, `LIKEC4_VER`, `LIKEC4_PREVIEW_DIR` et versions de build ne s'appliquent plus aux services applicatifs. Le délai de rendu est borné à 120 secondes. `APP_UID`/`APP_GID` doivent correspondre au build, aux utilisateurs runtime et aux volumes temporaires.
+
+Voir [LikeC4](../likec4/README.md) pour versions figées, limites, procédure de test et rétention/permissions des volumes. Docker Compose 2.20+ est requis.
 
 ## Configuration OAuth
 

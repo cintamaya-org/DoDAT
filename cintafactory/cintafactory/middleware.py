@@ -48,11 +48,20 @@ class AppSecurityHeadersMiddleware:
         img_sources = "'self' data: blob:"
         if public_media_origin:
             img_sources = f"{img_sources} {public_media_origin}"
-        if request.path.startswith("/diagrams/likec4/editor"):
+        if request.path == "/diagrams/likec4/editor/viewer.html":
+            # Fail closed when the trusted viewer response did not supply its
+            # nonce-bearing policy (including error and direct-navigation paths).
             csp_policy = (
-                "default-src 'self' data: blob: http: https:; "
+                "default-src 'none'; sandbox allow-scripts; script-src 'none'; "
+                "style-src 'unsafe-inline'; img-src data: blob:; font-src data:; "
+                "connect-src 'none'; frame-src 'none'; worker-src 'none'; "
+                "object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+            )
+        elif request.path.startswith("/diagrams/likec4/editor"):
+            csp_policy = (
+                "default-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; "
                 "frame-ancestors 'self'; "
-                "img-src 'self' data: blob: http: https:; "
+                "img-src 'self' data: blob:; "
                 "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: "
                 "https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
                 "script-src-elem 'self' 'unsafe-inline' blob: "
@@ -60,9 +69,9 @@ class AppSecurityHeadersMiddleware:
                 "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com "
                 "https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
                 "font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; "
-                "frame-src 'self' data: blob: http: https:; "
+                "frame-src 'self'; "
                 "worker-src 'self' data: blob:; "
-                "connect-src 'self' data: blob: http: https: ws: wss:"
+                "connect-src 'self' https://cdn.jsdelivr.net"
             )
         else:
             csp_policy = (

@@ -7,11 +7,17 @@ omit =
     */tests.py
     */tests_*.py
     */tests_ops/*
+    */__init__.py
+    */urls.py
     */manage.py
-    */settings.py
     */wsgi.py
     */asgi.py
     */gunicorn.conf.py
+    cintafactory/cintafactory/apps.py
+    cintafactory/dat/apps.py
+    cintafactory/dat_viewflow/apps.py
+    cintafactory/diagrams/apps.py
+    cintafactory/workflows/apps.py
 
 [report]
 skip_empty = True

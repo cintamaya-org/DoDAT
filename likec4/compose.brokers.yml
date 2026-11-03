@@ -1,0 +1,41 @@
+# Shared broker controls. Each shipped stack extends these services; storage
+# credentials remain in the caller's environment, never in offline renderers.
+services:
+  likec4:
+    image: likec4-broker:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: broker
+      args:
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
+    command: ["node", "/opt/likec4/server.js"]
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    read_only: true
+    mem_limit: 512m
+    cpus: "0.5"
+    pids_limit: 64
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=512m,mode=1777
+    environment:
+      LIKEC4_RENDER_ENABLED: ${LIKEC4_RENDER_ENABLED:-1}
+      LIKEC4_RENDER_INPUT: /jobs/input
+      LIKEC4_RENDER_OUTPUT: /jobs/output
+    volumes:
+      - codegen_input:/jobs/input
+      - codegen_output:/jobs/output:ro
+
+  likec4-exporter:
+    extends:
+      service: likec4
+    command: ["node", "/opt/likec4/worker/exporter.js"]
+    volumes:
+      - png_input:/jobs/input
+      - png_output:/jobs/output:ro

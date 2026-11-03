@@ -50,46 +50,51 @@
     <div class="message" id="message">Loading LikeC4 view...</div>
   </div>
 
-  <script src="security.js"></script>
-  <script>
-    const params = new URLSearchParams(window.location.search);
-    const viewId = (params.get('view') || 'index').trim() || 'index';
-    const bundleParam = params.get('bundle');
-    const root = document.getElementById('root');
-    const message = document.getElementById('message');
-
-    const loadScript = (src) => new Promise((resolve, reject) => {
-      const script = document.createElement('script');
-      script.src = src;
-      script.async = true;
-      script.onload = () => resolve();
-      script.onerror = () => reject(new Error('Script failed to load'));
-      document.head.appendChild(script);
-    });
-
-    const mountView = () => {
-      root.replaceChildren();
-      const viewEl = document.createElement('likec4-view');
-      viewEl.setAttribute('view-id', viewId);
-      viewEl.setAttribute('browser', 'true');
-      root.appendChild(viewEl);
-    };
-
-    Promise.resolve()
-      .then(() => loadScript(CintaLikeC4.scopedBundleUrl(bundleParam, window.location.href)))
-      .then(() => {
-        if (!customElements.get('likec4-view')) {
-          message.textContent = 'LikeC4 web component not registered.';
-          root.replaceChildren();
-          root.appendChild(message);
-          return;
-        }
-        mountView();
-      })
-      .catch((err) => {
-        const detail = err && err.message ? err.message : 'Unknown error';
-        CintaLikeC4.setStatusText(message, 'Failed to load LikeC4 bundle. ' + detail);
-      });
+  <script nonce="__VIEWER_NONCE__">
+    (() => {
+      const params = new URLSearchParams(location.search);
+      const nonce = params.get('nonce');
+      const bundle = params.get('bundle') || '';
+      const match = bundle.match(/^bundles\/([a-f0-9-]{36})\/([a-f0-9]{64})\/likec4-webcomponent\.js$/);
+      const message = document.getElementById('message');
+      if (window.parent === window || !/^[a-f0-9]{64}$/.test(nonce || '') || !match) {
+        message.textContent = 'Open this viewer through the diagram editor.';
+        return;
+      }
+      let initialized = false;
+      const receive = event => {
+        const data = event.data;
+        if (initialized || event.source !== window.parent || event.origin !== new URL(document.referrer || location.href).origin ||
+            !data || data.type !== 'likec4:init' || data.nonce !== nonce || data.diagram_id !== match[1] || data.revision !== match[2] ||
+            typeof data.bundle !== 'string' || new TextEncoder().encode(data.bundle).length > 8 * 1024 * 1024 ||
+            typeof data.view !== 'string' || !/^[A-Za-z0-9_.-]{1,200}$/.test(data.view) || event.ports.length !== 1) return;
+        initialized = true;
+        window.removeEventListener('message', receive);
+        const port = event.ports[0];
+        const url = URL.createObjectURL(new Blob([data.bundle], { type: 'application/javascript' }));
+        const script = document.createElement('script');
+        script.src = url;
+        script.onload = () => {
+          URL.revokeObjectURL(url);
+          if (!customElements.get('likec4-view')) { port.postMessage({ type: 'error', nonce }); return; }
+          const view = document.createElement('likec4-view');
+          view.setAttribute('view-id', data.view);
+          view.setAttribute('browser', 'true');
+          document.getElementById('root').replaceChildren(view);
+          port.postMessage({ type: 'ready', nonce });
+          port.close();
+        };
+        script.onerror = () => {
+          URL.revokeObjectURL(url);
+          message.textContent = 'Failed to load diagram.';
+          port.postMessage({ type: 'error', nonce });
+          port.close();
+        };
+        document.head.appendChild(script);
+      };
+      window.addEventListener('message', receive);
+      window.parent.postMessage({ type: 'likec4:viewer-ready', nonce }, new URL(document.referrer || location.href).origin);
+    })();
   </script>
 </body>
 </html>

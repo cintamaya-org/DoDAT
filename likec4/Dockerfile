@@ -1,61 +1,64 @@
-FROM mcr.microsoft.com/playwright:v1.56.1-noble
+FROM mcr.microsoft.com/playwright:v1.64.0-noble@sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f AS runtime
+# Existing layout dependency, pinned rather than removed during isolation.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends graphviz=2.42.2-9ubuntu0.1 libbrotli1=1.1.0-2ubuntu0.1 \
+    && rm -rf /var/lib/apt/lists/* \
+    # npm/corepack/yarn are build tooling, unused by either runtime target.
+    && rm -rf /usr/lib/node_modules/npm /usr/lib/node_modules/corepack /opt/yarn \
+    && rm -f /usr/bin/npm /usr/bin/npx /usr/bin/corepack /usr/bin/yarn /usr/bin/yarnpkg /usr/local/bin/yarn /usr/local/bin/yarnpkg
 
-ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
-ENV NODE_ENV=production
-ENV PNPM_HOME=/usr/local/share/pnpm
-ENV PATH=${PNPM_HOME}/bin:/usr/local/bin:${PATH}
+FROM runtime AS toolchain
 
-ARG LIKEC4_VER=latest
-ARG PNPM_VERSION=12.6.0
-ARG NODE_VERSION=22.23.4
-
+# Version and SHA-512 are checked before executing the package manager.
+ARG TARGETARCH
 RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends "nodejs=${NODE_VERSION}-1nodesource1"; \
-    test "$(node --version)" = "v${NODE_VERSION}"; \
-    rm -rf /var/lib/apt/lists/*
+    case "${TARGETARCH}" in \
+      amd64) platform=x64; integrity='qFWBneHJAJ73W4whtbaFOL1M/7DBC6ILHXuxc7ZPtEhfPuT1zeZiGrmKHoMAfJA+mcm6xhOFljqVTUS+00Jabw==' ;; \
+      arm64) platform=arm64; integrity='8h2sNoIhHDpHDYqZZCh9PXr6krqW10btb0GHVGuw710muDHlFAHMtUG2ogmaHge6zJG1xgY4Y7mwX5g/LWvrYg==' ;; \
+      *) exit 1 ;; \
+    esac; \
+    curl -fsSL --retry 3 "https://registry.npmjs.org/@pnpm/exe.linux-${platform}/-/exe.linux-${platform}-12.6.0.tgz" -o /tmp/pnpm.tgz; \
+    test "$(openssl dgst -sha512 -binary /tmp/pnpm.tgz | openssl base64 -A)" = "$integrity"; \
+    mkdir /opt/pnpm; \
+    tar -xzf /tmp/pnpm.tgz -C /opt/pnpm --strip-components=1; \
+    rm /tmp/pnpm.tgz; \
+    ln -s /opt/pnpm/pnpm /usr/local/bin/pnpm; \
+    test "$(pnpm --version)" = '12.6.0'
 
+WORKDIR /opt/likec4
+COPY worker/package.json worker/pnpm-lock.yaml worker/pnpm-workspace.yaml ./
+RUN pnpm install --prod --frozen-lockfile \
+    && test "$(node -p "require('likec4/package.json').version")" = '1.60.0' \
+    && test "$(node -p "require('likec4/package.json').dependencies.playwright")" = '1.64.0'
+# Vite may optimize bundled dependencies even when application code is immutable.
 RUN set -eux; \
-    curl -fsSL --retry 3 https://get.pnpm.io/install.sh -o /tmp/install-pnpm.sh; \
-    env PNPM_VERSION="${PNPM_VERSION}" PNPM_HOME="${PNPM_HOME}" SHELL=/bin/bash bash /tmp/install-pnpm.sh; \
-    rm -f /tmp/install-pnpm.sh; \
-    pnpm --version
+    root="$(readlink -f node_modules/likec4)"; \
+    rm -rf "$root/node_modules/.vite"; \
+    ln -s /tmp/likec4-vite "$root/node_modules/.vite"
 
+FROM runtime AS broker
+ARG APP_UID=1000
+ARG APP_GID=1000
 RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends graphviz; \
-    rm -rf /var/lib/apt/lists/*; \
-    if [ -n "${LIKEC4_VER:-}" ]; then \
-        pnpm add --global --allow-build=esbuild "likec4@${LIKEC4_VER}"; \
-    else \
-        pnpm add --global --allow-build=esbuild likec4; \
-    fi; \
-    LIKEC4_BIN="${PNPM_HOME}/bin/likec4"; \
-    if [ -f "$LIKEC4_BIN" ]; then \
-        ln -sf "$LIKEC4_BIN" /usr/local/bin/likec4; \
-    else \
-        echo "likec4 binary not found at $LIKEC4_BIN"; \
-        find /usr/local -type f -name likec4 -maxdepth 6 2>/dev/null || true; \
+    test "$APP_UID" -gt 0; test "$APP_GID" -gt 0; \
+    if ! getent group "$APP_GID" >/dev/null; then groupadd --gid "$APP_GID" likec4-runtime; fi; \
+    if ! getent passwd "$APP_UID" >/dev/null; then \
+      useradd --uid "$APP_UID" --gid "$APP_GID" --home-dir /tmp --no-create-home --shell /usr/sbin/nologin likec4-runtime; \
     fi
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 NODE_ENV=production HOME=/tmp XDG_CACHE_HOME=/tmp/cache
+WORKDIR /opt/likec4
+COPY server.js ./
+COPY ui/index.html ui/viewer.html ui/security.js ./ui/
+COPY worker/*.js ./worker/
+# No writable source tree or repository-wide COPY. Runtime writes go to tmpfs.
+RUN chmod -R a-w /opt/likec4 \
+    && mkdir -p /var/likec4-exports \
+    && chown "${APP_UID}:${APP_GID}" /var/likec4-exports
+USER ${APP_UID}:${APP_GID}
+EXPOSE 4173 9000
+CMD ["node", "/opt/likec4/server.js"]
 
-RUN set -eux; \
-    mkdir -p /home/pwuser/.cache/likec4-vite; \
-    LIKEC4_ROOT="$(find "${PNPM_HOME}/global" -path '*/node_modules/likec4' -print -quit)"; \
-    test -n "$LIKEC4_ROOT"; \
-    test -d "$LIKEC4_ROOT/node_modules"; \
-    rm -rf "${LIKEC4_ROOT}/node_modules/.vite"; \
-    ln -s /home/pwuser/.cache/likec4-vite "${LIKEC4_ROOT}/node_modules/.vite"; \
-    chown -R pwuser:pwuser /home/pwuser/.cache/likec4-vite
-
-WORKDIR /opt/likec4-worker
-COPY worker/package.json ./
-RUN pnpm install --prod
-COPY worker ./
-RUN mkdir -p /data \
-    && chown -R pwuser:pwuser /opt/likec4-worker /data
-
-WORKDIR /data
-USER pwuser
-
-EXPOSE 4173 5173 24678 9000
+FROM broker AS renderer
+COPY --from=toolchain /opt/likec4/node_modules ./node_modules
+COPY --from=toolchain /opt/likec4/package.json /opt/likec4/pnpm-lock.yaml ./
+CMD ["node", "/opt/likec4/worker/renderer.js"]

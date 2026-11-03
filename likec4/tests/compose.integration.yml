@@ -1,0 +1,29 @@
+# Disposable integration project; never starts Django or touches application data.
+include:
+  - path: ../compose.renderers.yml
+    env_file: ../tests/compose.env
+
+services:
+  likec4-codegen:
+    image: ${LIKEC4_TEST_RENDERER_IMAGE:-cintafactory-likec4-security:renderer}
+  likec4-png:
+    image: ${LIKEC4_TEST_RENDERER_IMAGE:-cintafactory-likec4-security:renderer}
+  integration:
+    image: ${LIKEC4_TEST_RENDERER_IMAGE:-cintafactory-likec4-security:renderer}
+    network_mode: none
+    init: true
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=../seccomp_profile.json
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=512m,mode=1777
+    volumes:
+      - codegen_input:/jobs/codegen/input
+      - codegen_output:/jobs/codegen/output:ro
+      - png_input:/jobs/png/input
+      - png_output:/jobs/png/output:ro
+      - ./:/tests:ro
+    command: ["node", "/tests/integration.js"]

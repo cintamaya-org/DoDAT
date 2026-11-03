@@ -158,10 +158,7 @@ test('renderer stores bundles under immutable diagram and revision namespaces', 
   try {
     const renderer = createRenderer({
       rootDir: join(root, 'renders'),
-      exec: async (_binary, args, options) => {
-        const output = args[args.indexOf('-o') + 1];
-        await writeFile(output, '// ' + options.cwd);
-      },
+      renderJob: async (_content, scope) => [{ name: 'likec4-webcomponent.js', bytes: Buffer.from('// ' + scope.diagram_id) }],
     });
     const firstScope = { diagram_id: diagramId, revision, storage_path: storagePath };
     const secondId = 'd5db9f54-dca2-4507-84d2-8f8fc0f74775';
@@ -193,4 +190,119 @@ test('browser bundle URLs accept only the same-origin scoped route', () => {
   ]) {
     assert.throws(() => CintaLikeC4.scopedBundleUrl(url, 'https://app.example/diagrams/likec4/editor/'));
   }
+});
+
+test('viewer policy gives direct visits an opaque origin and no remote asset access', async () => {
+  const { viewerResponse } = require('../worker/viewer_policy');
+  const html = await readFile(join(__dirname, '../ui/viewer.html'), 'utf8');
+  const first = viewerResponse(html); const second = viewerResponse(html);
+  assert.notEqual(first.policy, second.policy);
+  assert.ok(first.policy.includes('sandbox allow-scripts;'));
+  assert.ok(!first.policy.includes('allow-same-origin'));
+  assert.ok(first.policy.includes("connect-src 'none'"));
+  assert.ok(!first.body.includes('__VIEWER_NONCE__'));
+  assert.ok(!first.body.includes('src="security.js"'));
+});
+
+test('trusted bundle fetch is text-only, bounded, and rejects redirects/non-JavaScript', async () => {
+  const good = await CintaLikeC4.fetchBundle('/bundle', async (_url, options) => {
+    assert.equal(options.redirect, 'error'); assert.equal(options.credentials, 'same-origin');
+    return new Response('// valid', { headers: { 'Content-Type': 'application/javascript' } });
+  });
+  assert.equal(good, '// valid');
+  await assert.rejects(CintaLikeC4.fetchBundle('/bundle', async () => new Response('<html>', { headers: { 'Content-Type': 'text/html' } })));
+  await assert.rejects(CintaLikeC4.fetchBundle('/bundle', async () => new Response('x', { headers: { 'Content-Type': 'application/javascript', 'Content-Length': String(8 * 1024 * 1024 + 1) } })));
+  await assert.rejects(CintaLikeC4.fetchBundle('/bundle', async () => new Response(Buffer.alloc(8 * 1024 * 1024 + 1), { headers: { 'Content-Type': 'application/javascript' } })));
+});
+
+test('disabled rendering preserves authorized source reads and never submits a job', async () => {
+  const previous = process.env.LIKEC4_RENDER_ENABLED;
+  process.env.LIKEC4_RENDER_ENABLED = '0';
+  try {
+    const handler = createHandler({ apiToken: 'service-secret', storage: { read: async () => content },
+      renderer: { render: async () => { assert.fail('Disabled renderer was called'); } } });
+    const res = fakeResponse();
+    await handler(requestFor('read'), res);
+    assert.equal(res.status, 200);
+    assert.equal(JSON.parse(res.body).content, content);
+    assert.equal(JSON.parse(res.body).render_error, 'Diagram rendering disabled');
+  } finally {
+    if (previous === undefined) delete process.env.LIKEC4_RENDER_ENABLED;
+    else process.env.LIKEC4_RENDER_ENABLED = previous;
+  }
+});
+
+test('bundle cache evicts old revisions within its byte budget and regenerates them', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'likec4-cache-'));
+  let calls = 0;
+  try {
+    const renderer = createRenderer({ rootDir: root, maxCacheBytes: 8, renderJob: async () => {
+      calls++; return [{ name: 'likec4-webcomponent.js', bytes: Buffer.from('//abc') }];
+    } });
+    const first = { diagram_id: diagramId, revision };
+    const second = { diagram_id: 'd5db9f54-dca2-4507-84d2-8f8fc0f74775', revision };
+    await renderer.render(content, first);
+    await renderer.render(content, second);
+    await assert.rejects(renderer.asset(first, 'likec4-webcomponent.js'));
+    await renderer.render(content, first);
+    assert.equal(calls, 3);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('disabled exporter rejects new jobs before processing', async () => {
+  const previous = process.env.LIKEC4_RENDER_ENABLED;
+  process.env.LIKEC4_RENDER_ENABLED = '0';
+  try {
+    const { createHandler: createExporter } = require('../worker/exporter');
+    const handler = createExporter({ apiToken: 'service-secret', run: async () => { assert.fail('Disabled export ran'); } });
+    const req = Readable.from([JSON.stringify({ diagram_id: diagramId, storage_path: storagePath, revision })]);
+    Object.assign(req, requestFor('export'), { method: 'POST', url: '/export' });
+    const res = fakeResponse();
+    await handler(req, res);
+    assert.equal(res.status, 503);
+    assert.equal(JSON.parse(res.body).error, 'render_disabled');
+  } finally {
+    if (previous === undefined) delete process.env.LIKEC4_RENDER_ENABLED;
+    else process.env.LIKEC4_RENDER_ENABLED = previous;
+  }
+});
+
+test('status labels keep hostile markup as text for plain and accented messages', () => {
+  const element = { replaceChildren(...children) { this.children = children; }, set innerHTML(_value) { assert.fail('HTML assignment'); } };
+  const documentRef = { createElement: tag => { assert.equal(tag, 'strong'); return { textContent: '' }; } };
+  const text = '<img src=x onerror=alert(1)>';
+  CintaLikeC4.setStatusText(element, text, false, documentRef);
+  assert.equal(element.textContent, text);
+  CintaLikeC4.setStatusText(element, text, true, documentRef);
+  assert.equal(element.children[0].textContent, text);
+});
+
+test('bundle fetch retains HTTP status for regeneration and rejects malformed UTF-8', async () => {
+  await assert.rejects(CintaLikeC4.fetchBundle('/bundle', async () => new Response(null, { status: 404 })), error => error.status === 404);
+  await assert.rejects(CintaLikeC4.fetchBundle('/bundle', async () => new Response(Buffer.from([0xc3]), { headers: { 'Content-Type': 'application/javascript' } })), TypeError);
+});
+
+test('render queue releases a failed job so pending work can proceed', async () => {
+  const enqueue = createQueue(1);
+  const failed = enqueue(async () => { throw new Error('render failed'); });
+  const next = enqueue(() => 'recovered');
+  await assert.rejects(failed, /render failed/);
+  assert.equal(await next, 'recovered');
+});
+
+test('failed codegen leaves no published asset and the same revision can retry', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'likec4-render-retry-'));
+  let attempt = 0;
+  const scope = { diagram_id: diagramId, revision };
+  try {
+    const renderer = createRenderer({ rootDir: root, renderJob: async () => {
+      if (++attempt === 1) throw new Error('worker unavailable');
+      return [{ name: 'likec4-webcomponent.js', bytes: Buffer.from('// recovered') }];
+    } });
+    await assert.rejects(renderer.render(content, scope), /worker unavailable/);
+    await assert.rejects(renderer.asset(scope, 'likec4-webcomponent.js'));
+    await renderer.render(content, scope);
+    assert.equal(await readFile(await renderer.asset(scope, 'likec4-webcomponent.js'), 'utf8'), '// recovered');
+    assert.equal(attempt, 2);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
