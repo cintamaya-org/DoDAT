@@ -1,12 +1,17 @@
+<!--
+SPDX-FileCopyrightText: 2026 Cintamaya <contact@cintamaya.com>
+SPDX-FileCopyrightText: 2026 Baptiste COQUELET <github.com/BaptisteCoquelet>
+SPDX-License-Identifier: CC-BY-ND-4.0
+-->
 
-# Norme de Nommage - CintaFactory
+# Norme de Nommage - DoDat
 
-**Version 1.0**  
+**Version 1.1**  
 Date : 21/10/2025
 
 ---
 
-## Objectif  
+## Objectif
 Ces normes visent à :  
 - garantir la lisibilité, la cohérence et la maintenabilité du code source ;  
 - faciliter la compréhension du code et réduire les erreurs de compréhension ou de mauvais usage.
@@ -65,9 +70,3 @@ Ces normes visent à :
 | Constante             | `DEFAULT_PAGE_SIZE = 42`, `MAX_LOGIN_ATTEMPTS = 5` |
 
 ---
-
-Django Naming conventions
-
-## REUSE Standard
-
-TODO

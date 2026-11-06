@@ -100,6 +100,7 @@
           <li class="collection-item"><strong>Actif :</strong> {% if profile.is_active %}Oui{% else %}Non{% endif %}</li>
           <li class="collection-item"><strong>Staff :</strong> {% if profile.is_staff %}Oui{% else %}Non{% endif %}</li>
           <li class="collection-item"><strong>Super administrateur :</strong> {% if profile.is_superuser %}Oui{% else %}Non{% endif %}</li>
+          <li class="collection-item"><strong>Accès API OAuth :</strong> {% if profile.can_use_api %}Autorisé{% else %}Désactivé{% endif %}</li>
         </ul>
       </div>
       <div class="col s12 m6">

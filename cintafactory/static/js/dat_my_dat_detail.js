@@ -12,6 +12,9 @@
       }
     }
 
+    window.CintaDatDetail = window.CintaDatDetail || {};
+    window.CintaDatDetail.initTooltips = init;
+
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", init);
     } else {
@@ -571,6 +574,12 @@
     document.dispatchEvent(new CustomEvent(name, { detail }));
   }
 
+  function refreshTooltips() {
+    if (window.CintaDatDetail && typeof window.CintaDatDetail.initTooltips === "function") {
+      window.CintaDatDetail.initTooltips();
+    }
+  }
+
   function executeEmbeddedScripts(target) {
     if (!target) {
       return;
@@ -626,6 +635,7 @@
     }
     const slug = (container.dataset && container.dataset.subSectionSlug) || editState.slug || null;
     container.innerHTML = container.dataset.viewHtml;
+    refreshTooltips();
     delete container.dataset.viewHtml;
     container.classList.remove("dat-sub-section-editing");
     emitSectionEditEvent("dat:section-edit-end", slug);
@@ -687,6 +697,7 @@
           editState.slug = null;
           if (nextHtml) {
             container.outerHTML = nextHtml;
+            refreshTooltips();
             const updated = document.querySelector(`[data-sub-section-slug="${nextSlug}"]`);
             if (updated) {
               updated.classList.add("dat-sub-section-updated");

@@ -7,7 +7,7 @@
       <h5 class="page-header__title">Groupes métiers</h5>
 
 {% if request.user.is_superuser %}
-        <a href="crud/add/" class="btn waves-effect waves-light cinta-btn-primary">+ Ajouter un groupe</a>
+        <a href="{% url 'users:businessgroup_add' %}" class="btn waves-effect waves-light cinta-btn-primary">+ Ajouter un groupe</a>
       {% endif %}
     </div>
 

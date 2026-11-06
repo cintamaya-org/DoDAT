@@ -22,7 +22,7 @@ from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.paginator import Paginator
 from django.db import IntegrityError, transaction
-from django.db.models import Count, F, Prefetch, Q
+from django.db.models import Count, Exists, F, OuterRef, Prefetch, Q
 from django.db.models.functions import TruncMonth
 from django.http import FileResponse, Http404, HttpResponse, JsonResponse
 from django.utils import timezone
@@ -32,6 +32,7 @@ from django.shortcuts import get_object_or_404, redirect
 from django.template.loader import render_to_string
 from django.urls import reverse, reverse_lazy
 from django.views import View
+from django.views.decorators.cache import never_cache
 from django.views.generic import DetailView, ListView, TemplateView, FormView
 from django.views.decorators.http import require_POST, require_safe
 
@@ -39,8 +40,12 @@ from material import Fieldset, Layout, Row
 from material.frontend.registry import modules as module_registry
 from material.frontend.views import CreateModelView, DetailModelView, ListModelView, ModelViewSet, UpdateModelView
 
-from diagrams.models import DrawIODiagram
+from diagrams.access import get_dat_diagram
+from diagrams.likec4_scope import refresh_revision, scope_headers
+from diagrams.models import DrawIODiagram, LikeC4Diagram
+from diagrams.references import iter_diagram_references
 from diagrams.validation import sanitize_diagram_title
+from cintafactory.french_messages import FrenchCreateMessageMixin, FrenchUpdateMessageMixin
 from cintafactory.url_safety import is_http_url
 from cintafactory.pagination import PaginatedMaterialListMixin, PaginatedModelViewSetMixin
 from cintafactory.select_options import MAX_REMOTE_SELECT_RESULTS, normalize_remote_select_query
@@ -95,6 +100,9 @@ from .models import (
 from .pdf import generate_dat_pdf
 from .permissions import (
     filter_dat_queryset_for_user,
+    user_can_change_dat,
+    user_can_create_dat_entities,
+    user_can_manage_dat,
     user_can_update_section_status,
     user_is_dat_admin,
     user_is_dat_admin_for_dat,
@@ -140,7 +148,6 @@ from cintafactory.notifications.external import ExternalNotificationEvent, dispa
 
 logger = logging.getLogger(__name__)
 
-PORTEUR_ROLE_SLUG = DAT_PORTEUR_ROLE_SLUG
 VALIDATION_STATUS_LABELS = {
     DATStatus.EN_ATTENTE_DE_REVUE.label,
     DATStatus.RESERVE.label,
@@ -293,6 +300,13 @@ def user_can_review_dat(dat: DAT, user) -> bool:
         workflow_can(dat, event, user)
         for event in ("approve", "reject", "request_changes")
     )
+
+
+def _user_ids_match(left: object, right: object) -> bool:
+    """Compare IDs read from JSON payloads with model IDs without type drift."""
+    if left in (None, "") or right in (None, ""):
+        return False
+    return str(left) == str(right)
 
 
 def refresh_dat_status(
@@ -859,6 +873,37 @@ def build_dat_admin_editor(dat: DAT, user):
     }
 
 
+def build_dat_header_version(dat: DAT) -> str:
+    version_part = (
+        DATPart.objects.filter(
+            sub_section__section__dat=dat,
+            sub_section__section__metadata__slug="informations-generales",
+            key="historique_versions",
+        )
+        .order_by("order", "id")
+        .prefetch_related(
+            Prefetch(
+                "entries",
+                queryset=DATPartEntry.objects.select_related("payload").order_by("-updated_at", "-id"),
+            )
+        )
+        .first()
+    )
+    rows = version_part.value if version_part is not None else None
+    if not isinstance(rows, (list, tuple)):
+        return ""
+    for row in reversed(rows):
+        if not isinstance(row, dict):
+            continue
+        raw_version = row.get("version")
+        if not isinstance(raw_version, (str, int, float)):
+            continue
+        version = str(raw_version).strip()
+        if version:
+            return f"v{version[1:]}" if version[:1].lower() == "v" else f"v{version}"
+    return ""
+
+
 def build_dat_overview_context(dat: DAT, user):
     return {
         "dat": dat,
@@ -1421,7 +1466,7 @@ def build_section_payload(
                     info = status_map.get(target.slug) or {}
                     reserve_message = str(info.get("reserve_message") or "").strip()
                     reserve_by_id = info.get("reserve_by_id")
-                    if reserve_message and reserve_by_id == user_id:
+                    if reserve_message and _user_ids_match(reserve_by_id, user_id):
                         validation_reserve_clear_allowed_sections[target.slug] = True
                     elif not reserve_message:
                         validation_reserve_allowed_sections[target.slug] = True
@@ -1517,6 +1562,221 @@ def build_section_payload(
     return sections_payload
 
 
+def _validation_value_is_filled(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, dict, set)):
+        return bool(value)
+    return True
+
+
+def build_validation_section_rows(
+    dat: DAT,
+    user,
+    status_map: dict[str, dict],
+    history_entries: list,
+    reserve_history_entries: list,
+    *,
+    is_terminal: bool = False,
+) -> list[dict[str, object]]:
+    entry_prefetch = Prefetch(
+        "entries",
+        queryset=DATPartEntry.objects.select_related("payload").order_by("-updated_at", "-id"),
+    )
+    part_prefetch = Prefetch(
+        "parts",
+        queryset=DATPart.objects.order_by("order", "id").prefetch_related(entry_prefetch),
+    )
+    sub_section_prefetch = Prefetch(
+        "sub_sections",
+        queryset=DATSubSection.objects.order_by("order", "id").prefetch_related(part_prefetch),
+    )
+    sections = list(
+        dat.sections.exclude(metadata__slug="validation")
+        .select_related(
+            "metadata",
+            "responsible_assignment__user",
+            "participant_assignment__user",
+        )
+        .prefetch_related("allowed_roles", sub_section_prefetch)
+        .order_by("order", "id")
+    )
+    participants = list(
+        dat.participants.select_related("role", "user__business_group__responsible")
+    )
+    for section in sections:
+        section._allowed_role_ids_cache = {role.pk for role in section.allowed_roles.all()}
+    responsible_users = _build_section_responsible_user_map(dat, sections, participants)
+
+    latest_activity_by_section: dict[str, object] = {}
+    for entry in history_entries:
+        details = entry.details if isinstance(entry.details, dict) else {}
+        section_details = details.get("section")
+        slug = section_details.get("slug") if isinstance(section_details, dict) else None
+        if slug:
+            key = str(slug)
+            current_activity = latest_activity_by_section.get(key)
+            if current_activity is None or entry.performed_at > current_activity:
+                latest_activity_by_section[key] = entry.performed_at
+    for entry in reserve_history_entries:
+        slug = getattr(entry, "section_slug", "")
+        if slug:
+            key = str(slug)
+            current_activity = latest_activity_by_section.get(key)
+            if current_activity is None or entry.reserved_at > current_activity:
+                latest_activity_by_section[key] = entry.reserved_at
+
+    rows = []
+    user_id = getattr(user, "pk", None)
+    for section in sections:
+        if not section_has_status(section.slug):
+            continue
+
+        parts = [
+            part
+            for sub_section in section.sub_sections.all()
+            for part in sub_section.parts.all()
+        ]
+        required_parts = [part for part in parts if part.required]
+        measured_parts = required_parts or parts
+        filled_count = sum(_validation_value_is_filled(part.value) for part in measured_parts)
+        progress = round((filled_count / len(measured_parts)) * 100) if measured_parts else None
+        progress_basis = "champs obligatoires" if required_parts else "champs renseignés"
+        progress_detail = (
+            f"{filled_count}/{len(measured_parts)} {progress_basis}"
+            if measured_parts
+            else "Aucun champ configuré"
+        )
+
+        info = status_map.get(section.slug) or {}
+        status_value = info.get("value")
+        if status_value == SECTION_STATUS_VALIDATED_VALUE:
+            status_tone = "validated"
+        elif status_value == SECTION_STATUS_BLOCKED_VALUE:
+            status_tone = "blocked"
+        elif info.get("has_status"):
+            status_tone = "in-progress"
+        else:
+            status_tone = "neutral"
+
+        section_responsible = responsible_users.get(section.slug)
+        responsible_status_value = info.get("responsable_value")
+        reserve_message = str(info.get("reserve_message") or "").strip()
+        can_manage_section = bool(not is_terminal and section.can_user_edit(user))
+        latest_candidates = [section.updated_at, latest_activity_by_section.get(section.slug)]
+        for part in parts:
+            latest_entry = part._get_current_entry()
+            if latest_entry is not None:
+                latest_candidates.append(latest_entry.updated_at)
+        latest_activity = max((value for value in latest_candidates if value is not None), default=None)
+
+        rows.append(
+            {
+                "slug": section.slug,
+                "title": section.title or section.slug,
+                "status_value": status_value,
+                "status_label": info.get("label") or "Non renseigné",
+                "status_tone": status_tone,
+                "validated_value": SECTION_STATUS_VALIDATED_VALUE,
+                "responsible_status_value": responsible_status_value,
+                "responsible_status_label": info.get("responsable_label"),
+                "responsible_display": format_user_display(section_responsible) or "Non affecté",
+                "progress": progress,
+                "progress_detail": progress_detail,
+                "last_activity": latest_activity,
+                "comment": str(info.get("commentaire") or "").strip(),
+                "reserve_message": reserve_message,
+                "reserve_by_display": str(info.get("reserve_by_display") or "").strip(),
+                "can_validate_responsible": bool(
+                    can_manage_section
+                    and status_value == SECTION_STATUS_VALIDATED_VALUE
+                    and responsible_status_value != SECTION_STATUS_VALIDATED_VALUE
+                ),
+                "can_create_reserve": bool(can_manage_section and not reserve_message),
+                "can_clear_reserve": bool(
+                    can_manage_section
+                    and reserve_message
+                    and user_id is not None
+                    and str(info.get("reserve_by_id")) == str(user_id)
+                ),
+            }
+        )
+    return rows
+
+
+def build_validation_workflow_steps(
+    workflow_template: dict,
+    workflow_node_statuses: dict[str, dict],
+    section_status_map: dict[str, dict],
+    *,
+    dat_status_label: str = "",
+) -> list[dict[str, object]]:
+    steps = []
+    for node in (workflow_template or {}).get("nodes") or ():
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("id") or "")
+        scope = str(node.get("scope") or "display")
+        status = workflow_node_statuses.get(node_id) or {}
+        tone = str(status.get("tone") or "unknown")
+        section_info = section_status_map.get(str(node.get("section") or "")) or {}
+
+        if scope == "workflow":
+            if tone == "validated":
+                state_label = "Validé"
+            elif tone == "blocked":
+                state_label = dat_status_label or "Clôturé"
+            elif tone == "review":
+                state_label = "En attente de revue"
+            else:
+                state_label = "À venir"
+        elif scope == "section":
+            state_label = section_info.get("label") or {
+                "validated": "Validée",
+                "blocked": "Bloquée",
+                "in_progress": "En cours",
+            }.get(tone, "À venir")
+        else:
+            state_label = "Étape"
+
+        steps.append(
+            {
+                "id": node_id,
+                "title": str(node.get("title") or node_id),
+                "description": str(status.get("message") or node.get("content") or ""),
+                "scope": scope,
+                "tone": tone,
+                "state_label": state_label,
+                "is_current": scope == "workflow" and tone == "review",
+            }
+        )
+    return steps
+
+
+def build_validation_traceability_entries(history_entries: list, reserve_history_entries: list):
+    entries = [
+        {
+            "kind": "history",
+            "entry": entry,
+            "timestamp": entry.performed_at,
+            "actor": entry.actor_name(),
+        }
+        for entry in history_entries
+    ]
+    entries.extend(
+        {
+            "kind": "reserve",
+            "entry": entry,
+            "timestamp": entry.reserved_at,
+            "actor": entry.actor_name(),
+        }
+        for entry in reserve_history_entries
+    )
+    return sorted(entries, key=lambda item: (item["timestamp"], str(item["entry"].pk)), reverse=True)
+
+
 def render_sub_section_snippet(dat: DAT, user, section_slug: str, sub_section_slug: str) -> str:
     payload = build_section_payload(dat, user, section_slug=section_slug, sub_section_slug=sub_section_slug)
     if not payload:
@@ -1591,7 +1851,7 @@ def upload_section_attachment(request, dat_pk: int, section_slug: str):
             return JsonResponse(
                 {
                     "success": False,
-                    "messages": ["Les pieces jointes sont desactivees pour cette section."],
+                    "messages": ["Les pièces jointes sont désactivées pour cette section."],
                     "attachments_html": render_section_attachments_snippet(
                         request,
                         dat,
@@ -1601,7 +1861,7 @@ def upload_section_attachment(request, dat_pk: int, section_slug: str):
                     ),
                 }
             )
-        messages.error(request, "Les pieces jointes sont desactivees pour cette section.")
+        messages.error(request, "Les pièces jointes sont désactivées pour cette section.")
         return redirect(redirect_url)
     files = request.FILES.getlist("attachments")
     if not files:
@@ -1609,7 +1869,7 @@ def upload_section_attachment(request, dat_pk: int, section_slug: str):
             return JsonResponse(
                 {
                     "success": False,
-                    "messages": ["Aucun fichier selectionne."],
+                    "messages": ["Aucun fichier sélectionné."],
                     "attachments_html": render_section_attachments_snippet(
                         request,
                         dat,
@@ -1619,7 +1879,7 @@ def upload_section_attachment(request, dat_pk: int, section_slug: str):
                     ),
                 }
             )
-        messages.error(request, "Aucun fichier selectionne.")
+        messages.error(request, "Aucun fichier sélectionné.")
         return redirect(redirect_url)
     saved_count = 0
     message_list = []
@@ -1647,16 +1907,18 @@ def upload_section_attachment(request, dat_pk: int, section_slug: str):
             else:
                 messages.error(request, f"{uploaded_file.name}: {error_msg}")
         except Exception:
-            logger.exception("Erreur lors de l'upload de piece jointe (dat=%s, section=%s).", dat.pk, section.slug)
+            logger.exception("Erreur lors de l'upload de pièce jointe (dat=%s, section=%s).", dat.pk, section.slug)
             if is_ajax:
                 message_list.append(f"{uploaded_file.name}: erreur lors de l'envoi du fichier.")
             else:
                 messages.error(request, f"{uploaded_file.name}: erreur lors de l'envoi du fichier.")
     if saved_count:
+        attachment_label = "pièce jointe ajoutée" if saved_count == 1 else "pièces jointes ajoutées"
+        success_message = f"{saved_count} {attachment_label}."
         if is_ajax:
-            message_list.append(f"{saved_count} piece(s) jointe(s) ajoutee(s).")
+            message_list.append(success_message)
         else:
-            messages.success(request, f"{saved_count} piece(s) jointe(s) ajoutee(s).")
+            messages.success(request, success_message)
     if is_ajax:
         return JsonResponse(
             {
@@ -1689,7 +1951,7 @@ def download_section_attachment(request, dat_pk: int, attachment_pk: int):
         file_handle = storage.open(attachment.storage_path, "rb")
     except FileNotFoundError:
         redirect_url = f"{reverse('dat:my_detail', args=[dat.pk])}?section={attachment.section.slug}"
-        messages.error(request, "Le fichier demande est introuvable.")
+        messages.error(request, "Le fichier demandé est introuvable.")
         return redirect(redirect_url)
     download_name = build_download_filename(attachment.display_name, attachment.extension)
     response = FileResponse(
@@ -1726,7 +1988,7 @@ def remove_section_attachment(request, dat_pk: int, attachment_pk: int):
             return JsonResponse(
                 {
                     "success": False,
-                    "messages": ["Impossible de supprimer la piece jointe."],
+                    "messages": ["Impossible de supprimer la pièce jointe."],
                     "attachments_html": render_section_attachments_snippet(
                         request,
                         dat,
@@ -1736,13 +1998,13 @@ def remove_section_attachment(request, dat_pk: int, attachment_pk: int):
                     ),
                 }
             )
-        messages.error(request, "Impossible de supprimer la piece jointe.")
+        messages.error(request, "Impossible de supprimer la pièce jointe.")
         return redirect(redirect_url)
     if is_ajax:
         return JsonResponse(
-            {
-                "success": True,
-                "messages": ["Piece jointe supprimee."],
+                {
+                    "success": True,
+                    "messages": ["Pièce jointe supprimée."],
                 "attachments_html": render_section_attachments_snippet(
                     request,
                     dat,
@@ -1752,7 +2014,7 @@ def remove_section_attachment(request, dat_pk: int, attachment_pk: int):
                 ),
             }
         )
-    messages.success(request, "Piece jointe supprimee.")
+    messages.success(request, "Pièce jointe supprimée.")
     return redirect(redirect_url)
 
 
@@ -2163,7 +2425,7 @@ def update_section_status(request, dat_pk: int, section_slug: str):
         target_url=redirect_url,
     )
     if new_status == validated_value and target_reserve_message and target_reserve_by_id:
-        if target_reserve_by_id != getattr(request.user, "id", None):
+        if not _user_ids_match(target_reserve_by_id, getattr(request.user, "id", None)):
             reserve_user = get_user_model().objects.filter(pk=target_reserve_by_id).first()
             if reserve_user:
                 validator_display = format_user_display(request.user)
@@ -2357,7 +2619,7 @@ def update_section_reserve(request, dat_pk: int, section_slug: str):
     current_row = existing_row_map.get(section.slug) or existing_row_map.get(section.title) or {}
     existing_reserve_message = str(current_row.get("reserve_message") or "").strip()
     existing_reserve_by_id = current_row.get("reserve_by_id")
-    if existing_reserve_message and existing_reserve_by_id != user_id:
+    if existing_reserve_message and not _user_ids_match(existing_reserve_by_id, user_id):
         raise PermissionDenied
 
     reserve_by_display = format_user_display(request.user)
@@ -2496,7 +2758,7 @@ def clear_section_reserve(request, dat_pk: int, section_slug: str):
     current_reserve_message = str(current_row.get("reserve_message") or "").strip()
     if not section.can_user_edit(request.user):
         raise PermissionDenied
-    if reserve_by_id != getattr(request.user, "id", None):
+    if not _user_ids_match(reserve_by_id, getattr(request.user, "id", None)):
         raise PermissionDenied
 
     sections = list(dat.sections.order_by("order", "id").select_related("metadata"))
@@ -2593,27 +2855,6 @@ def submit_validation_decision(request, pk: int):
     return redirect(reverse("dat:my_detail", args=[dat.pk]))
 
 
-def user_is_porteur_demande(user):
-    is_role = getattr(user, "is_role", None)
-    return bool(callable(is_role) and is_role(PORTEUR_ROLE_SLUG))
-
-
-def user_can_create_dat_entities(user):
-    is_authenticated = getattr(user, "is_authenticated", False)
-    return bool(is_authenticated and user_is_porteur_demande(user))
-
-
-def user_can_manage_dat(user):
-    if user is None:
-        return False
-    is_role = getattr(user, "is_role", None)
-    return (
-        getattr(user, "is_superuser", False)
-        or getattr(user, "is_staff", False)
-        or (callable(is_role) and is_role("admin"))
-    )
-
-
 def user_can_progress_dat(dat: DAT, user) -> bool:
     # Manual progression is disabled; status changes are automatic or handled via the validation section.
     return False
@@ -2654,10 +2895,8 @@ class DATCreateView(ModuleContextMixin, CreateModelView):
         kwargs["user"] = self.request.user
         return kwargs
 
-    def form_valid(self, form):
-        response = super().form_valid(form)
+    def message_user(self):
         messages.success(self.request, "Le DAT a été créé avec succès.")
-        return response
 
     def get_success_url(self):
         if user_can_manage_dat(self.request.user):
@@ -2665,7 +2904,7 @@ class DATCreateView(ModuleContextMixin, CreateModelView):
         return super().get_success_url()
 
 
-class DATUpdateView(ModuleContextMixin, UpdateModelView):
+class DATUpdateView(FrenchUpdateMessageMixin, ModuleContextMixin, UpdateModelView):
     template_name = "dat/dat_form.html"
 
     def get_form_kwargs(self):
@@ -2701,6 +2940,7 @@ class DATDetailView(LoginRequiredMixin, ModuleContextMixin, DetailModelView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         section_status_map, section_status_choices = build_section_status_map(self.object)
+        context["dat_header_version"] = build_dat_header_version(self.object)
         try:
             from dat_viewflow.services import ensure_dat_viewflow_process
             from dat_viewflow.config import build_dat_viewflow_template
@@ -2764,13 +3004,16 @@ class DATViewSet(BaseSecuredViewSet):
     def _can_add(self, request):
         return user_can_create_dat_entities(request.user)
 
+    def has_change_permission(self, request, obj=None):
+        return user_can_change_dat(obj, request.user)
+
     list_display = ("reference", "title", "application", "business_direction", "status", "owner", "created_at")
     list_display_links = ("reference",)
     ordering = ("-created_at",)
     search_fields = ("reference", "title", "description", "application__name", "application__code", "business_direction__name")
 
     layout = Layout(
-        Fieldset("Identite", Row("reference", "title"), Row("application")),
+        Fieldset("Identité", Row("reference", "title"), Row("application")),
         Fieldset(
             "Participants",
             Row("participant_porteur_demande"),
@@ -2790,14 +3033,14 @@ class DATViewSet(BaseSecuredViewSet):
         return filter_dat_queryset_for_user(base_queryset, request.user)
 
 
-class ApplicationCreateView(ModuleContextMixin, CreateModelView):
+class ApplicationCreateView(FrenchCreateMessageMixin, ModuleContextMixin, CreateModelView):
     def dispatch(self, request, *args, **kwargs):
         if not user_can_create_dat_entities(request.user):
             raise PermissionDenied
         return super().dispatch(request, *args, **kwargs)
 
 
-class ApplicationUpdateView(ModuleContextMixin, UpdateModelView):
+class ApplicationUpdateView(FrenchUpdateMessageMixin, ModuleContextMixin, UpdateModelView):
     pass
 
 
@@ -2823,7 +3066,7 @@ class ApplicationViewSet(PaginatedModelViewSetMixin, BaseSecuredViewSet):
 
     form_fields = ["code", "name", "business_direction", "description"]
     layout = Layout(
-        Fieldset("Identite", Row("code", "name"), Row("business_direction")),
+        Fieldset("Identité", Row("code", "name"), Row("business_direction")),
         Fieldset("Description", Row("description")),
     )
 
@@ -2866,14 +3109,20 @@ class DatList(ModuleContextMixin, LoginRequiredMixin, ListView):
             )
         if self.application_filter_id:
             queryset = queryset.filter(application_id=self.application_filter_id)
+        self.show_technical_architect_assignment = self.request.user.is_role("architecte-referent")
+        if self.show_technical_architect_assignment:
+            queryset = queryset.annotate(
+                has_technical_architect=Exists(
+                    DATParticipant.objects.filter(dat_id=OuterRef("pk"), role__slug="architecte-technique")
+                )
+            )
         return queryset
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
+        context["show_technical_architect_assignment"] = self.show_technical_architect_assignment
         for dat in context.get("object_list") or ():
-            dat.workflow_owner_editable = workflow_has_capability(  # type: ignore[attr-defined]
-                dat, "owner_editable"
-            )
+            dat.can_change = user_can_change_dat(dat, self.request.user)  # type: ignore[attr-defined]
             dat.workflow_state_display = workflow_state_label(dat)  # type: ignore[attr-defined]
         user = self.request.user
         context["owner_can_edit"] = user_is_dat_admin(user)
@@ -2995,6 +3244,7 @@ class DatDetail(ModuleContextMixin, LoginRequiredMixin, DetailView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         section_status_map, section_status_choices = build_section_status_map(self.object)
+        context["dat_header_version"] = build_dat_header_version(self.object)
         try:
             from dat_viewflow.services import ensure_dat_viewflow_process
             from dat_viewflow.config import build_dat_viewflow_template
@@ -3081,9 +3331,28 @@ class DatDetail(ModuleContextMixin, LoginRequiredMixin, DetailView):
                 section_status_map=section_status_map,
                 section_status_choices=section_status_choices,
             )
-            if selected_slug
+            if selected_slug and selected_slug != "validation"
             else []
         )
+        if selected_slug == "validation":
+            context["validation_section_rows"] = build_validation_section_rows(
+                self.object,
+                self.request.user,
+                section_status_map,
+                context["history_entries"],
+                context["reserve_history_entries"],
+                is_terminal=context["dat_is_terminal"],
+            )
+            context["validation_workflow_steps"] = build_validation_workflow_steps(
+                context["viewflow_workflow_template"],
+                context["workflow_node_statuses"],
+                section_status_map,
+                dat_status_label=self.object.get_status_display(),
+            )
+            context["validation_traceability_entries"] = build_validation_traceability_entries(
+                context["history_entries"],
+                context["reserve_history_entries"],
+            )
         return context
 
 
@@ -3134,11 +3403,18 @@ class DatExportJSONView(DatExportBaseView):
 class DatGeneratePDFExportView(DatExportBaseView):
     def get(self, request, *args, **kwargs):
         dat = self.get_object()
+        if not can_download_export(dat, request.user, "pdf"):
+            messages.error(
+                request,
+                "Export PDF verrouillé : 2 administrateurs DAT doivent approuver la demande.",
+            )
+            return redirect("dat:my_detail", pk=dat.pk)
         pdf_content, _payload = self.build_pdf_document(dat)
         try:
             store_dat_pdf_export(dat, pdf_content)
         except Exception as exc:  # pragma: no cover - storage failure should be surfaced
             logger.warning("Impossible d'enregistrer l'export PDF du DAT %s: %s", dat.pk, exc)
+        record_export_download(dat, request.user, "pdf")
         response = HttpResponse(pdf_content, content_type="application/pdf")
         response["Content-Disposition"] = f'attachment; filename="{self.build_filename(dat, "pdf")}"'
         return response
@@ -3149,6 +3425,17 @@ class DatTriggerPDFExportView(DatExportBaseView):
 
     def post(self, request, *args, **kwargs):
         dat = self.get_object()
+        if not can_download_export(dat, request.user, "pdf"):
+            accepts_json = request.headers.get("x-requested-with") == "XMLHttpRequest" or "application/json" in (
+                request.headers.get("Accept", "")
+            )
+            if accepts_json:
+                return JsonResponse({"ok": False, "error": "export_locked"}, status=403)
+            messages.error(
+                request,
+                "Export PDF verrouillé : 2 administrateurs DAT doivent approuver la demande.",
+            )
+            return redirect("dat:my_detail", pk=dat.pk)
         base_url = request.build_absolute_uri("/")
         job = schedule_dat_pdf_generation(dat, request.user, base_url=base_url)
         accepts_json = request.headers.get("x-requested-with") == "XMLHttpRequest" or "application/json" in (
@@ -3614,6 +3901,7 @@ class DatDashboardView(ModuleContextMixin, DatManagerAccessMixin, TemplateView):
         context.update(
             {
                 "total_dats": total,
+                "current_month_count": monthly_data[-1]["count"] if monthly_data else 0,
                 "status_summary": status_summary,
                 "monthly_activity": monthly_data,
                 "monthly_chart_points": line_points,
@@ -3657,6 +3945,7 @@ def my_application_options(request):
 
 @login_required
 @require_safe
+@never_cache
 def application_options(request):
     if not (user_can_manage_dat(request.user) or user_can_create_dat_entities(request.user)):
         raise PermissionDenied
@@ -3703,9 +3992,13 @@ def _sub_section_has_drawio_repeater(sub_section: DATSubSection) -> bool:
 @login_required
 @require_POST
 def create_schema_diagram(request, dat_pk: int):
-    dat = get_object_or_404(DAT.objects.prefetch_related("sections__allowed_roles"), pk=dat_pk)
+    dat = get_object_or_404(
+        filter_dat_queryset_for_user(DAT.objects.prefetch_related("sections__allowed_roles"), request.user),
+        pk=dat_pk,
+    )
     if workflow_has_capability(dat, "terminal"):
         raise PermissionDenied
+    target_section = None
 
     try:
         payload = json.loads(request.body.decode("utf-8") or "{}")
@@ -3740,6 +4033,7 @@ def create_schema_diagram(request, dat_pk: int):
                 sub_section_slug,
             )
             raise PermissionDenied
+        target_section = sub_section.section
     elif section_slug:
         sync_dat_sections_if_needed(dat)
         sub_sections = list(
@@ -3762,6 +4056,7 @@ def create_schema_diagram(request, dat_pk: int):
             if section_is_locked(status_map.get(sub_section.section.slug), dat=dat):
                 continue
             allowed = True
+            target_section = sub_section.section
             break
         if not allowed:
             logger.warning(
@@ -3779,6 +4074,7 @@ def create_schema_diagram(request, dat_pk: int):
         if not architecture_sections:
             logger.warning("create_schema_diagram denied: no architecture section dat_id=%s user_id=%s", dat_pk, request.user.id)
             raise PermissionDenied
+        target_section = architecture_sections[0]
 
         schema_sub_sections = list(
             DATSubSection.objects.filter(
@@ -3788,7 +4084,8 @@ def create_schema_diagram(request, dat_pk: int):
             ).select_related("section", "section__dat")
         )
         if schema_sub_sections:
-            allowed = any(sub_section.can_user_edit(request.user) for sub_section in schema_sub_sections)
+            editable_sub_sections = [sub_section for sub_section in schema_sub_sections if sub_section.can_user_edit(request.user)]
+            allowed = bool(editable_sub_sections)
             if not allowed:
                 logger.warning(
                     "create_schema_diagram denied: no editable schemas sub-section dat_id=%s user_id=%s sub_section_count=%s",
@@ -3797,8 +4094,10 @@ def create_schema_diagram(request, dat_pk: int):
                     len(schema_sub_sections),
                 )
                 raise PermissionDenied
+            target_section = editable_sub_sections[0].section
         else:
-            allowed = any(section.can_user_edit(request.user) for section in architecture_sections)
+            editable_sections = [section for section in architecture_sections if section.can_user_edit(request.user)]
+            allowed = bool(editable_sections)
             if not allowed:
                 logger.warning(
                     "create_schema_diagram denied: no editable architecture section dat_id=%s user_id=%s section_count=%s",
@@ -3807,6 +4106,7 @@ def create_schema_diagram(request, dat_pk: int):
                     len(architecture_sections),
                 )
                 raise PermissionDenied
+            target_section = editable_sections[0]
     raw_title = (payload.get("title") or "").strip()
     if raw_title:
         try:
@@ -3824,7 +4124,9 @@ def create_schema_diagram(request, dat_pk: int):
         except ValidationError:
             title = sanitize_diagram_title("Diagramme")
 
-    diagram = DrawIODiagram.objects.create(title=title, owner=request.user)
+    diagram = DrawIODiagram.objects.create(title=title, owner=request.user, dat=dat)
+    if target_section is not None:
+        diagram.sections.add(target_section)
     response_payload = {
         "ok": True,
         "diagram": {
@@ -3878,10 +4180,15 @@ LIKEC4_PROTOCOLS = {
 
 
 def _normalize_likec4_path(raw_path) -> str:
-    if not raw_path:
+    if not isinstance(raw_path, str) or not raw_path or raw_path != raw_path.strip():
         return ""
-    cleaned = str(raw_path).strip().lstrip("/")
-    if not cleaned or not cleaned.lower().endswith(".c4"):
+    cleaned = raw_path
+    if (
+        not cleaned.lower().endswith(".c4")
+        or cleaned.startswith("/")
+        or "\\" in cleaned
+        or any(ord(character) < 32 or character in ":%?#" for character in cleaned)
+    ):
         return ""
     parts = Path(cleaned).parts
     if any(part in (".", "..") for part in parts):
@@ -3944,9 +4251,7 @@ def _guess_likec4_protocol(label: str) -> tuple[str, str]:
     return protocol, port
 
 
-def _fetch_likec4_flow_matrix(storage_path: str) -> dict | None:
-    if not storage_path:
-        return None
+def _fetch_likec4_flow_matrix(diagram: LikeC4Diagram) -> dict | None:
     base_url = getattr(settings, "LIKEC4_EDITOR_URL", "").strip()
     if not base_url:
         return None
@@ -3954,26 +4259,33 @@ def _fetch_likec4_flow_matrix(storage_path: str) -> dict | None:
         logger.warning("LikeC4 flow-matrix blocked: LIKEC4_EDITOR_URL must be http(s).")
         return None
     try:
-        query = urlencode({"file": storage_path})
+        query = urlencode({"file": diagram.storage_path})
     except Exception:
         query = ""
     url = f"{base_url.rstrip('/')}/flow-matrix"
     if query:
         url = f"{url}?{query}"
-    headers = {}
-    api_token = getattr(settings, "LIKEC4_API_TOKEN", "").strip()
-    if api_token:
-        headers["X-LikeC4-Token"] = api_token
     try:
-        request = Request(url, headers=headers)
-        with urlopen(request, timeout=10) as response:
+        revision = refresh_revision(diagram)
+        headers = scope_headers(diagram, "read", revision=revision)
+    except (OSError, ValidationError, ValueError):
+        logger.warning("LikeC4 flow-matrix source unavailable for diagram %s", diagram.pk)
+        return None
+    try:
+        request = Request(url, headers=headers, method="GET")
+        with urlopen(request, timeout=15) as response:
             status = getattr(response, "status", 200)
             if status < 200 or status >= 300:
-                logger.warning("LikeC4 flow-matrix failed for %s: status=%s", storage_path, status)
+                logger.warning("LikeC4 flow-matrix failed for diagram %s: status=%s", diagram.pk, status)
                 return None
-            payload = json.loads(response.read().decode("utf-8", errors="ignore") or "{}")
+            raw = response.read(8 * 1024 * 1024 + 1)
+            if len(raw) > 8 * 1024 * 1024:
+                return {"error": "graph_too_large"}
+            payload = json.loads(raw.decode("utf-8", errors="strict") or "{}")
             return payload if isinstance(payload, dict) else None
     except HTTPError as exc:
+        if exc.code == 413:
+            return {"error": "graph_too_large"}
         body = ""
         try:
             body = exc.read().decode("utf-8", errors="ignore")
@@ -3981,13 +4293,13 @@ def _fetch_likec4_flow_matrix(storage_path: str) -> dict | None:
             body = ""
         logger.warning(
             "LikeC4 flow-matrix failed for %s: status=%s body=%s",
-            storage_path,
+            diagram.pk,
             exc.code,
             body[:200],
         )
         return None
     except Exception as exc:  # pragma: no cover - best effort parsing
-        logger.warning("LikeC4 flow-matrix failed for %s: %s", storage_path, exc)
+        logger.warning("LikeC4 flow-matrix failed for diagram %s: %s", diagram.pk, type(exc).__name__)
         return None
 
 
@@ -4132,25 +4444,51 @@ def parse_schema_diagram(request, dat_pk: int):
     except (json.JSONDecodeError, UnicodeDecodeError):
         payload = {}
 
-    diagram_ids = _normalize_diagram_ids(payload.get("diagram_ids"))
-    likec4_paths = _normalize_likec4_paths(payload.get("likec4_paths"))
-    if not diagram_ids and not likec4_paths:
-        diagram_ids = _extract_schema_diagram_ids(schema_sub_section)
-        likec4_paths = _extract_schema_likec4_paths(schema_sub_section)
+    diagram_ids = []
+    likec4_paths = []
+    if "diagram_ids" in payload or "likec4_paths" in payload:
+        raw_ids = payload.get("diagram_ids", [])
+        raw_paths = payload.get("likec4_paths", [])
+        if not isinstance(raw_ids, (list, tuple)) or not isinstance(raw_paths, (list, tuple)):
+            raise Http404("Diagram not found.")
+        try:
+            diagram_ids = [uuid.UUID(str(raw).strip()) for raw in raw_ids]
+        except (TypeError, ValueError, AttributeError):
+            raise Http404("Diagram not found.") from None
+        likec4_paths = [_normalize_likec4_path(raw) for raw in raw_paths]
+        if any(not path for path in likec4_paths):
+            raise Http404("Diagram not found.")
+        diagram_ids = list(dict.fromkeys(diagram_ids))
+        likec4_paths = list(dict.fromkeys(likec4_paths))
+    else:
+        schemas_part = schema_sub_section.parts.filter(key="schemas").first()
+        if schemas_part is not None:
+            try:
+                references = list(iter_diagram_references(schemas_part.config, schemas_part.value or []))
+            except ValidationError:
+                raise Http404("Diagram not found.") from None
+            diagram_ids = list(dict.fromkeys(
+                identifier for kind, _index, _key, identifier in references if kind == "drawio"
+            ))
+            likec4_paths = list(dict.fromkeys(
+                identifier for kind, _index, _key, identifier in references if kind == "likec4"
+            ))
     if not diagram_ids and not likec4_paths:
         return JsonResponse(
             {"ok": False, "error": "missing_diagrams", "message": "Aucun diagramme à analyser."},
             status=400,
         )
 
-    diagrams = []
-    if diagram_ids:
-        diagrams = list(DrawIODiagram.objects.filter(pk__in=diagram_ids).only("pk", "xml_file"))
-    if diagram_ids and not diagrams and not likec4_paths:
-        return JsonResponse(
-            {"ok": False, "error": "diagram_not_found", "message": "Aucun diagramme n'a été trouvé."},
-            status=404,
-        )
+    try:
+        # Resolve every reference inside this DAT before the first source read or
+        # renderer request. Mixed authorized and unauthorized lists fail closed.
+        diagrams = [get_dat_diagram(DrawIODiagram, dat, pk=identifier) for identifier in diagram_ids]
+        likec4_diagrams = [
+            get_dat_diagram(LikeC4Diagram, dat, storage_path=storage_path)
+            for storage_path in likec4_paths
+        ]
+    except Http404:
+        raise Http404("Diagram not found.") from None
 
     briques_rows: list[dict[str, str]] = []
     flux_rows: list[dict[str, str]] = []
@@ -4162,9 +4500,11 @@ def parse_schema_diagram(request, dat_pk: int):
                 briques_rows.extend(briques)
             if fluxes:
                 flux_rows.extend(fluxes)
-    if likec4_paths:
-        for path in likec4_paths:
-            likec4_payload = _fetch_likec4_flow_matrix(path)
+    if likec4_diagrams:
+        for diagram in likec4_diagrams:
+            likec4_payload = _fetch_likec4_flow_matrix(diagram)
+            if likec4_payload and likec4_payload.get("error") == "graph_too_large":
+                return JsonResponse({"ok": False, "error": "graph_too_large"}, status=413)
             if not likec4_payload:
                 continue
             briques, fluxes = _likec4_rows_from_flow_matrix(likec4_payload)

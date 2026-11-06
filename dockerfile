@@ -21,8 +21,8 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 WORKDIR /app
 
 # Installer deps Python
-COPY pyproject.toml uv.lock /app/
-RUN uv sync --frozen --no-dev
+COPY pyproject.toml /app/
+RUN uv lock && uv sync --frozen --no-dev
 
 # Copier le code; .dockerignore exclut secrets, caches et données locales.
 COPY . /app

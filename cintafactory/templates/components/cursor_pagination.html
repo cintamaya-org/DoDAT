@@ -1,0 +1,16 @@
+{% if is_paginated %}
+  <nav class="dat-list__pagination" aria-label="Navigation des dossiers">
+    <div class="dat-list__pagination-actions">
+      {% if has_previous %}
+        <a class="btn-flat waves-effect" href="{{ previous_url }}" rel="prev">Précédent</a>
+      {% else %}
+        <span class="btn-flat disabled" aria-disabled="true">Précédent</span>
+      {% endif %}
+      {% if has_next %}
+        <a class="btn-flat waves-effect" href="{{ next_url }}" rel="next">Suivant</a>
+      {% else %}
+        <span class="btn-flat disabled" aria-disabled="true">Suivant</span>
+      {% endif %}
+    </div>
+  </nav>
+{% endif %}

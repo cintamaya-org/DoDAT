@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Cintamaya <contact@cintamaya.com>
+SPDX-FileCopyrightText: 2026 Baptiste COQUELET <github.com/BaptisteCoquelet>
+SPDX-License-Identifier: CC-BY-ND-4.0
+-->
+
 # Configuration
 
 **Public visé :** développeurs et exploitants.  
@@ -32,17 +38,74 @@ Booléens Django acceptés comme vrais : `1`, `true`, `yes`, `on`, sans distinct
 
 ## Base de données
 
-| Variable | Défaut Django |
-| --- | --- |
-| `DATABASE_NAME` | `POSTGRES_DB`, sinon vide |
-| `DATABASE_USER` | `POSTGRES_USER`, sinon vide |
-| `DATABASE_PASSWORD` | `POSTGRES_PASSWORD`, sinon vide |
-| `DATABASE_HOST` | `db` |
-| `DATABASE_PORT` | `5432` |
+Le mode de connexion est explicite :
 
-Variables `POSTGRES_*` configurent aussi le conteneur PostgreSQL. En environnement avec PgBouncer, Django vise PgBouncer (`DATABASE_HOST`, `DATABASE_PORT=6432`) et PgBouncer vise PostgreSQL.
+- `DB_MODE=local` (défaut) conserve le conteneur PostgreSQL fourni par Compose ;
+- `DB_MODE=external` connecte Django directement à un serveur PostgreSQL joignable depuis le réseau des conteneurs. En mode scaling, PgBouncer local est alors désactivé et Django se connecte directement à PostgreSQL.
 
-Secrets DB doivent différer entre environnements et rester dans gestionnaire de secrets.
+| Variable | Défaut | Usage |
+| --- | --- | --- |
+| `DB_MODE` | `local` | `local` ou `external`. Toute autre valeur bloque le démarrage. |
+| `DATABASE_HOST` | `db` en local | Nom ou adresse du serveur PostgreSQL. Obligatoire en mode externe. |
+| `DATABASE_PORT` | `5432` | Port PostgreSQL, compris entre `1` et `65535`. |
+| `DATABASE_NAME` | `POSTGRES_DB`, sinon vide | Base de données. Obligatoire en mode externe. |
+| `DATABASE_USER` | `POSTGRES_USER`, sinon vide | Utilisateur PostgreSQL. Obligatoire en mode externe. |
+| `DATABASE_PASSWORD` | `POSTGRES_PASSWORD`, sinon vide | Mot de passe. Peut être vide si l'authentification PostgreSQL le permet. |
+| `DATABASE_SSLMODE` | `prefer` en local, `require` en externe | `disable`, `allow`, `prefer`, `require`, `verify-ca` ou `verify-full`. |
+| `DATABASE_WAIT_TIMEOUT` | `120` secondes | Durée maximale d'attente d'une connexion DB au démarrage. |
+
+En mode local, les variables `POSTGRES_DB`, `POSTGRES_USER` et `POSTGRES_PASSWORD` servent à initialiser le conteneur PostgreSQL et restent les valeurs de repli de Django. En mode externe, le serveur, la base, l'utilisateur, les permissions et les sauvegardes doivent être préparés hors de Compose. `DATABASE_URL` n'est pas une interface supportée.
+
+### Exemple PostgreSQL externe
+
+Dans `.env`, remplacer les valeurs d'exemple par celles fournies par l'administrateur PostgreSQL :
+
+```dotenv
+DB_MODE=external
+DATABASE_HOST=postgres.example.internal
+DATABASE_PORT=5432
+DATABASE_NAME=cintafactory
+DATABASE_USER=cintafactory_app
+DATABASE_PASSWORD=replace-with-db-password
+DATABASE_SSLMODE=require
+DATABASE_WAIT_TIMEOUT=120
+```
+
+L'utilisateur doit disposer uniquement des permissions nécessaires à l'application. Le serveur PostgreSQL doit autoriser le réseau des conteneurs dans son pare-feu et les identifiants doivent rester dans un gestionnaire de secrets. L'exploitant externe reste responsable du provisionnement, des migrations, des sauvegardes/restaurations, de la supervision, des mises à jour et des règles réseau.
+
+### Commandes Compose
+
+Développement avec PostgreSQL fourni par Compose :
+
+```bash
+docker compose -f docker-compose.dev.yml up -d --build
+```
+
+Développement avec PostgreSQL externe :
+
+```bash
+docker compose -f docker-compose.dev.yml -f docker-compose.dev.external.yml up -d --build
+```
+
+Scaling avec la base locale et PgBouncer :
+
+```bash
+docker compose -f docker-compose.scaling.dev.yml up -d --build
+```
+
+Scaling avec PostgreSQL externe, sans conteneur `db` ni PgBouncer :
+
+```bash
+docker compose -f docker-compose.scaling.dev.yml -f docker-compose.scaling.dev.external.yml up -d --build
+```
+
+Les fichiers externes utilisent la fusion Compose `!override` pour retirer uniquement les dépendances liées à la base. Ils nécessitent une version récente de Docker Compose v2. Le fichier de déploiement utilise déjà une base PostgreSQL externe : renseigner les mêmes variables `DB_MODE` et `DATABASE_*` dans `deploy/env/prod.env` ou `deploy/env/test.env`.
+
+### TLS PostgreSQL
+
+Utiliser au minimum `DATABASE_SSLMODE=require` pour une base externe sur un réseau non totalement isolé. `require` chiffre la connexion, mais ne vérifie pas l'autorité de certification ni le nom d'hôte. Préférer `verify-full` lorsque le certificat et l'autorité de certification sont disponibles dans l'image ; `verify-ca` vérifie l'autorité sans vérifier le nom d'hôte. Réserver `disable` à un réseau maîtrisé et isolé. Ne pas utiliser `prefer` comme choix explicite pour une base externe si le chiffrement est obligatoire.
+
+Le démarrage appelle `wait_for_database` et n'inscrit pas les mots de passe dans les logs. Avec `RUN_MIGRATIONS=1`, les migrations sont exécutées après que la connexion est disponible ; leur responsabilité et leur fenêtre d'exécution restent à définir par l'exploitant de la base externe.
 
 ## Sécurité HTTP et secrets
 
@@ -90,7 +153,8 @@ Compose configure aussi clés volume `SEAWEEDFS_VOLUME_JWT_*`, ports et origines
 | `CLAMAV_TIMEOUT` | `30` | Timeout d'une commande. |
 | `CLAMAV_RETRY_COUNT` | `5` | Nouvelles tentatives après échec. |
 | `CLAMAV_RETRY_DELAY` | `1.0` | Pause entre tentatives. |
-| `CLAMAV_SCAN_DIR` | `/clamav_scan` | Répertoire partagé utilisé par commande `SCAN`. |
+
+Les fichiers sont transmis directement à `clamd` avec `INSTREAM`; aucun répertoire temporaire partagé n'est requis. `StreamMaxLength` de ClamAV doit être supérieur ou égal à la taille maximale des pièces jointes configurée.
 
 Deux limites existent :
 
@@ -127,91 +191,93 @@ Réglages Django `DAT_ATTACHMENT_MAX_SIZE_BYTES`, `ATTACHMENT_QUARANTINE_ENABLED
 
 ### Services Node
 
-Principales variables : `LIKEC4_EDITOR_PORT`, `LIKEC4_C4_FILE`, `LIKEC4_PREVIEW_DIR`, `LIKEC4_METADATA_URL`, `LIKEC4_BIN`, `LIKEC4_RENDER_TIMEOUT_MS`, `LIKEC4_EXPORT_HOST`, `LIKEC4_EXPORT_PORT`, `LIKEC4_EXPORT_MAX_BODY_BYTES`, `LIKEC4_EXPORT_TMP`, `LIKEC4_EXPORT_LOCAL_DIR`, `LIKEC4_EXPORT_FORMAT`, `LIKEC4_EXPORT_VIEW`, `LIKEC4_EXPORT_MAX_RETRIES`.
+Variables des brokers : `LIKEC4_EDITOR_PORT`, `LIKEC4_EXPORT_HOST`, `LIKEC4_EXPORT_PORT`, `LIKEC4_EXPORT_TMP`, `LIKEC4_EXPORT_LOCAL_DIR`, `LIKEC4_EXPORT_VIEW`, `LIKEC4_RENDER_ENABLED`, `LIKEC4_RENDER_INPUT` et `LIKEC4_RENDER_OUTPUT`. `LIKEC4_RENDER_ENABLED=0` désactive les nouveaux rendus, en conservant lecture/édition des sources. Désactiver aussi `LIKEC4_EXPORT_ENABLED` côté Django pendant un incident.
 
-Tokens `LIKEC4_METADATA_TOKEN` et `LIKEC4_API_TOKEN` doivent être identiques dans Django, éditeur et exporter. Valeurs de développement interdites en production.
+`LIKEC4_API_TOKEN` doit correspondre entre Django et les deux brokers. `LIKEC4_METADATA_TOKEN` correspond seulement entre Django et exporter ; l'éditeur ne le reçoit plus. Les renderers hors réseau ne reçoivent aucun token ni clé de stockage.
+
+Les renderers `likec4-codegen` et `likec4-png` utilisent `LIKEC4_RENDER_OPERATION` fixé par Compose et les volumes IPC privés. Les anciens overrides `LIKEC4_BIN`, `LIKEC4_VER`, `LIKEC4_PREVIEW_DIR` et versions de build ne s'appliquent plus aux services applicatifs. Le délai de rendu est borné à 120 secondes. `APP_UID`/`APP_GID` doivent correspondre au build, aux utilisateurs runtime et aux volumes temporaires.
+
+Voir [LikeC4](../likec4/README.md) pour versions figées, limites, procédure de test et rétention/permissions des volumes. Docker Compose 2.20+ est requis.
 
 ## Configuration OAuth
 
-### État de validation
+### Fournisseurs disponibles et validation
 
-Google est actuellement le seul fournisseur OAuth testé de bout en bout. Les configurations Microsoft, Amazon, Okta et Cintamaya sont présentes, mais doivent être considérées comme expérimentales tant que leur parcours complet n'a pas été validé dans l'environnement cible.
-
-Un autre fournisseur peut être ajouté sans créer un nouveau parcours de connexion s'il respecte le contrat OAuth 2.0/OIDC utilisé par l'application :
-
-- flux Authorization Code ;
-- endpoints d'autorisation, de jeton et de profil accessibles en HTTPS ;
-- échange du code par requête `POST` de formulaire ;
-- réponse JSON contenant un `access_token` ;
-- endpoint de profil acceptant `Authorization: Bearer <token>` et renvoyant du JSON ;
-- identifiant utilisateur stable disponible dans le profil.
-
-OAuth 1.0, SAML ou un fournisseur imposant un échange particulier — PKCE obligatoire, `client_assertion`, authentification HTTP Basic du client, réponse non JSON ou profil fortement imbriqué — nécessitent une adaptation du code.
+Le parcours utilise Authorization Code et récupère l'identité via un endpoint UserInfo ou profil. Les tests locaux simulent les échanges HTTP ; ils ne valident pas l'acceptation des redirect URI ni le comportement d'un tenant réel.
 
 ### Variables communes
 
-- `OAUTH_HTTP_TIMEOUT`, défaut 10 secondes ;
-- `OAUTH_ALLOW_EMAIL_LINKING`, défaut activé ;
-- `ENDPOINT_RATE_LIMIT_PER_IP_PER_MINUTE`, défaut 30 pour les endpoints sensibles.
+- OAUTH_HTTP_TIMEOUT, défaut 10 secondes ;
+- OAUTH_ALLOW_EMAIL_LINKING, défaut activé ; contrôle l'association par adresse email ;
+- ENDPOINT_RATE_LIMIT_PER_IP_PER_MINUTE, défaut 30 pour les endpoints sensibles.
 
-Fournisseurs préconfigurés :
+Fournisseurs préconfigurés. Les boutons restent désactivés tant que client, secret et endpoints ne sont pas tous configurés :
 
 | Fournisseur | Variables | Validation |
 | --- | --- | --- |
-| Google | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` | Testé |
-| Microsoft | `MICROSOFT_OAUTH_TENANT_ID`, `MICROSOFT_OAUTH_CLIENT_ID`, `MICROSOFT_OAUTH_CLIENT_SECRET` | À valider |
-| Amazon | `AMAZON_OAUTH_CLIENT_ID`, `AMAZON_OAUTH_CLIENT_SECRET` | À valider |
-| Okta | `OKTA_OAUTH_DOMAIN`, `OKTA_OAUTH_CLIENT_ID`, `OKTA_OAUTH_CLIENT_SECRET` | À valider |
-| Cintamaya | `CINTAMAYA_OAUTH_CLIENT_ID`, `CINTAMAYA_OAUTH_CLIENT_SECRET` | À valider |
+| Google | GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET | Testé précédemment |
+| Microsoft Entra ID | MICROSOFT_OAUTH_TENANT_ID, MICROSOFT_OAUTH_CLIENT_ID, MICROSOFT_OAUTH_CLIENT_SECRET | Échanges simulés ; pas de configuration réelle |
+| Login with Amazon | AMAZON_OAUTH_CLIENT_ID, AMAZON_OAUTH_CLIENT_SECRET | Échanges simulés ; pas de configuration réelle |
+| Okta | OKTA_OAUTH_DOMAIN, OKTA_OAUTH_CLIENT_ID, OKTA_OAUTH_CLIENT_SECRET, OKTA_OAUTH_TOKEN_AUTH_METHOD | Échanges simulés ; pas de configuration réelle |
 
-Un fournisseur sans identifiant et secret complets reste désactivé.
+AMAZON_OAUTH_* configure Login with Amazon pour les comptes Amazon grand public. Ce parcours ne configure pas AWS IAM Identity Center.
+
+### Enregistrer une application fournisseur
+
+Pour chaque fournisseur, enregistrer l'URL de callback publique exacte :
+
+    https://<hôte>/accounts/oauth/<fournisseur>/callback/
+
+Les identifiants de développement peuvent être configurés dans .env. En production, les fournir depuis le gestionnaire de secrets du déploiement. Ne jamais committer de secret.
+
+- **Microsoft Entra ID** : créer une inscription d'application Web et accorder les scopes openid email profile. MICROSOFT_OAUTH_TENANT_ID=common autorise comptes personnels et comptes professionnels/scolaires. Utiliser organizations ou l'ID du tenant pour restreindre les connexions.
+- **Amazon** : créer un profil de sécurité Login with Amazon, enregistrer la callback et autoriser les scopes profile et profile:user_id.
+- **Okta** : créer une intégration OIDC de type Web Application avec Authorization Code. OKTA_OAUTH_DOMAIN doit être l'URL HTTPS de l'organisation, sans slash final ; le serveur d'autorisation configuré par défaut utilise /oauth2/default. OKTA_OAUTH_TOKEN_AUTH_METHOD vaut client_secret_basic par défaut. Le régler à client_secret_post si l'intégration Okta utilise cette méthode.
+
+Compose transmet ces variables au service Django dans les fichiers production, dev et scaling. Après leur modification, recréer/redémarrer le service web.
+
+### Comptes locaux et association
+
+Microsoft, Amazon et Okta ne créent pas automatiquement de compte local. L'utilisateur doit déjà exister dans DoDat. À sa première connexion, l'application associe son identité à l'unique compte local dont l'adresse email correspond sans tenir compte de la casse, si OAUTH_ALLOW_EMAIL_LINKING=1.
+
+Une revendication email_verified absente est acceptée pour cette association ; une valeur explicitement fausse est refusée. Une adresse absente, aucun compte correspondant, plusieurs comptes correspondants ou un compte désactivé font échouer la connexion. Un lien fournisseur déjà enregistré reste utilisable si son compte local est actif. Avec OAUTH_ALLOW_EMAIL_LINKING=0, seuls les liens OAuthAccount déjà enregistrés fonctionnent.
 
 ### Ajouter un fournisseur OAuth2/OIDC
 
-1. Créer une application auprès du fournisseur et déclarer exactement l'URL de callback publique :
+Ajouter une entrée dans OAUTH_PROVIDERS, dans cintafactory/cintafactory/settings.py :
 
-   ```text
-   https://<hôte>/accounts/oauth/<slug>/callback/
-   ```
+~~~python
+"example": {
+    "label": "Mon fournisseur",
+    "client_id": os.getenv("EXAMPLE_OAUTH_CLIENT_ID", ""),
+    "client_secret": os.getenv("EXAMPLE_OAUTH_CLIENT_SECRET", ""),
+    "authorize_url": "https://idp.example.com/oauth/authorize",
+    "token_url": "https://idp.example.com/oauth/token",
+    "userinfo_url": "https://idp.example.com/oauth/userinfo",
+    "scopes": ("openid", "email", "profile"),
+    "extra_authorize_params": {},
+    "userinfo_mapping": {
+        "user_id": "sub",
+        "email": "email",
+        "email_verified": "email_verified",
+        "first_name": "given_name",
+        "last_name": "family_name",
+        "full_name": "name",
+    },
+    "allow_user_creation": True,
+    "token_endpoint_auth_method": "client_secret_post",
+},
+~~~
 
-   Le `<slug>` doit être identique à la clé ajoutée dans `OAUTH_PROVIDERS`.
+token_endpoint_auth_method accepte client_secret_post et client_secret_basic. Adapter les endpoints, scopes et userinfo_mapping à la documentation fournisseur. user_id doit être stable et présent. Ne pas activer la création automatique de comptes sans décision explicite sur le provisionnement.
 
-2. Ajouter l'identifiant et le secret aux variables sécurisées du déploiement. Ne jamais enregistrer de vrai secret dans Git. Seuls des noms de variables et des exemples vides doivent apparaître dans `.env.exemple`.
+### Tests et limites
 
-3. Ajouter une entrée dans `OAUTH_PROVIDERS`, dans `cintafactory/cintafactory/settings.py` :
+Les tests OAuth remplacent les endpoints distants par des réponses simulées et vérifient les redirections, l'état, l'échange du code, le profil et l'association locale. Sans identifiants réels, aucune connexion à Microsoft, Amazon ou Okta ne peut être validée en direct. Après configuration, tester chaque callback en environnement non productif.
 
-   ```python
-   "example": {
-       "label": "Mon fournisseur",
-       "client_id": os.getenv("EXAMPLE_OAUTH_CLIENT_ID", ""),
-       "client_secret": os.getenv("EXAMPLE_OAUTH_CLIENT_SECRET", ""),
-       "authorize_url": "https://idp.example.com/oauth/authorize",
-       "token_url": "https://idp.example.com/oauth/token",
-       "userinfo_url": "https://idp.example.com/oauth/userinfo",
-       "scopes": ("openid", "email", "profile"),
-       "extra_authorize_params": {},
-       "userinfo_mapping": {
-           "user_id": "sub",
-           "email": "email",
-           "email_verified": "email_verified",
-           "first_name": "given_name",
-           "last_name": "family_name",
-           "full_name": "name",
-       },
-   }
-   ```
-
-   Les URL et scopes ci-dessus sont des exemples : utiliser ceux documentés par le fournisseur.
-
-4. Adapter `userinfo_mapping` aux clés réellement renvoyées par l'endpoint de profil. `user_id` est obligatoire. Les autres champs sont facultatifs, mais `email` et `email_verified` sont importants pour la liaison avec un compte existant.
-
-5. Facultatif : ajouter une icône statique et sa correspondance dans `icon_map` de `cintafactory/users/oauth_views.py`. Sans icône, le fournisseur reste utilisable.
-
-6. Redémarrer l'application, puis tester le parcours complet dans un environnement non productif : affichage du bouton, redirection, validation de `state`, callback, échange du code, lecture du profil, création ou liaison du compte, reconnexion et déconnexion.
-
-### Liaison par adresse email
-
-Quand `OAUTH_ALLOW_EMAIL_LINKING` est activé, un profil OAuth peut être lié à un compte local portant la même adresse. Avant d'activer cette option pour un nouveau fournisseur, vérifier qu'il renvoie une adresse fiable et un statut `email_verified` correctement mappé. En cas de doute, désactiver la liaison automatique jusqu'à validation.
+~~~bash
+docker compose -f docker-compose.dev.yml exec -T web python manage.py test users.tests.OAuthProviderTests users.tests.OAuthServiceTests
+~~~
 
 Les jetons OAuth étant enregistrés par l'application, la base de données, les sauvegardes et les accès administratifs doivent être protégés en conséquence.
 

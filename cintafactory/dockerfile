@@ -18,8 +18,8 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 WORKDIR /app
 
 # Installer deps Python
-COPY pyproject.toml uv.lock /app/
-RUN uv sync --frozen --no-dev
+COPY pyproject.toml /app/
+RUN uv lock && uv sync --frozen --no-dev
 
 # Copier le code du projet; .dockerignore exclut secrets, caches et données locales.
 COPY . /app
@@ -30,10 +30,9 @@ RUN chmod +x /entrypoint.sh
 
 # Switch to a non-root user for runtime safety
 RUN useradd --create-home --shell /bin/bash appuser \
-    && mkdir -p /app/logs /app/media /app/staticfiles /clamav_scan \
-    && chown -R appuser:appuser /app /clamav_scan /entrypoint.sh \
+    && mkdir -p /app/logs /app/media /app/staticfiles \
+    && chown -R appuser:appuser /app /entrypoint.sh \
     && chmod -R ug+rwX /app \
-    && chmod 1777 /clamav_scan \
     && chmod +x /entrypoint.sh
 USER appuser
 

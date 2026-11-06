@@ -1,0 +1,667 @@
+# SPDX-FileCopyrightText: 2026 Cintamaya <contact@cintamaya.com>
+# SPDX-FileCopyrightText: 2026 Baptiste COQUELET <github.com/BaptisteCoquelet>
+# SPDX-License-Identifier: AGPL-3.0-only
+
+import base64
+import json
+import uuid
+from io import BytesIO
+from types import SimpleNamespace
+from unittest import mock
+
+from django.core.exceptions import ImproperlyConfigured, ValidationError
+from django.test import SimpleTestCase, override_settings
+
+from . import exporters
+from .exporters import DATExportModelBuilder
+from .pdf import generate_dat_pdf, render_pdf_from_html
+from diagrams.models import LikeC4Diagram
+
+
+def _response(status, body):
+    response = mock.MagicMock()
+    response.status = status
+    response.read.return_value = body
+    response.__enter__.return_value = response
+    return response
+
+
+class RepeaterPreviewSecurityTests(SimpleTestCase):
+    def setUp(self):
+        self.builder = DATExportModelBuilder()
+
+    def _build_part(self, rows, config=None):
+        part = SimpleNamespace(
+            pk=uuid.uuid4(), key="schemas", label="Schemas", required=False,
+            data_type=exporters.DATPartEntryType.REPEATER, value=rows, order=0,
+            config=config or {}, _get_current_entry=lambda: None,
+            render_value=lambda value: value,
+        )
+        return self.builder.build_parts(SimpleNamespace(parts=SimpleNamespace(all=lambda: [part])))[0]
+
+    def test_stored_preview_urls_are_not_used_and_source_rows_stay_unchanged(self):
+        for diagram in (
+            {"images": [{"src": "http://127.0.0.1/internal"}]},
+            {"data_uri": "file:///private/image.png"},
+            {"thumbnail_url": "https://internal.example/image.png"},
+        ):
+            with self.subTest(diagram=diagram):
+                rows = [{"name": "User content", "diagram_previews": [{"diagram": diagram}]}]
+                result = self._build_part(rows)
+                self.assertEqual(result["diagram_previews"], [])
+                self.assertNotIn("diagram_previews", result["display_value"][0])
+                self.assertEqual(result["display_value"][0]["name"], "User content")
+                self.assertEqual(result["value"], rows)
+                self.assertEqual(rows[0]["diagram_previews"], [{"diagram": diagram}])
+
+    def test_valid_diagram_previews_are_regenerated_instead_of_mixed_with_stored_values(self):
+        identifier = uuid.uuid4()
+        trusted = {"title": "Authorized diagram", "images": [{"src": "data:image/png;base64,cG5n"}]}
+        rows = [{"diagram_id": str(identifier), "diagram_previews": [{"diagram": {"data_uri": "file:///private.png"}}]}]
+        with mock.patch.object(self.builder, "_load_diagram_previews", return_value={identifier: trusted}):
+            result = self._build_part(rows, {"columns": [{"key": "diagram_id", "drawio": True}]})
+        self.assertEqual(len(result["diagram_previews"]), 1)
+        self.assertEqual(result["diagram_previews"][0]["diagram"], trusted)
+        self.assertEqual(rows[0]["diagram_previews"][0]["diagram"]["data_uri"], "file:///private.png")
+
+
+class PDFResourceSecurityTests(SimpleTestCase):
+    def test_fetcher_rejects_external_files_and_non_png_data_before_opening_resources(self):
+        with mock.patch("weasyprint.HTML") as html:
+            render_pdf_from_html("<p>DAT</p>", base_url="https://app.example/")
+        fetcher = html.call_args.kwargs["url_fetcher"]
+        with mock.patch("urllib.request.OpenerDirector.open") as open_resource:
+            for url in (
+                "http://127.0.0.1/internal", "https://internal.example/image.png",
+                "file:///private/image.png", "FILE:///private/image.png",
+                "//internal.example/image.png", "../private.png",
+                "data:image/svg+xml,<svg/>", "data:text/html,private",
+            ):
+                with self.subTest(url=url), self.assertRaises(ValueError):
+                    fetcher(url)
+        open_resource.assert_not_called()
+
+    def test_real_pdf_keeps_embedded_pngs_without_http_or_file_access(self):
+        from PIL import Image
+
+        image = BytesIO()
+        Image.new("RGB", (2, 2), "blue").save(image, format="PNG")
+        image_url = "data:image/png;base64," + base64.b64encode(image.getvalue()).decode("ascii")
+        html = (
+            '<p>Approved DAT</p><img src="' + image_url + '">'
+            '<img src="http://127.0.0.1/internal"><img src="file:///private.png">'
+        )
+        with (
+            mock.patch("urllib.request.HTTPHandler.http_open") as http_open,
+            mock.patch("urllib.request.HTTPSHandler.https_open") as https_open,
+            mock.patch("urllib.request.FileHandler.file_open") as file_open,
+        ):
+            document = render_pdf_from_html(html)
+        http_open.assert_not_called()
+        https_open.assert_not_called()
+        file_open.assert_not_called()
+        self.assertTrue(document.startswith(b"%PDF"))
+        self.assertIn(b"/Subtype /Image", document)
+
+
+class GenerateDatPDFTests(SimpleTestCase):
+    def test_builds_refreshable_export_and_passes_payload_and_base_url_to_renderer(self):
+        dat = SimpleNamespace(pk=17, reference="DAT-17", title="Architecture")
+        payload = {"participants": [{"name": "Reviewer"}], "sections": [
+            None, {"sub_sections": [None, {"parts": [{"title": "Design"}]}]},
+        ]}
+        builder = SimpleNamespace(build=mock.Mock(return_value=payload), refresh_likec4_exports=False, likec4_export_source="")
+        with (
+            mock.patch("dat.pdf.get_dat_export_model_builder", return_value=builder),
+            mock.patch("dat.pdf.render_to_string", return_value="<p>Approved DAT</p>") as template,
+            mock.patch("dat.pdf.render_pdf_from_html", return_value=b"%PDF-result") as render,
+        ):
+            document, exported = generate_dat_pdf(dat, base_url="https://app.example/")
+        self.assertEqual(document, b"%PDF-result")
+        self.assertIs(exported, payload)
+        self.assertTrue(builder.refresh_likec4_exports)
+        self.assertEqual(builder.likec4_export_source, "dat_pdf:17")
+        builder.build.assert_called_once_with(dat)
+        template.assert_called_once_with("dat/exports/dat_export_pdf.html", {"dat": dat, "export": payload})
+        render.assert_called_once_with("<p>Approved DAT</p>", base_url="https://app.example/")
+
+    def test_legacy_builders_and_empty_sections_keep_working(self):
+        for dat in (
+            SimpleNamespace(pk=17, reference="", title="Legacy DAT"),
+            SimpleNamespace(pk=17, reference=None, title=None),
+        ):
+            with self.subTest(title=dat.title):
+                builder = SimpleNamespace(build=mock.Mock(return_value={"sections": None, "participants": None}))
+                with (
+                    mock.patch("dat.pdf.get_dat_export_model_builder", return_value=builder),
+                    mock.patch("dat.pdf.render_to_string", return_value="<p>DAT</p>"),
+                    mock.patch("dat.pdf.render_pdf_from_html", return_value=b"%PDF") as render,
+                ):
+                    document, payload = generate_dat_pdf(dat)
+                self.assertEqual(document, b"%PDF")
+                self.assertIsNone(payload["sections"])
+                self.assertFalse(hasattr(builder, "refresh_likec4_exports"))
+                render.assert_called_once_with("<p>DAT</p>", base_url=None)
+
+    def test_builder_failure_does_not_attempt_pdf_rendering(self):
+        builder = SimpleNamespace(build=mock.Mock(side_effect=RuntimeError("storage unavailable")))
+        with (
+            mock.patch("dat.pdf.get_dat_export_model_builder", return_value=builder),
+            mock.patch("dat.pdf.render_to_string") as template,
+            mock.patch("dat.pdf.render_pdf_from_html") as render,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "storage unavailable"):
+                generate_dat_pdf(SimpleNamespace(pk=17, title="DAT"))
+        template.assert_not_called()
+        render.assert_not_called()
+
+    def test_pdf_backend_failure_is_propagated_to_export_job(self):
+        builder = SimpleNamespace(build=mock.Mock(return_value={}))
+        with (
+            mock.patch("dat.pdf.get_dat_export_model_builder", return_value=builder),
+            mock.patch("dat.pdf.render_to_string", return_value="<p>DAT</p>"),
+            mock.patch("dat.pdf.render_pdf_from_html", side_effect=RuntimeError("render failed")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "render failed"):
+                generate_dat_pdf(SimpleNamespace(pk=17, title="DAT"))
+
+
+class DatExportModelBuilderTests(SimpleTestCase):
+    def setUp(self) -> None:
+        self.builder = DATExportModelBuilder()
+
+    def test_builder_factory_uses_setting_and_wraps_import_error(self):
+        class CustomBuilder:
+            pass
+
+        with override_settings(DAT_EXPORT_MODEL_BUILDER="custom.Builder"):
+            with mock.patch.object(exporters, "import_string", return_value=CustomBuilder) as load:
+                self.assertIsInstance(exporters.get_dat_export_model_builder(), CustomBuilder)
+            load.assert_called_once_with("custom.Builder")
+
+        with override_settings(DAT_EXPORT_MODEL_BUILDER="missing.Builder"):
+            with mock.patch.object(exporters, "import_string", side_effect=ImportError("missing")):
+                with self.assertRaises(ImproperlyConfigured):
+                    exporters.get_dat_export_model_builder()
+
+    def test_metadata_and_application_cover_optional_values(self):
+        dat = SimpleNamespace(
+            pk=12,
+            reference="DAT-12",
+            title="Architecture",
+            description="Description",
+            created_at="created",
+            updated_at="updated",
+        )
+        with (
+            mock.patch.object(exporters, "workflow_state", return_value="draft"),
+            mock.patch.object(exporters, "workflow_state_label", return_value="Draft"),
+            mock.patch.object(exporters, "isoformat_datetime", side_effect=lambda value: value),
+            mock.patch.object(exporters, "localize_datetime", side_effect=lambda value: f"local:{value}"),
+        ):
+            result = self.builder.build_dat_metadata(dat)
+
+        self.assertEqual(result["id"], "12")
+        self.assertEqual(result["status_label"], "Draft")
+        self.assertEqual(result["created_at_display"], "local:created")
+        self.assertIsNone(self.builder.get_status_label(None))
+        self.assertEqual(self.builder.get_status_label("unknown"), "unknown")
+        self.assertIsNone(self.builder.build_application(SimpleNamespace(application=None)))
+        self.assertEqual(
+            self.builder.build_application(
+                SimpleNamespace(
+                    application=SimpleNamespace(pk=3, code="APP", name="App", description="About")
+                )
+            ),
+            {"id": "3", "code": "APP", "name": "App", "description": "About"},
+        )
+
+    def test_participants_and_responsibles_cover_role_and_fallback_paths(self):
+        user = SimpleNamespace(username="owner")
+        role = SimpleNamespace(slug="architect", name="Architect")
+        participant = SimpleNamespace(pk=4, user=user, role=role, created_at="assigned")
+        dat = SimpleNamespace(participants=SimpleNamespace(all=lambda: [participant]))
+        with (
+            mock.patch.object(exporters, "serialize_user", side_effect=lambda value: value),
+            mock.patch.object(exporters, "serialize_role", side_effect=lambda value: value),
+            mock.patch.object(exporters, "format_user_display", side_effect=lambda value: value.username),
+            mock.patch.object(exporters, "isoformat_datetime", side_effect=lambda value: value),
+            mock.patch.object(exporters, "localize_datetime", side_effect=lambda value: value),
+        ):
+            rows = self.builder.build_participants(dat)
+            self.builder._participant_role_map = self.builder._build_participant_map(dat)
+            responsible = self.builder.build_responsibles(dat, [role])
+            inherited = [{"user": {"name": "owner"}}]
+            copied = self.builder.build_responsibles(dat, [], fallback_entries=inherited)
+            copied[0]["user"]["name"] = "changed"
+            fallback = self.builder.build_responsibles(dat, [], fallback_user=user)
+            empty = self.builder.build_responsibles(dat, [])
+
+        self.assertEqual(rows[0]["role_slug"], "architect")
+        self.assertEqual(responsible[0]["participant_id"], "4")
+        self.assertEqual(inherited[0]["user"]["name"], "owner")
+        self.assertEqual(fallback[0]["participant_id"], None)
+        self.assertEqual(empty, [])
+
+    def test_build_sections_serializes_nested_sections(self):
+        empty_roles = SimpleNamespace(all=lambda: [])
+        sub_section = SimpleNamespace(
+            pk=2,
+            slug="overview",
+            title="Overview",
+            description="Summary",
+            allowed_roles=empty_roles,
+            order=1,
+        )
+        section = SimpleNamespace(
+            pk=1,
+            slug="architecture",
+            title="Architecture",
+            description="",
+            allowed_roles=empty_roles,
+            sub_sections=SimpleNamespace(all=lambda: [sub_section]),
+            order=0,
+        )
+        self.builder._prefetch_sections = mock.Mock(return_value=[section])
+        self.builder.build_responsibles = mock.Mock(side_effect=[[{"user": "owner"}], []])
+        self.builder.build_parts = mock.Mock(return_value=[])
+
+        result = self.builder.build_sections(SimpleNamespace(owner="owner"))
+
+        self.assertEqual(result[0]["slug"], "architecture")
+        self.assertEqual(result[0]["sub_sections"][0]["slug"], "overview")
+        self.assertEqual(result[0]["sub_sections"][0]["responsibles"], [])
+
+    def test_build_parts_filters_empty_values_and_builds_repeater_columns(self):
+        def make_part(value, data_type="text", config=None):
+            return SimpleNamespace(
+                pk=1,
+                key="part",
+                label="Part",
+                data_type=data_type,
+                required=False,
+                value=value,
+                order=0,
+                config=config,
+                _get_current_entry=lambda: SimpleNamespace(updated_at=None),
+                render_value=lambda current: current,
+            )
+
+        empty = make_part([])
+        rows = [{"service_name": "API"}]
+        repeater = make_part(
+            rows,
+            exporters.DATPartEntryType.REPEATER,
+            {"columns": [{"key": "service_name"}]},
+        )
+        self.builder.include_empty_parts = False
+        with (
+            mock.patch.object(exporters, "isoformat_datetime", side_effect=lambda value: value),
+            mock.patch.object(exporters, "localize_datetime", side_effect=lambda value: value),
+        ):
+            result = self.builder.build_parts(
+                SimpleNamespace(parts=SimpleNamespace(all=lambda: [empty, repeater]))
+            )
+
+        self.assertEqual(len(result), 1)
+        self.assertTrue(result[0]["is_repeater"])
+        self.assertEqual(result[0]["table_columns"], [{"key": "service_name", "label": "service_name"}])
+        self.assertEqual(result[0]["display_value"], rows)
+
+    def test_extract_repeater_columns_normalizes_and_infers_labels(self):
+        configured = SimpleNamespace(
+            config={
+                "columns": [
+                    None,
+                    {"label": "Missing key"},
+                    {"key": "name", "label": "Display name"},
+                    {"key": "owner"},
+                ]
+            }
+        )
+        inferred = SimpleNamespace(config={"columns": "invalid"})
+
+        self.assertEqual(
+            self.builder._extract_repeater_columns(configured, []),
+            [{"key": "name", "label": "Display name"}, {"key": "owner", "label": "owner"}],
+        )
+        self.assertEqual(
+            self.builder._extract_repeater_columns(inferred, [{"service_name": "API"}]),
+            [{"key": "service_name", "label": "Service Name"}],
+        )
+        self.assertEqual(self.builder._extract_repeater_columns(inferred, ["not a row"]), [])
+
+    def test_drawio_previews_attach_only_matching_diagrams(self):
+        diagram_id = uuid.uuid4()
+        payload = {"title": "System"}
+        part = SimpleNamespace(
+            config={
+                "columns": [
+                    {"key": "diagram_id", "drawio": True, "label": "Diagram", "drawio_name_key": "name"}
+                ]
+            }
+        )
+        rows = [
+            {"diagram_id": str(diagram_id), "name": "Main", "description": "Primary"},
+            {"diagram_id": str(uuid.uuid4())},
+            "not a row",
+        ]
+        self.builder._load_diagram_previews = mock.Mock(return_value={diagram_id: payload})
+
+        result = self.builder._attach_drawio_previews(part, rows)
+
+        self.assertIs(result, rows)
+        self.assertIs(rows[0]["drawio_diagram"], payload)
+        self.assertEqual(rows[0]["diagram_id_diagram"], payload)
+        self.assertEqual(rows[0]["diagram_previews"][0]["title"], "Main")
+        self.assertEqual(rows[0]["diagram_previews"][0]["description"], "Primary")
+        self.assertNotIn("drawio_diagram", rows[1])
+
+    def test_likec4_keys_and_paths_reject_invalid_references(self):
+        part = SimpleNamespace(
+            config={
+                "columns": [
+                    "ignore",
+                    {"diagramToolKey": "engine", "diagramReferenceKey": "path"},
+                ]
+            }
+        )
+        self.assertEqual(self.builder._get_likec4_keys(part), ("engine", "path"))
+        self.assertEqual(self.builder._normalize_likec4_path("workspace/views/main.c4"), "workspace/views/main.c4")
+        for raw in (None, "", " /workspace/views/main.c4 ", "/../secret.c4", "./main.c4", "main.txt"):
+            with self.subTest(raw=raw):
+                if raw in (None, ""):
+                    self.assertEqual(self.builder._normalize_likec4_path(raw), "")
+                else:
+                    with self.assertRaises(ValidationError):
+                        self.builder._normalize_likec4_path(raw)
+
+        rows = [
+            {"engine": " LIKEC4 ", "path": "one.c4"},
+            {"engine": "drawio", "path": "two.c4"},
+            "not a row",
+        ]
+        self.assertEqual(self.builder._collect_likec4_references(rows, "engine", "path"), {"one.c4"})
+        with self.assertRaises(ValidationError):
+            self.builder._collect_likec4_references(
+                [{"engine": "likec4", "path": "../unsafe.c4"}], "engine", "path"
+            )
+
+    def test_likec4_previews_attach_to_matching_rows(self):
+        part = SimpleNamespace(
+            config={"columns": [{"diagram_tool_key": "engine", "diagram_reference_key": "path"}]}
+        )
+        payload = {"type": "likec4"}
+        rows = [
+            {"engine": "likec4", "path": "architecture.c4", "nom_schema": "Architecture", "description": "  Main  "},
+            {"engine": "drawio", "path": "other.c4"},
+        ]
+        self.builder._load_likec4_previews = mock.Mock(return_value={"architecture.c4": payload})
+
+        self.builder._attach_likec4_previews(part, rows)
+
+        self.assertIs(rows[0]["likec4_diagram"], payload)
+        preview = rows[0]["diagram_previews"][0]
+        self.assertEqual(preview["title"], "Architecture")
+        self.assertEqual(preview["description"], "Main")
+        self.assertNotIn("likec4_diagram", rows[1])
+
+    def test_diagram_preview_append_and_collection_handle_malformed_rows(self):
+        row = {"diagram_previews": "invalid"}
+        payload = {"title": "Diagram"}
+
+        self.builder._append_diagram_preview(
+            row,
+            payload,
+            title="  ",
+            description=" Summary ",
+        )
+        self.builder._append_diagram_preview(row, {"id": 1}, column_label="LikeC4")
+        self.builder._append_diagram_preview([], payload)
+        self.builder._append_diagram_preview(row, {})
+
+        self.assertEqual(row["diagram_previews"][0]["title"], "Diagram")
+        self.assertEqual(row["diagram_previews"][0]["description"], "Summary")
+        self.assertEqual(row["diagram_previews"][1]["title"], "LikeC4")
+        self.assertEqual(len(self.builder._collect_diagram_previews([None, row, {"diagram_previews": [None, {}]}])), 2)
+        self.assertEqual(self.builder._collect_diagram_previews(None), [])
+
+    def test_seaweed_png_data_uri_reads_and_handles_storage_failures(self):
+        storage = mock.Mock()
+        png = self._png_bytes()
+        handle = BytesIO(png)
+        storage.open.return_value = handle
+
+        self.assertEqual(
+            self.builder._seaweed_png_data_uri(storage, "image.png"),
+            "data:image/png;base64," + base64.b64encode(png).decode("ascii"),
+        )
+        self.assertTrue(handle.closed)
+        self.assertIsNone(self.builder._seaweed_png_data_uri(storage, ""))
+
+        storage.open.side_effect = FileNotFoundError
+        self.assertIsNone(self.builder._seaweed_png_data_uri(storage, "missing.png"))
+        storage.open.side_effect = OSError("offline")
+        with self.assertLogs(exporters.logger, level="WARNING"):
+            self.assertIsNone(self.builder._seaweed_png_data_uri(storage, "offline.png"))
+
+    def test_likec4_preview_uses_views_and_fallback_paths(self):
+        storage = mock.Mock()
+        storage.url.side_effect = lambda path: f"storage:{path}"
+        diagram_id = uuid.uuid4()
+        revision = "a" * 64
+        prefix = f"diagrams/likec4/{diagram_id}/views/{revision}/"
+        meta = SimpleNamespace(
+            pk=diagram_id,
+            revision=revision,
+            png_path=prefix + "thumb.png",
+            png_paths=[prefix + "thumb.png", prefix + "repo/home.png", "ignored.svg", 3],
+        )
+        self.builder._seaweed_png_data_uri = mock.Mock(side_effect=["data:image/png;base64,AA==", None])
+        self.builder.refresh_likec4_exports = True
+
+        preview = self.builder._build_likec4_preview("repo/model.c4", meta, storage)
+
+        self.assertEqual(preview["png_paths"], [prefix + "repo/home.png"])
+        self.assertEqual(
+            preview["images"],
+            [{"src": "data:image/png;base64,AA==", "label": "repo/home.png"}],
+        )
+        self.assertIsNone(preview["thumbnail_url"])
+
+        self.builder._seaweed_png_data_uri = mock.Mock(return_value=None)
+        fallback = self.builder._build_likec4_preview("repo/model.c4", None, storage)
+        self.assertEqual(fallback, {"type": "likec4", "title": "", "thumbnail_url": None, "images": []})
+
+    def test_likec4_readiness_checks_unique_paths_and_missing_files(self):
+        storage = mock.Mock()
+        storage.exists.return_value = True
+        diagram_id = uuid.uuid4()
+        revision = "b" * 64
+        prefix = f"diagrams/likec4/{diagram_id}/views/{revision}/"
+        meta = SimpleNamespace(
+            pk=diagram_id,
+            revision=revision,
+            png_path=prefix + "thumb.png",
+            png_paths=[prefix + "thumb.png", prefix + "view.png", None, 4],
+        )
+
+        self.assertTrue(self.builder._is_likec4_ready(storage, "model.c4", meta))
+        self.assertEqual(
+            storage.exists.call_args_list,
+            [mock.call(prefix + "thumb.png"), mock.call(prefix + "view.png")],
+        )
+        self.assertFalse(self.builder._is_likec4_ready(storage, "model.c4", None))
+        self.assertFalse(self.builder._is_likec4_ready(storage, "model.c4", SimpleNamespace(png_path=None, png_paths=[])))
+        storage.exists.side_effect = [False]
+        self.assertFalse(self.builder._is_likec4_ready(storage, "model.c4", meta))
+        storage.exists.side_effect = OSError("offline")
+        with self.assertLogs(exporters.logger, level="WARNING"):
+            self.assertFalse(self.builder._is_likec4_ready(storage, "model.c4", meta))
+
+    @override_settings(LIKEC4_EXPORT_ENABLED=True, LIKEC4_EXPORT_URL="https://export.example", LIKEC4_EXPORT_TIMEOUT="12")
+    def test_likec4_refresh_requests_each_reference(self):
+        self.builder._request_likec4_export = mock.Mock()
+
+        self.builder._refresh_likec4_exports(["one.c4", "", "two.c4"])
+
+        self.assertEqual(self.builder._request_likec4_export.call_count, 2)
+        self.builder._request_likec4_export.assert_has_calls(
+            [
+                mock.call("one.c4", export_url="https://export.example", timeout=12),
+                mock.call("two.c4", export_url="https://export.example", timeout=12),
+            ]
+        )
+
+    @override_settings(LIKEC4_EXPORT_ENABLED=True, LIKEC4_EXPORT_URL="https://export.example", LIKEC4_EXPORT_TIMEOUT=2)
+    def test_wait_for_likec4_exports_exits_when_preview_is_ready(self):
+        diagram_id = uuid.uuid4()
+        revision = "c" * 64
+        png_path = f"diagrams/likec4/{diagram_id}/views/{revision}/thumb.png"
+        meta = SimpleNamespace(
+            pk=diagram_id,
+            revision=revision,
+            storage_path="diagrams/likec4/" + str(diagram_id) + "/source.c4",
+            png_path=png_path,
+            png_paths=[],
+        )
+        self.builder._dat = SimpleNamespace(pk=12)
+        query = mock.Mock()
+        query.only.return_value = [meta]
+        with (
+            mock.patch.object(exporters.LikeC4Diagram.objects, "filter", return_value=query),
+            mock.patch.object(exporters, "SeaweedFSStorage") as storage_factory,
+            mock.patch.object(exporters.time, "monotonic", side_effect=[10, 11]),
+        ):
+            storage_factory.return_value.exists.return_value = True
+            self.builder._wait_for_likec4_exports([meta.storage_path])
+
+        storage_factory.return_value.exists.assert_called_once_with(png_path)
+        query.only.assert_called_once_with("storage_path", "png_path", "png_paths")
+
+    def test_likec4_export_request_uses_registered_diagram_enqueue(self):
+        self.builder._dat = SimpleNamespace(pk=7)
+        diagram = SimpleNamespace(storage_path="diagrams/likec4/abc/source.c4")
+        with (
+            mock.patch.object(exporters, "get_dat_diagram", return_value=diagram) as get_diagram,
+            mock.patch.object(exporters, "enqueue_likec4_export") as enqueue,
+        ):
+            self.builder.likec4_export_source = "unit_test"
+            self.builder._request_likec4_export("diagrams/likec4/abc/source.c4", export_url="https://export.example", timeout=9)
+
+        get_diagram.assert_called_once_with(
+            LikeC4Diagram, self.builder._dat, storage_path="diagrams/likec4/abc/source.c4"
+        )
+        enqueue.assert_called_once_with("diagrams/likec4/abc/source.c4", source="unit_test")
+
+    def test_drawio_columns_and_ids_ignore_malformed_values(self):
+        diagram_id = uuid.uuid4()
+        part = SimpleNamespace(
+            config={
+                "columns": [
+                    None,
+                    {"key": "ignored"},
+                    {"key": "diagram", "drawio": True},
+                    {"key": "other", "render": "drawio_diagram"},
+                ]
+            }
+        )
+        columns = self.builder._get_drawio_columns(part)
+        self.assertEqual([column["key"] for column in columns], ["diagram", "other"])
+        self.assertEqual(self.builder._get_drawio_columns(SimpleNamespace(config={"columns": "invalid"})), ())
+        self.assertEqual(self.builder._normalize_diagram_id(diagram_id), diagram_id)
+        self.assertEqual(self.builder._normalize_diagram_id(f" {diagram_id} "), diagram_id)
+        for invalid in (None, "", "bad-uuid"):
+            self.assertIsNone(self.builder._normalize_diagram_id(invalid))
+        rows = [{"diagram": str(diagram_id)}, "not a row"]
+        self.assertEqual(self.builder._collect_diagram_ids(rows, columns), {diagram_id})
+        with self.assertRaises(ValidationError):
+            self.builder._collect_diagram_ids([{"other": "bad-uuid"}], columns)
+
+    def test_drawio_images_use_stored_paths_then_thumbnail_fallback(self):
+        storage = mock.Mock()
+        storage.url.side_effect = lambda path: f"storage:{path}"
+        diagram_id = uuid.uuid4()
+        diagram = SimpleNamespace(
+            pk=diagram_id,
+            revision="d" * 64,
+            png_paths=[
+                f"diagrams/{diagram_id}/views/one.png",
+                None,
+                4,
+                f"diagrams/{diagram_id}/views/two.png",
+            ],
+            thumbnail=None,
+        )
+        self.builder._seaweed_png_data_uri = mock.Mock(side_effect=["data:image/png;base64,AA==", None])
+        with mock.patch.object(exporters, "SeaweedFSStorage", return_value=storage):
+            images = self.builder._build_drawio_images(diagram)
+        self.assertEqual(
+            images,
+            [
+                {"src": "data:image/png;base64,AA==", "label": "Page 1"},
+            ],
+        )
+
+        diagram.png_paths = []
+        diagram.thumbnail = SimpleNamespace(url="thumbnail-url")
+        self.builder._thumbnail_data_uri = mock.Mock(return_value="data:image/png;base64,BB==")
+        self.assertEqual(self.builder._build_drawio_images(diagram), [{"src": "data:image/png;base64,BB=="}])
+        self.builder._thumbnail_data_uri.return_value = None
+        self.assertEqual(self.builder._build_drawio_images(diagram), [])
+        diagram.thumbnail = None
+        self.assertEqual(self.builder._build_drawio_images(diagram), [])
+
+    def test_thumbnail_data_uri_encodes_and_tolerates_unreadable_files(self):
+        field = mock.Mock()
+        field.name = "diagrams/1/views/thumb.png"
+        field.read.return_value = self._png_bytes()
+        diagram = SimpleNamespace(pk=1, thumbnail=field)
+
+        self.assertEqual(
+            self.builder._thumbnail_data_uri(diagram),
+            "data:image/png;base64," + base64.b64encode(self._png_bytes()).decode("ascii"),
+        )
+        field.close.assert_called_once()
+        field.name = "diagrams/another-diagram/views/thumb.png"
+        self.assertIsNone(self.builder._thumbnail_data_uri(diagram))
+        field.name = "diagrams/1/views/thumb.png"
+        field.open.side_effect = FileNotFoundError
+        self.assertIsNone(self.builder._thumbnail_data_uri(diagram))
+        field.open.side_effect = OSError("offline")
+        with self.assertLogs(exporters.logger, level="WARNING"):
+            self.assertIsNone(self.builder._thumbnail_data_uri(diagram))
+        self.assertIsNone(self.builder._thumbnail_data_uri(SimpleNamespace(thumbnail=None)))
+
+    @staticmethod
+    def _png_bytes():
+        from io import BytesIO
+        from PIL import Image
+
+        output = BytesIO()
+        Image.new("RGBA", (1, 1), (255, 0, 0, 128)).save(output, format="PNG")
+        return output.getvalue()
+
+    @override_settings(DRAWIO_EXPORT_URL="https://primary.example/export", DRAWIO_BASE_URL="https://backup.example")
+    def test_drawio_thumbnail_retries_export_endpoint(self):
+        diagram = SimpleNamespace(pk=7, read_xml=lambda: "")
+        with mock.patch.object(
+            exporters,
+            "urlopen",
+            side_effect=[TimeoutError("primary down"), _response(200, b" Zm9v ")],
+        ) as open_url:
+            result = self.builder._generate_drawio_thumbnail(diagram)
+
+        self.assertEqual(result, "data:image/png;base64,Zm9v")
+        self.assertEqual(open_url.call_count, 2)
+
+    def test_drawio_export_candidates_validate_and_deduplicate_urls(self):
+        with override_settings(
+            DRAWIO_EXPORT_URL="https://drawio.example/export/",
+            DRAWIO_BASE_URL="https://drawio.example/",
+        ):
+            self.assertEqual(self.builder._get_drawio_export_candidates(), ["https://drawio.example/export"])
+
+        with override_settings(DRAWIO_EXPORT_URL="file:///unsafe", DRAWIO_BASE_URL="ftp://unsafe"):
+            with self.assertLogs(exporters.logger, level="WARNING"):
+                self.assertEqual(self.builder._get_drawio_export_candidates(), [])

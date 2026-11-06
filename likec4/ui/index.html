@@ -184,7 +184,7 @@
     </section>
     <section class="pane diagram">
       <h2>Diagrams</h2>
-      <iframe id="diagramFrame" title="LikeC4 Diagram" src="about:blank"></iframe>
+      <iframe id="diagramFrame" title="LikeC4 Diagram" sandbox="allow-scripts" src="about:blank"></iframe>
     </section>
   </div>
 
@@ -193,6 +193,7 @@
     integrity="sha384-xgEbYcV8275+SHiNp4AAv+asZ3e4k7NaDCajMhLZ0SwIeDHKG1huHcccDfFQW5KQ"
     crossorigin="anonymous"
   ></script>
+  <script src="security.js"></script>
   <script>
     const statusEl = document.getElementById('status');
     const saveBtn = document.getElementById('saveBtn');
@@ -207,7 +208,7 @@
     let activeView = initialViewParam ? String(initialViewParam).trim() : '';
     let currentBundleUrl = '';
 
-    const getFileLabel = () => activeFile || 'likec4/default.c4';
+    const getFileLabel = () => activeFile || 'Diagramme LikeC4';
     const getFileQuery = () => (activeFile ? `?file=${encodeURIComponent(activeFile)}` : '');
     const getViewLabel = () => activeView || (viewSelect && viewSelect.value) || 'index';
 
@@ -238,31 +239,68 @@
       document.title = `LikeC4 - ${getFileLabel()}`;
     }
 
-    const buildViewerUrl = (bundleUrl, viewId, cacheBust = false) => {
-      const viewerUrl = new URL('viewer.html', window.location.href);
-      if (viewId) {
-        viewerUrl.searchParams.set('view', viewId);
+    let viewerGeneration = 0;
+    let viewerPort;
+    let cancelViewer;
+    const setViewerSrc = async (bundleUrl, cacheBust = false) => {
+      const generation = ++viewerGeneration;
+      if (cancelViewer) cancelViewer();
+      if (viewerPort) viewerPort.close();
+      if (bundleUrl) currentBundleUrl = bundleUrl;
+      if (!currentBundleUrl) { iframe.src = 'about:blank'; return; }
+      try {
+        let bundle = CintaLikeC4.scopedBundleUrl(currentBundleUrl, location.href);
+        let bytes;
+        try { bytes = await CintaLikeC4.fetchBundle(bundle); }
+        catch (error) {
+          if (error.status !== 404) throw error;
+          // Regenerate an evicted cache entry without replacing unsaved editor
+          // text. Authorization and revision selection stay on the C4 API.
+          const response = await fetch(`c4${getFileQuery()}`, { credentials: 'same-origin', redirect: 'error', signal: AbortSignal.timeout(150000) });
+          if (!response.ok) throw new Error('Diagram regeneration failed.');
+          const data = await response.json();
+          bundle = CintaLikeC4.scopedBundleUrl(data.bundle_url, location.href);
+          bytes = await CintaLikeC4.fetchBundle(bundle);
+          if (generation === viewerGeneration) currentBundleUrl = data.bundle_url;
+        }
+        const parts = new URL(bundle).pathname.split('/');
+        const revision = parts[parts.length - 2];
+        const diagramId = parts[parts.length - 3];
+        if (generation !== viewerGeneration) return;
+        const nonce = Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, '0')).join('');
+        const viewerUrl = new URL('viewer.html', location.href);
+        viewerUrl.searchParams.set('bundle', `bundles/${diagramId}/${revision}/likec4-webcomponent.js`);
+        viewerUrl.searchParams.set('nonce', nonce);
+        if (cacheBust) viewerUrl.searchParams.set('t', Date.now());
+        const ready = event => {
+          if (generation !== viewerGeneration || event.source !== iframe.contentWindow || event.origin !== 'null' ||
+              !event.data || event.data.type !== 'likec4:viewer-ready' || event.data.nonce !== nonce) return;
+          cancelViewer();
+          const channel = new MessageChannel();
+          viewerPort = channel.port1;
+          viewerPort.onmessage = ({ data }) => {
+            if (generation !== viewerGeneration || !data || data.nonce !== nonce) return;
+            if (data.type === 'error') setStatus('Diagram failed to load.');
+            viewerPort.close();
+          };
+          // Opaque origins require '*'; exact Window identity and per-navigation
+          // nonce were verified above. This transfers diagram bytes, never keys.
+          iframe.contentWindow.postMessage({ type: 'likec4:init', nonce, diagram_id: diagramId,
+            revision, view: getViewLabel(), bundle: bytes }, '*', [channel.port2]);
+        };
+        const timer = setTimeout(() => {
+          if (generation === viewerGeneration) { cancelViewer(); setStatus('Diagram initialization timed out.'); }
+        }, 15000);
+        cancelViewer = () => { clearTimeout(timer); window.removeEventListener('message', ready); };
+        window.addEventListener('message', ready);
+        iframe.src = viewerUrl.toString();
+      } catch (error) {
+        if (generation === viewerGeneration) { iframe.src = 'about:blank'; setStatus(error.message || 'Diagram unavailable.'); }
       }
-      if (bundleUrl) {
-        viewerUrl.searchParams.set('bundle', bundleUrl);
-      }
-      if (cacheBust) {
-        viewerUrl.searchParams.set('t', Date.now());
-      }
-      return viewerUrl.toString();
-    };
-
-    const setViewerSrc = (bundleUrl, cacheBust = false) => {
-      if (bundleUrl) {
-        currentBundleUrl = bundleUrl;
-      }
-      const viewId = getViewLabel();
-      const bundle = currentBundleUrl || 'likec4-webcomponent.js';
-      iframe.src = buildViewerUrl(bundle, viewId, cacheBust);
     };
 
     const setStatus = (text, accent = false) => {
-      statusEl.innerHTML = accent ? '<strong>' + text + '</strong>' : text;
+      CintaLikeC4.setStatusText(statusEl, text, accent);
     };
 
     const reloadDiagram = () => {
@@ -376,7 +414,7 @@
       if (!viewSelect) return;
       const views = extractViews(content);
       const current = activeView || viewSelect.value;
-      viewSelect.innerHTML = '';
+      viewSelect.replaceChildren();
       views.forEach((view) => {
         const option = document.createElement('option');
         option.value = view;
@@ -391,6 +429,11 @@
     const loadContent = async (editor) => {
       const res = await fetch(`c4${getFileQuery()}`);
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Chargement impossible');
+      if (data.file) updateFileContext(data.file);
+      const writable = data.can_write === true;
+      saveBtn.disabled = !writable;
+      editor.updateOptions({ readOnly: !writable });
       editor.setValue(data.content || '');
       updateViewOptions(data.content || '');
       if (data.bundle_url) {
@@ -418,7 +461,7 @@
         payload.png_path = response.png_path;
       }
       if (window.parent && window.parent !== window) {
-        window.parent.postMessage(payload, '*');
+        window.parent.postMessage(payload, window.location.origin);
       }
     };
 

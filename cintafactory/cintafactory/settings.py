@@ -27,6 +27,9 @@ from .logging.logging_utils import build_logging_dict
 BASE_DIR = Path(__file__).resolve().parent.parent
 PROJECT_DIR = Path(__file__).resolve().parent
 
+# Public branding is independent of persistent Django and deployment identifiers.
+APPLICATION_NAME = "DoDat"
+
 load_dotenv(BASE_DIR / ".env", override=False)
 load_dotenv(BASE_DIR.parent / ".env", override=False)
 
@@ -145,6 +148,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "cintafactory.middleware.HideDisabledApiBrowserPagesMiddleware",
     "cintafactory.middleware.RateLimitMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
@@ -210,6 +214,7 @@ TEMPLATES = [
                 'django.template.context_processors.csrf',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                "cintafactory.context_processors.application_branding",
                 "cintafactory.context_processors.frontend_dev_logger",
                 "material.frontend.context_processors.modules",
                 "workflows.context_processors.workflow_notifications",
@@ -223,17 +228,75 @@ WSGI_APPLICATION = 'cintafactory.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.environ.get("DATABASE_NAME", os.environ.get("POSTGRES_DB", "")),
-        "USER": os.environ.get("DATABASE_USER", os.environ.get("POSTGRES_USER", "")),
-        "PASSWORD": os.environ.get("DATABASE_PASSWORD", os.environ.get("POSTGRES_PASSWORD", "")),
-        "HOST": os.environ.get("DATABASE_HOST", "db"),
-        "PORT": os.environ.get("DATABASE_PORT", "5432"),
-        # "OPTIONS": {"sslmode": "prefer"}, if needed in external prod DB
-    }
+_SUPPORTED_DB_MODES = {"local", "external"}
+_SUPPORTED_DATABASE_SSLMODES = {
+    "disable",
+    "allow",
+    "prefer",
+    "require",
+    "verify-ca",
+    "verify-full",
 }
+
+
+def _env_value(environ, name: str, default: str = "") -> str:
+    value = environ.get(name)
+    if value is None or value == "":
+        return default
+    return value
+
+
+def _build_database_config(environ=None) -> dict[str, object]:
+    """Build Django's PostgreSQL configuration from process environment."""
+    env = os.environ if environ is None else environ
+    db_mode = str(_env_value(env, "DB_MODE", "local")).strip().lower()
+    if db_mode not in _SUPPORTED_DB_MODES:
+        supported = ", ".join(sorted(_SUPPORTED_DB_MODES))
+        raise ImproperlyConfigured(f"DB_MODE must be one of: {supported}.")
+
+    if db_mode == "external":
+        required = {
+            name: str(env.get(name, "")).strip()
+            for name in ("DATABASE_HOST", "DATABASE_NAME", "DATABASE_USER")
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            raise ImproperlyConfigured(
+                "External DB mode requires: " + ", ".join(missing) + "."
+            )
+
+    host = _env_value(env, "DATABASE_HOST", "db")
+    port = _env_value(env, "DATABASE_PORT", "5432")
+    name = _env_value(env, "DATABASE_NAME", _env_value(env, "POSTGRES_DB"))
+    user = _env_value(env, "DATABASE_USER", _env_value(env, "POSTGRES_USER"))
+    password = env.get("DATABASE_PASSWORD")
+    if password is None:
+        password = env.get("POSTGRES_PASSWORD", "")
+
+    if not str(port).isdigit() or not 1 <= int(port) <= 65535:
+        raise ImproperlyConfigured("DATABASE_PORT must be an integer between 1 and 65535.")
+
+    sslmode = _env_value(
+        env,
+        "DATABASE_SSLMODE",
+        "require" if db_mode == "external" else "prefer",
+    ).strip().lower()
+    if sslmode not in _SUPPORTED_DATABASE_SSLMODES:
+        supported = ", ".join(sorted(_SUPPORTED_DATABASE_SSLMODES))
+        raise ImproperlyConfigured(f"DATABASE_SSLMODE must be one of: {supported}.")
+
+    return {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": name,
+        "USER": user,
+        "PASSWORD": password,
+        "HOST": host,
+        "PORT": port,
+        "OPTIONS": {"sslmode": sslmode},
+    }
+
+
+DATABASES = {"default": _build_database_config()}
 
 
 # Password validation
@@ -258,7 +321,7 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/
 
-LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = 'fr-fr'
 
 TIME_ZONE = 'UTC'
 
@@ -319,13 +382,15 @@ CLAMAV_PORT = int(os.getenv("CLAMAV_PORT", "3310"))
 CLAMAV_TIMEOUT = int(os.getenv("CLAMAV_TIMEOUT", "30"))
 CLAMAV_RETRY_COUNT = int(os.getenv("CLAMAV_RETRY_COUNT", "5"))
 CLAMAV_RETRY_DELAY = float(os.getenv("CLAMAV_RETRY_DELAY", "1.0"))
-CLAMAV_SCAN_DIR = os.getenv("CLAMAV_SCAN_DIR", "/clamav_scan")
-
 OAUTH_HTTP_TIMEOUT = int(os.getenv("OAUTH_HTTP_TIMEOUT", "10"))
 OAUTH_ALLOW_EMAIL_LINKING = os.getenv("OAUTH_ALLOW_EMAIL_LINKING", "1").lower() in {"1", "true", "yes", "on"}
 ENDPOINT_RATE_LIMIT_PER_IP_PER_MINUTE = int(os.getenv("ENDPOINT_RATE_LIMIT_PER_IP_PER_MINUTE", "30"))
 MICROSOFT_OAUTH_TENANT_ID = os.getenv("MICROSOFT_OAUTH_TENANT_ID", "common").strip() or "common"
 OKTA_OAUTH_DOMAIN = os.getenv("OKTA_OAUTH_DOMAIN", "").rstrip("/")
+OKTA_OAUTH_TOKEN_AUTH_METHOD = (
+    os.getenv("OKTA_OAUTH_TOKEN_AUTH_METHOD", "client_secret_basic").strip().lower()
+    or "client_secret_basic"
+)
 OAUTH_PROVIDERS = {
     "google": {
         "label": "Google",
@@ -350,6 +415,8 @@ OAUTH_PROVIDERS = {
         "userinfo_url": "https://graph.microsoft.com/oidc/userinfo",
         "scopes": ("openid", "email", "profile"),
         "extra_authorize_params": {},
+        "allow_user_creation": False,
+        "token_endpoint_auth_method": "client_secret_post",
     },
     "amazon": {
         "label": "Amazon",
@@ -360,6 +427,8 @@ OAUTH_PROVIDERS = {
         "userinfo_url": "https://api.amazon.com/user/profile",
         "scopes": ("profile", "profile:user_id"),
         "extra_authorize_params": {},
+        "allow_user_creation": False,
+        "token_endpoint_auth_method": "client_secret_post",
         "userinfo_mapping": {
             "user_id": "user_id",
             "email": "email",
@@ -375,16 +444,8 @@ OAUTH_PROVIDERS = {
         "userinfo_url": f"{OKTA_OAUTH_DOMAIN}/oauth2/default/v1/userinfo" if OKTA_OAUTH_DOMAIN else "",
         "scopes": ("openid", "email", "profile"),
         "extra_authorize_params": {},
-    },
-    "cintamaya": {
-        "label": "Cintamaya",
-        "client_id": os.getenv("CINTAMAYA_OAUTH_CLIENT_ID", ""),
-        "client_secret": os.getenv("CINTAMAYA_OAUTH_CLIENT_SECRET", ""),
-        "authorize_url": "https://auth.CINTAMAYA.com/authorize",
-        "token_url": "https://auth.CINTAMAYA.com/token",
-        "userinfo_url": "https://auth.CINTAMAYA.com/userinfo",
-        "scopes": ("openid", "email", "profile"),
-        "extra_authorize_params": {},
+        "allow_user_creation": False,
+        "token_endpoint_auth_method": OKTA_OAUTH_TOKEN_AUTH_METHOD,
     }
 }
 
@@ -432,15 +493,20 @@ REST_FRAMEWORK = {
         "oauth2_provider.contrib.rest_framework.OAuth2Authentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": (
+        "cintafactory.api.permissions.CanUseAPI",
         "cintafactory.api.permissions.GranularModelPermissions",
     ),
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
 SPECTACULAR_SETTINGS = {
-    "TITLE": "CintaFactory API",
-    "DESCRIPTION": "API documentation for CintaFactory.",
+    "TITLE": f"{APPLICATION_NAME} API",
+    "DESCRIPTION": f"API documentation for {APPLICATION_NAME}.",
     "VERSION": "1.0.0",
+    "SERVE_PERMISSIONS": [
+        "cintafactory.api.permissions.CanUseAPI",
+        "cintafactory.api.permissions.IsSuperuser",
+    ],
     "SERVE_INCLUDE_SCHEMA": False,
 }
 

@@ -8,7 +8,7 @@
 
       {# Bouton reserve aux super administrateurs #}
       {% if request.user.is_superuser %}
-        <a href="crud/add/" class="btn waves-effect waves-light cinta-btn-primary">+ Ajouter un utilisateur</a>
+        <a href="{% url 'users:user_add' %}" class="btn waves-effect waves-light cinta-btn-primary">+ Ajouter un utilisateur</a>
       {% endif %}
     </div>
 

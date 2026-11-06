@@ -42,12 +42,42 @@ def drawio_upload_to(instance, filename):
     return f"diagrams/{instance.id}/diagram.drawio"
 
 
+def valid_drawio_png_path(diagram, storage_path: str) -> bool:
+    prefix = f"diagrams/{diagram.pk}/views/"
+    if (
+        not isinstance(storage_path, str)
+        or not storage_path.startswith(prefix)
+        or not storage_path.lower().endswith(".png")
+    ):
+        return False
+    return all(
+        part and part not in {".", ".."}
+        and not any(character in part for character in ("\\", "\x00", "%", ":"))
+        for part in storage_path.split("/")
+    )
+
+
+def likec4_source_path_for(diagram_id) -> str:
+    return f"diagrams/likec4/{diagram_id}/source.c4"
+
+
+def likec4_views_prefix_for(diagram) -> str:
+    return f"diagrams/likec4/{diagram.pk}/views/{diagram.revision}/"
+
+
 class Diagram(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=200, blank=True, default="")
     png_paths = models.JSONField(default=list, blank=True, null=True)
     updated_at = models.DateTimeField(default=timezone.now)
     created_at = models.DateTimeField(auto_now_add=True)
+    dat = models.ForeignKey(
+        "dat.DAT", on_delete=models.CASCADE, null=True, blank=True,
+        related_name="%(class)s_diagrams",
+    )
+    sections = models.ManyToManyField(
+        "dat.DATSection", blank=True, related_name="%(class)s_diagrams",
+    )
 
     class Meta:
         abstract = True
@@ -127,6 +157,11 @@ class DrawIODiagram(Diagram):
 
 
 class LikeC4Diagram(Diagram):
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="likec4_diagrams",
+    )
+    revision = models.CharField(max_length=64, blank=True, default="")
     storage_path = models.CharField(max_length=500, unique=True)
     content_type = models.CharField(max_length=200, blank=True)
     size = models.PositiveBigIntegerField(default=0)

@@ -6,7 +6,7 @@
   <li><a href="{% url 'dat:search_page' %}"><i class='material-icons'>search</i>Recherches</a></li>
   <li><a href="{% url 'dat:my_applications' %}"><i class='material-icons'>apps</i>Mes Applications</a></li>
   {% if request.user.is_superuser or request.user.is_staff or request.user.role and request.user.role.slug == "admin" %}
-    <li><a href="{% url 'dat:dashboard' %}"><i class='material-icons'>dashboard</i>Gestion des DAT (admin)</a></li>
+    <li><a href="{% url 'dat:dashboard' %}"><i class='material-icons'>dashboard</i>Pilotage des DAT</a></li>
     <li><a href="{% url 'dat:import' %}"><i class='material-icons'>publish</i>Importer un DAT</a></li>
     {% comment %} <li><a href="/dat/manage/dats/"><i class='material-icons'>dehaze</i>Console CRUD</a></li> {% endcomment %}
     <li><a href="/dat/manage/applications/crud/"><i class='material-icons'>apps</i>Applications</a></li>

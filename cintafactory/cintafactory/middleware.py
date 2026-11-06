@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from django.conf import settings
 from django.core.cache import cache
-from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
 from django.http.request import validate_host
 
 from .logging.logging_utils import bind_request_context, clear_request_context
@@ -48,11 +48,20 @@ class AppSecurityHeadersMiddleware:
         img_sources = "'self' data: blob:"
         if public_media_origin:
             img_sources = f"{img_sources} {public_media_origin}"
-        if request.path.startswith("/diagrams/likec4/editor"):
+        if request.path == "/diagrams/likec4/editor/viewer.html":
+            # Fail closed when the trusted viewer response did not supply its
+            # nonce-bearing policy (including error and direct-navigation paths).
             csp_policy = (
-                "default-src 'self' data: blob: http: https:; "
+                "default-src 'none'; sandbox allow-scripts; script-src 'none'; "
+                "style-src 'unsafe-inline'; img-src data: blob:; font-src data:; "
+                "connect-src 'none'; frame-src 'none'; worker-src 'none'; "
+                "object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+            )
+        elif request.path.startswith("/diagrams/likec4/editor"):
+            csp_policy = (
+                "default-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; "
                 "frame-ancestors 'self'; "
-                "img-src 'self' data: blob: http: https:; "
+                "img-src 'self' data: blob:; "
                 "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: "
                 "https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
                 "script-src-elem 'self' 'unsafe-inline' blob: "
@@ -60,9 +69,9 @@ class AppSecurityHeadersMiddleware:
                 "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com "
                 "https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
                 "font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; "
-                "frame-src 'self' data: blob: http: https:; "
+                "frame-src 'self'; "
                 "worker-src 'self' data: blob:; "
-                "connect-src 'self' data: blob: http: https: ws: wss:"
+                "connect-src 'self' https://cdn.jsdelivr.net"
             )
         else:
             csp_policy = (
@@ -200,6 +209,36 @@ class DynamicCsrfTrustedOriginsMiddleware:
             candidate = f"{scheme}://{netloc}"
             origins.add(candidate)
         settings.CSRF_TRUSTED_ORIGINS = sorted(origins)
+
+
+class HideDisabledApiBrowserPagesMiddleware:
+    """Hide REST pages from browser navigation when API access is disabled."""
+
+    def __init__(self, get_response: Callable[[HttpRequest], HttpResponse]) -> None:
+        self.get_response = get_response
+
+    def __call__(self, request: HttpRequest) -> HttpResponse:
+        path = request.path_info
+        is_api_path = path == "/api" or path.startswith("/api/")
+        user = getattr(request, "user", None)
+        has_api_access = bool(
+            getattr(user, "is_authenticated", False)
+            and getattr(user, "can_use_api", False)
+        )
+        if is_api_path and not has_api_access and self._is_browser_request(request):
+            raise Http404
+        return self.get_response(request)
+
+    @staticmethod
+    def _is_browser_request(request: HttpRequest) -> bool:
+        if request.headers.get("Sec-Fetch-Mode", "").lower() == "navigate":
+            return True
+        accept_header = request.headers.get("Accept", "")
+        explicitly_accepts_html = any(
+            media_type.split(";", 1)[0].strip().lower() == "text/html"
+            for media_type in accept_header.split(",")
+        )
+        return explicitly_accepts_html and request.accepts("text/html")
 
 
 class RateLimitMiddleware:

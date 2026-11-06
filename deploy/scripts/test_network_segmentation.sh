@@ -46,7 +46,7 @@ assert_allowed_ports_only() {
 assert_pattern_present() {
   local file="$1"
   local pattern="$2"
-  if ! rg -q "$pattern" "$file"; then
+  if ! grep -Eq -- "$pattern" "$file"; then
     echo "FAIL: pattern '$pattern' not found in $file"
     exit 1
   fi

@@ -30,7 +30,6 @@ services:
 
   likec4:
     environment:
-      LIKEC4_METADATA_TOKEN: "${LIKEC4_METADATA_TOKEN:?Set LIKEC4_METADATA_TOKEN in deploy/env/prod.env}"
       LIKEC4_API_TOKEN: "${LIKEC4_API_TOKEN:?Set LIKEC4_API_TOKEN in deploy/env/prod.env}"
 
   likec4-exporter:

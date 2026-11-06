@@ -1,0 +1,26 @@
+[run]
+source = cintafactory
+branch = True
+relative_files = True
+omit =
+    */migrations/*
+    */tests.py
+    */tests_*.py
+    */tests_ops/*
+    */__init__.py
+    */urls.py
+    */manage.py
+    */wsgi.py
+    */asgi.py
+    */gunicorn.conf.py
+    cintafactory/cintafactory/apps.py
+    cintafactory/dat/apps.py
+    cintafactory/dat_viewflow/apps.py
+    cintafactory/diagrams/apps.py
+    cintafactory/workflows/apps.py
+    # Declarative registrations only; admin modules with behavior stay covered.
+    cintafactory/dat/admin.py
+    cintafactory/dat_viewflow/admin.py
+
+[report]
+skip_empty = True

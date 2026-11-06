@@ -1,0 +1,697 @@
+# SPDX-FileCopyrightText: 2026 Cintamaya <contact@cintamaya.com>
+# SPDX-FileCopyrightText: 2026 Baptiste COQUELET <github.com/BaptisteCoquelet>
+# SPDX-License-Identifier: AGPL-3.0-only
+
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+from unittest import mock
+from urllib.error import HTTPError
+
+from django.conf import settings
+from django.core.cache import cache
+from django.core.exceptions import ImproperlyConfigured
+from django.core.exceptions import RequestDataTooBig
+from django.core.checks import Tags, run_checks
+from django.core import mail
+from django.contrib.staticfiles import finders
+from django.http import HttpResponse
+from django.test import RequestFactory, SimpleTestCase, override_settings
+from PIL import Image
+
+from . import admin_config, context_processors, rate_limit, url_safety
+from .upload import upload_limit
+from .middleware import (
+    AppSecurityHeadersMiddleware,
+    DynamicCsrfTrustedOriginsMiddleware,
+    LoggingContextMiddleware,
+    RateLimitMiddleware,
+    SLOBaselineMiddleware,
+)
+from .notifications.external import ExternalNotificationEvent, dispatch_external_notification
+from .settings import _build_csrf_trusted_origins, _build_database_config
+from .storage.seaweedfs_storage import SeaweedFSStorage
+from .upload.upload_handlers import PerFileSizeLimitUploadHandler
+
+
+# RFC 5737 documentation addresses; safe fixtures, never routed to real hosts.
+TEST_CLIENT_IP = "192.0.2.1"
+OTHER_TEST_CLIENT_IP = "192.0.2.2"
+APP_TEST_CLIENT_IP = "192.0.2.3"
+OTHER_APP_TEST_CLIENT_IP = "192.0.2.4"
+SENSITIVE_ENDPOINT_TEST_CLIENT_IP = "192.0.2.5"
+
+
+class ConfigFileTests(SimpleTestCase):
+    def setUp(self) -> None:
+        upload_limit._config_cache = None
+        upload_limit._config_mtime = None
+        admin_config._config_cache = None
+        admin_config._config_mtime = None
+        rate_limit._config_cache = None
+        rate_limit._config_mtime = None
+
+    def test_load_upload_config_defaults_on_invalid_json(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with override_settings(BASE_DIR=tmp_dir):
+                conf_dir = os.path.join(tmp_dir, "conf")
+                os.makedirs(conf_dir, exist_ok=True)
+                path = os.path.join(conf_dir, "upload.json")
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write("{invalid json")
+                config = upload_limit.load_upload_config()
+        self.assertEqual(config["max_file_size_mb"], upload_limit.DEFAULT_UPLOAD_CONFIG["max_file_size_mb"])
+
+    def test_load_upload_config_coerces_int(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with override_settings(BASE_DIR=tmp_dir):
+                conf_dir = os.path.join(tmp_dir, "conf")
+                os.makedirs(conf_dir, exist_ok=True)
+                path = os.path.join(conf_dir, "upload.json")
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(json.dumps({"max_file_size_mb": "123MB"}))
+                config = upload_limit.load_upload_config()
+        self.assertEqual(config["max_file_size_mb"], 123)
+
+    def test_load_admin_config_sanitizes_cipher_url(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with override_settings(BASE_DIR=tmp_dir):
+                conf_dir = os.path.join(tmp_dir, "conf")
+                os.makedirs(conf_dir, exist_ok=True)
+                path = os.path.join(conf_dir, "admin.json")
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(json.dumps({"cipher_url": " /bad//path/ "}))
+                config = admin_config.load_admin_config()
+        self.assertEqual(config["cipher_url"], "badpath")
+
+    def test_load_rate_limit_supports_alt_keys(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with override_settings(BASE_DIR=tmp_dir):
+                conf_dir = os.path.join(tmp_dir, "conf")
+                os.makedirs(conf_dir, exist_ok=True)
+                path = os.path.join(conf_dir, "limit.json")
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(
+                        json.dumps(
+                            {
+                                "app": {"limit_per_ip_per_minute": "42"},
+                                "api": {"limit_per_ip_per_minute": "84"},
+                                "is_static_excluded": "false",
+                                "is_admin_excluded": "true",
+                            }
+                        )
+                    )
+                config = rate_limit.load_limit_config()
+        self.assertEqual(config["app"]["limit_per_ip_per_minute"], 42)
+        self.assertEqual(config["api"]["limit_per_ip_per_minute"], 84)
+        self.assertFalse(config["is_static_exluded"])
+        self.assertTrue(config["is_admin_exluded"])
+
+    def test_build_csrf_trusted_origins_keeps_http_only_when_enabled(self):
+        origins = _build_csrf_trusted_origins(["example.com"], include_http=True)
+        self.assertEqual(origins, {"http://example.com", "https://example.com"})
+
+    def test_build_csrf_trusted_origins_drops_http_when_disabled(self):
+        origins = _build_csrf_trusted_origins(
+            ["example.com", "http://example.net", "https://example.org"],
+            include_http=False,
+        )
+        self.assertEqual(origins, {"https://example.com", "https://example.org"})
+
+
+class FrontendAssetTests(SimpleTestCase):
+
+    def test_favicon_has_real_ico_content(self):
+        favicon_path = finders.find("imgs/logo.ico")
+
+        self.assertIsNotNone(favicon_path)
+        with Image.open(favicon_path) as favicon:
+            self.assertEqual(favicon.format, "ICO")
+class DatabaseSettingsTests(SimpleTestCase):
+    def test_local_database_config_preserves_postgres_fallbacks(self):
+        config = _build_database_config(
+            {
+                "DB_MODE": "local",
+                "POSTGRES_DB": "local_db",
+                "POSTGRES_USER": "local_user",
+                "POSTGRES_PASSWORD": "local_password",
+            }
+        )
+
+        self.assertEqual(config["HOST"], "db")
+        self.assertEqual(config["PORT"], "5432")
+        self.assertEqual(config["NAME"], "local_db")
+        self.assertEqual(config["USER"], "local_user")
+        self.assertEqual(config["PASSWORD"], "local_password")
+        self.assertEqual(config["OPTIONS"], {"sslmode": "prefer"})
+
+    def test_external_database_config_uses_explicit_settings(self):
+        config = _build_database_config(
+            {
+                "DB_MODE": "external",
+                "DATABASE_HOST": "postgres.example.test",
+                "DATABASE_PORT": "6543",
+                "DATABASE_NAME": "factory",
+                "DATABASE_USER": "factory_app",
+                "DATABASE_PASSWORD": "external_password",
+                "DATABASE_SSLMODE": "verify-full",
+            }
+        )
+
+        self.assertEqual(
+            config,
+            {
+                "ENGINE": "django.db.backends.postgresql",
+                "HOST": "postgres.example.test",
+                "PORT": "6543",
+                "NAME": "factory",
+                "USER": "factory_app",
+                "PASSWORD": "external_password",
+                "OPTIONS": {"sslmode": "verify-full"},
+            },
+        )
+
+    def test_external_database_requires_host_name_and_user(self):
+        with self.assertRaisesMessage(
+            ImproperlyConfigured,
+            "External DB mode requires: DATABASE_HOST, DATABASE_NAME, DATABASE_USER.",
+        ):
+            _build_database_config({"DB_MODE": "external"})
+
+    def test_database_mode_port_and_sslmode_are_validated(self):
+        with self.assertRaisesMessage(ImproperlyConfigured, "DB_MODE must be one of"):
+            _build_database_config({"DB_MODE": "remote"})
+
+        with self.assertRaisesMessage(ImproperlyConfigured, "DATABASE_PORT must be"):
+            _build_database_config({"DATABASE_PORT": "not-a-port"})
+
+        with self.assertRaisesMessage(ImproperlyConfigured, "DATABASE_SSLMODE must be"):
+            _build_database_config({"DATABASE_SSLMODE": "unsafe"})
+
+    def test_favicon_has_real_ico_content(self):
+        favicon_path = finders.find("imgs/logo.ico")
+
+        self.assertIsNotNone(favicon_path)
+        with Image.open(favicon_path) as favicon:
+            self.assertEqual(favicon.format, "ICO")
+
+
+class UrlSafetyTests(SimpleTestCase):
+    def test_is_http_url_accepts_http_https(self):
+        self.assertTrue(url_safety.is_http_url("http://example.com"))
+        self.assertTrue(url_safety.is_http_url("https://example.com/path"))
+
+    def test_is_http_url_rejects_invalid(self):
+        self.assertFalse(url_safety.is_http_url(""))
+        self.assertFalse(url_safety.is_http_url("ftp://example.com"))
+        self.assertFalse(url_safety.is_http_url("/relative/path"))
+
+
+class UploadHandlerTests(SimpleTestCase):
+    @mock.patch("cintafactory.upload.upload_handlers.load_upload_config")
+    def test_rejects_file_larger_than_limit_on_new_file(self, mock_load_config):
+        mock_load_config.return_value = {"max_file_size_mb": 1}
+        handler = PerFileSizeLimitUploadHandler()
+        with self.assertRaises(RequestDataTooBig):
+            handler.new_file(
+                field_name="data_file",
+                file_name="big.bin",
+                content_type="application/octet-stream",
+                content_length=2 * 1024 * 1024,
+            )
+
+    @mock.patch("cintafactory.upload.upload_handlers.load_upload_config")
+    def test_rejects_file_larger_than_limit_on_chunk(self, mock_load_config):
+        mock_load_config.return_value = {"max_file_size_mb": 1}
+        handler = PerFileSizeLimitUploadHandler()
+        handler.new_file(
+            field_name="data_file",
+            file_name="big.bin",
+            content_type="application/octet-stream",
+            content_length=0,
+        )
+        handler.receive_data_chunk(b"x" * (600 * 1024), start=0)
+        with self.assertRaises(RequestDataTooBig):
+            handler.receive_data_chunk(b"x" * (500 * 1024), start=600 * 1024)
+
+
+class SeaweedFSStorageTests(SimpleTestCase):
+    @override_settings(
+        SEAWEEDFS_FILER_URL="https://files.example.com",
+        SEAWEEDFS_PUBLIC_URL="https://cdn.example.com",
+        SEAWEEDFS_BASE_DIR="root",
+        SEAWEEDFS_JWT_READ_KEY="",
+        SEAWEEDFS_TIMEOUT=5,
+    )
+    def test_build_url_uses_base_dir_and_public_url(self):
+        storage = SeaweedFSStorage()
+        self.assertEqual(
+            storage.url("docs/plan.pdf"),
+            "https://cdn.example.com/root/docs/plan.pdf",
+        )
+
+    def test_init_rejects_invalid_url(self):
+        with self.assertRaises(ValueError):
+            SeaweedFSStorage(base_url="ftp://bad.example.com")
+
+    @override_settings(SEAWEEDFS_FILER_URL="https://files.example.com")
+    @mock.patch("cintafactory.storage.seaweedfs_storage.urlopen")
+    def test_exists_returns_false_on_404(self, mock_urlopen):
+        mock_urlopen.side_effect = HTTPError(
+            url="https://files.example.com/missing",
+            code=404,
+            msg="Not Found",
+            hdrs=None,
+            fp=None,
+        )
+        storage = SeaweedFSStorage()
+        self.assertFalse(storage.exists("missing"))
+
+    @override_settings(SEAWEEDFS_FILER_URL="https://files.example.com")
+    @mock.patch("cintafactory.storage.seaweedfs_storage.urlopen")
+    def test_delete_ignores_404(self, mock_urlopen):
+        mock_urlopen.side_effect = HTTPError(
+            url="https://files.example.com/missing",
+            code=404,
+            msg="Not Found",
+            hdrs=None,
+            fp=None,
+        )
+        storage = SeaweedFSStorage()
+        storage.delete("missing")
+
+    @override_settings(SEAWEEDFS_FILER_URL="https://files.example.com")
+    @mock.patch("cintafactory.storage.seaweedfs_storage.urlopen")
+    def test_get_modified_time_requires_header(self, mock_urlopen):
+        class Response:
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        mock_urlopen.return_value = Response()
+        storage = SeaweedFSStorage()
+        with self.assertRaises(NotImplementedError):
+            storage.get_modified_time("file.txt")
+
+    @override_settings(SEAWEEDFS_FILER_URL="https://files.example.com")
+    @mock.patch("cintafactory.storage.seaweedfs_storage.emit_baseline_metric")
+    @mock.patch("cintafactory.storage.seaweedfs_storage.urlopen")
+    def test_save_emits_failure_metric_on_http_error(self, mock_urlopen, emit_metric):
+        mock_urlopen.side_effect = HTTPError(
+            url="https://files.example.com/upload.txt",
+            code=503,
+            msg="Service Unavailable",
+            hdrs=None,
+            fp=None,
+        )
+        storage = SeaweedFSStorage()
+        with self.assertRaises(HTTPError):
+            storage._save("upload.txt", mock.Mock(read=mock.Mock(return_value=b"abc"), content_type="text/plain"))
+        emit_metric.assert_called_once()
+        _, kwargs = emit_metric.call_args
+        self.assertEqual(kwargs["dimensions"]["operation"], "save")
+        self.assertEqual(kwargs["dimensions"]["outcome"], "HTTPError")
+        self.assertFalse(kwargs["success"])
+
+
+class MiddlewareTests(SimpleTestCase):
+    def setUp(self) -> None:
+        self.factory = RequestFactory()
+
+    def test_logging_context_uses_request_id_header(self):
+        def get_response(request):
+            return HttpResponse("ok", status=201)
+
+        middleware = LoggingContextMiddleware(get_response)
+        request = self.factory.get(
+            "/",
+            HTTP_X_REQUEST_ID="req-123",
+            HTTP_X_CORRELATION_ID="corr-456",
+        )
+        with mock.patch("cintafactory.middleware.bind_request_context") as bind_ctx, mock.patch(
+            "cintafactory.middleware.clear_request_context"
+        ) as clear_ctx:
+            response = middleware(request)
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(request.request_id, "req-123")
+        self.assertEqual(response["X-Request-ID"], "req-123")
+        self.assertTrue(bind_ctx.called)
+        clear_ctx.assert_called_once()
+
+    @override_settings(ALLOWED_HOSTS=["example.com"], CSRF_TRUSTED_ORIGINS=[])
+    def test_dynamic_csrf_trusted_origins_updates_allowed_hosts(self):
+        def get_response(request):
+            return HttpResponse("ok")
+
+        middleware = DynamicCsrfTrustedOriginsMiddleware(get_response)
+        request = self.factory.get("/", HTTP_ORIGIN="https://example.com")
+        middleware(request)
+        self.assertIn("https://example.com", set(settings.CSRF_TRUSTED_ORIGINS))
+        self.assertIn("http://example.com", set(settings.CSRF_TRUSTED_ORIGINS))
+
+    @override_settings(ALLOWED_HOSTS=["example.com"], CSRF_TRUSTED_ORIGINS=[], STRICT_HTTP_SECURITY=True)
+    def test_dynamic_csrf_trusted_origins_stays_https_only_when_strict(self):
+        def get_response(request):
+            return HttpResponse("ok")
+
+        middleware = DynamicCsrfTrustedOriginsMiddleware(get_response)
+        middleware(self.factory.get("/", HTTP_ORIGIN="https://example.com"))
+        middleware(self.factory.get("/", HTTP_ORIGIN="http://example.com"))
+        self.assertIn("https://example.com", set(settings.CSRF_TRUSTED_ORIGINS))
+        self.assertNotIn("http://example.com", set(settings.CSRF_TRUSTED_ORIGINS))
+
+    @override_settings(STATIC_URL="/static/")
+    def test_rate_limit_excludes_static(self):
+        def get_response(request):
+            return HttpResponse("ok")
+
+        middleware = RateLimitMiddleware(get_response)
+        request = self.factory.get("/static/app.css")
+        with mock.patch("cintafactory.middleware.load_limit_config") as load_config:
+            load_config.return_value = {"is_static_exluded": True, "is_admin_exluded": True, "api": {}, "app": {}}
+            response = middleware(request)
+        self.assertEqual(response.status_code, 200)
+
+    @override_settings(STATIC_URL="/static/")
+    def test_rate_limit_blocks_api_requests(self):
+        cache.clear()
+
+        def get_response(request):
+            return HttpResponse("ok")
+
+        middleware = RateLimitMiddleware(get_response)
+        request = self.factory.get("/api/items", REMOTE_ADDR=TEST_CLIENT_IP)
+        with mock.patch("cintafactory.middleware.load_limit_config") as load_config:
+            load_config.return_value = {
+                "is_static_exluded": True,
+                "is_admin_exluded": True,
+                "api": {"limit_per_ip_per_minute": 1},
+                "app": {"limit_per_ip_per_minute": 100, "limit_per_user_per_minute": 100},
+            }
+            first = middleware(request)
+            second = middleware(request)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 429)
+
+    @override_settings(STATIC_URL="/static/")
+    def test_rate_limit_allows_api_requests_within_limit(self):
+        cache.clear()
+
+        def get_response(request):
+            return HttpResponse("ok")
+
+        middleware = RateLimitMiddleware(get_response)
+        request = self.factory.get("/api/items", REMOTE_ADDR=OTHER_TEST_CLIENT_IP)
+        with mock.patch("cintafactory.middleware.load_limit_config") as load_config:
+            load_config.return_value = {
+                "is_static_exluded": True,
+                "is_admin_exluded": True,
+                "api": {"limit_per_ip_per_minute": 2},
+                "app": {"limit_per_ip_per_minute": 1, "limit_per_user_per_minute": 1},
+            }
+            first = middleware(request)
+            second = middleware(request)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+
+
+    def test_slo_baseline_middleware_emits_on_success(self):
+        def get_response(request):
+            return HttpResponse("ok", status=204)
+
+        middleware = SLOBaselineMiddleware(get_response)
+        request = self.factory.get("/api/health")
+        with mock.patch("cintafactory.middleware.emit_web_request_baseline") as emit_metric:
+            response = middleware(request)
+        self.assertEqual(response.status_code, 204)
+        emit_metric.assert_called_once()
+        _, kwargs = emit_metric.call_args
+        self.assertEqual(kwargs["status_code"], 204)
+        self.assertTrue(kwargs["success"])
+
+    def test_slo_baseline_middleware_emits_on_exception(self):
+        def get_response(request):
+            raise RuntimeError("boom")
+
+        middleware = SLOBaselineMiddleware(get_response)
+        request = self.factory.get("/diagrams/likec4/editor/")
+        with mock.patch("cintafactory.middleware.emit_web_request_baseline") as emit_metric:
+            with self.assertRaises(RuntimeError):
+                middleware(request)
+        emit_metric.assert_called_once()
+        _, kwargs = emit_metric.call_args
+        self.assertEqual(kwargs["status_code"], 500)
+        self.assertFalse(kwargs["success"])
+        self.assertEqual(kwargs["error_type"], "RuntimeError")
+
+    @override_settings(STATIC_URL="/static/")
+    def test_rate_limit_blocks_app_requests(self):
+        cache.clear()
+
+        def get_response(request):
+            return HttpResponse("ok")
+
+        middleware = RateLimitMiddleware(get_response)
+        request = self.factory.get("/dat/items", REMOTE_ADDR=APP_TEST_CLIENT_IP)
+        with mock.patch("cintafactory.middleware.load_limit_config") as load_config:
+            load_config.return_value = {
+                "is_static_exluded": True,
+                "is_admin_exluded": True,
+                "api": {"limit_per_ip_per_minute": 100},
+                "app": {"limit_per_ip_per_minute": 1, "limit_per_user_per_minute": 100},
+            }
+            first = middleware(request)
+            second = middleware(request)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 429)
+
+    @override_settings(STATIC_URL="/static/")
+    def test_rate_limit_allows_app_requests_within_limit(self):
+        cache.clear()
+
+        def get_response(request):
+            return HttpResponse("ok")
+
+        middleware = RateLimitMiddleware(get_response)
+        request = self.factory.get("/dat/items", REMOTE_ADDR=OTHER_APP_TEST_CLIENT_IP)
+        with mock.patch("cintafactory.middleware.load_limit_config") as load_config:
+            load_config.return_value = {
+                "is_static_exluded": True,
+                "is_admin_exluded": True,
+                "api": {"limit_per_ip_per_minute": 1},
+                "app": {"limit_per_ip_per_minute": 2, "limit_per_user_per_minute": 100},
+            }
+            first = middleware(request)
+            second = middleware(request)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+
+    @override_settings(STATIC_URL="/static/", ENDPOINT_RATE_LIMIT_PER_IP_PER_MINUTE=1)
+    def test_rate_limit_blocks_sensitive_upload_export_endpoints(self):
+        cache.clear()
+
+        def get_response(request):
+            return HttpResponse("ok")
+
+        middleware = RateLimitMiddleware(get_response)
+        request = self.factory.post("/diagrams/likec4/import/", REMOTE_ADDR=SENSITIVE_ENDPOINT_TEST_CLIENT_IP)
+        with mock.patch("cintafactory.middleware.load_limit_config") as load_config:
+            load_config.return_value = {
+                "is_static_exluded": True,
+                "is_admin_exluded": True,
+                "api": {"limit_per_ip_per_minute": 100},
+                "app": {"limit_per_ip_per_minute": 100, "limit_per_user_per_minute": 100},
+            }
+            first = middleware(request)
+            second = middleware(request)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 429)
+
+    @override_settings(
+        DRAWIO_PUBLIC_ORIGIN="https://drawio.example.com",
+        SEAWEEDFS_PUBLIC_URL_PP="http://localhost:8888/media",
+    )
+    def test_app_security_headers_middleware_sets_csp(self):
+        def get_response(request):
+            return HttpResponse("ok")
+
+        middleware = AppSecurityHeadersMiddleware(get_response)
+        request = self.factory.get("/")
+        response = middleware(request)
+        self.assertIn("Content-Security-Policy", response)
+        csp = response["Content-Security-Policy"]
+        self.assertIn("script-src 'self' https://cdnjs.cloudflare.com", csp)
+        self.assertIn(
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com",
+            csp,
+        )
+        self.assertIn("img-src 'self' data: blob: http://localhost:8888", csp)
+        self.assertIn("font-src 'self' https://fonts.gstatic.com", csp)
+        self.assertIn("frame-src 'self' https://drawio.example.com", csp)
+
+
+class SecurityChecksTests(SimpleTestCase):
+    @override_settings(
+        DEBUG=False,
+        SECRET_KEY="insecure-only-for-ci",
+        LIKEC4_METADATA_TOKEN="dev_token_idHaf",
+        LIKEC4_API_TOKEN="dev_likec4_api_token_change_me",
+    )
+    def test_security_checks_fail_on_default_secrets_when_debug_disabled(self):
+        with mock.patch.dict(os.environ, {"DJANGO_ENFORCE_STRICT_SECRETS": "1"}, clear=False):
+            errors = run_checks(tags=[Tags.security])
+        error_ids = {error.id for error in errors}
+        self.assertIn("cintafactory.E001", error_ids)
+        self.assertIn("cintafactory.E002", error_ids)
+        self.assertIn("cintafactory.E003", error_ids)
+
+    @override_settings(
+        DEBUG=False,
+        SECRET_KEY="prod-secret-key-not-default",
+        LIKEC4_METADATA_TOKEN="prod-metadata-token-not-default",
+        LIKEC4_API_TOKEN="prod-api-token-not-default",
+    )
+    def test_security_checks_pass_with_non_default_secrets(self):
+        with mock.patch.dict(os.environ, {"DJANGO_ENFORCE_STRICT_SECRETS": "1"}, clear=False):
+            errors = run_checks(tags=[Tags.security])
+        error_ids = {error.id for error in errors}
+        self.assertNotIn("cintafactory.E001", error_ids)
+        self.assertNotIn("cintafactory.E002", error_ids)
+        self.assertNotIn("cintafactory.E003", error_ids)
+
+    @override_settings(
+        DEBUG=False,
+        ALLOWED_HOSTS=["*"],
+        SESSION_COOKIE_SECURE=False,
+        CSRF_COOKIE_SECURE=False,
+        CSRF_TRUSTED_ORIGINS=["http://example.com"],
+    )
+    def test_http_security_checks_fail_on_weak_policy(self):
+        with mock.patch.dict(os.environ, {"DJANGO_ENFORCE_STRICT_HTTP": "1"}, clear=False):
+            errors = run_checks(tags=[Tags.security])
+        error_ids = {error.id for error in errors}
+        self.assertIn("cintafactory.E004", error_ids)
+        self.assertIn("cintafactory.E005", error_ids)
+        self.assertIn("cintafactory.E006", error_ids)
+        self.assertIn("cintafactory.E007", error_ids)
+
+    @override_settings(
+        DEBUG=False,
+        ALLOWED_HOSTS=["app.example.com"],
+        SESSION_COOKIE_SECURE=True,
+        CSRF_COOKIE_SECURE=True,
+        CSRF_TRUSTED_ORIGINS=["https://app.example.com"],
+    )
+    def test_http_security_checks_pass_on_strict_policy(self):
+        with mock.patch.dict(os.environ, {"DJANGO_ENFORCE_STRICT_HTTP": "1"}, clear=False):
+            errors = run_checks(tags=[Tags.security])
+        error_ids = {error.id for error in errors}
+        self.assertNotIn("cintafactory.E004", error_ids)
+        self.assertNotIn("cintafactory.E005", error_ids)
+        self.assertNotIn("cintafactory.E006", error_ids)
+        self.assertNotIn("cintafactory.E007", error_ids)
+
+
+class FrontendDevLoggerContextProcessorTests(SimpleTestCase):
+    @override_settings(DEBUG=True)
+    def test_enabled_in_debug(self):
+        context = context_processors.frontend_dev_logger(None)
+        self.assertTrue(context["frontend_dev_logger_enabled"])
+
+    @override_settings(DEBUG=False)
+    def test_disabled_outside_debug(self):
+        context = context_processors.frontend_dev_logger(None)
+        self.assertFalse(context["frontend_dev_logger_enabled"])
+
+
+@override_settings(
+    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+    EXTERNAL_NOTIFICATION_BACKENDS=["cintafactory.notifications.email.EmailNotificationBackend"],
+)
+class ExternalEmailNotificationTests(SimpleTestCase):
+    def setUp(self) -> None:
+        mail.outbox.clear()
+
+    def test_dispatch_sends_default_email_to_event_user(self):
+        event = ExternalNotificationEvent(
+            kind="section_status_changed",
+            title="Section validée",
+            message="La section a été validée.",
+            level="success",
+            user_email="owner@example.com",
+            user_display="Owner",
+            dat_reference="DAT-123",
+            dat_title="DAT Test",
+            target_url="https://example.com/dat/123",
+        )
+
+        with mock.patch(
+            "cintafactory.notifications.external.load_external_notifications_config",
+            return_value=[],
+        ):
+            results = dispatch_external_notification(event)
+
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0].sent)
+        self.assertEqual(results[0].backend, "email")
+        self.assertEqual(len(mail.outbox), 1)
+        sent = mail.outbox[0]
+        self.assertEqual(sent.to, ["owner@example.com"])
+        self.assertEqual(sent.subject, "Section validée")
+        self.assertIn("La section a été validée.", sent.body)
+        self.assertIn("DAT: DAT-123 - DAT Test", sent.body)
+        self.assertIn("URL: https://example.com/dat/123", sent.body)
+
+    @override_settings(
+        EXTERNAL_NOTIFICATION_BACKENDS=[
+            {
+                "path": "cintafactory.notifications.email.EmailNotificationBackend",
+                "config": {
+                    "to": ["ops@example.com"],
+                    "use_event_user_email": False,
+                    "subject_template": "cintafactory/notifications/email_subject_custom.txt",
+                    "text_template": "cintafactory/notifications/email_body_custom.txt",
+                },
+            }
+        ]
+    )
+    def test_dispatch_uses_custom_email_templates_from_config(self):
+        event = ExternalNotificationEvent(
+            kind="section_status_changed",
+            title="Section rejetée",
+            user_email="owner@example.com",
+            user_display="Owner User",
+            dat_reference="DAT-999",
+            extra_data={"section_title": "Architecture"},
+        )
+
+        with mock.patch(
+            "cintafactory.notifications.external.load_external_notifications_config",
+            return_value=[
+                {
+                    "path": "cintafactory.notifications.email.EmailNotificationBackend",
+                    "config": {
+                        "to": ["ops@example.com"],
+                        "use_event_user_email": False,
+                        "subject_template": "cintafactory/notifications/email_subject_custom.txt",
+                        "text_template": "cintafactory/notifications/email_body_custom.txt",
+                    },
+                }
+            ],
+        ):
+            results = dispatch_external_notification(event)
+
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0].sent)
+        self.assertEqual(len(mail.outbox), 1)
+        sent = mail.outbox[0]
+        self.assertEqual(sent.to, ["ops@example.com"])
+        self.assertEqual(sent.subject, "Custom DAT-999 - Section rejetée")
+        self.assertIn("Custom body for Owner User.", sent.body)
+        self.assertIn("Section: Architecture", sent.body)

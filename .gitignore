@@ -51,6 +51,8 @@ Thumbs.db
 
 # pytest / coverage
 .coverage
+coverage.xml
+coverage/
 htmlcov/
 .cache/
 pytest_cache/
@@ -72,3 +74,5 @@ tmp/
 .sonarlint/
 .sonarlintshell.sh
 shell.sh
+
+uv.lock

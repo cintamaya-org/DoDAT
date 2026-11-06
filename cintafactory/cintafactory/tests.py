@@ -11,13 +11,16 @@ from unittest import mock
 from urllib.error import HTTPError
 
 from django.conf import settings
+from django.contrib.auth.forms import AuthenticationForm
 from django.core.cache import cache
+from django.core.exceptions import ImproperlyConfigured
 from django.core.exceptions import RequestDataTooBig
 from django.core.checks import Tags, run_checks
 from django.core import mail
 from django.contrib.staticfiles import finders
-from django.http import HttpResponse
+from django.http import Http404, HttpResponse
 from django.test import RequestFactory, SimpleTestCase, override_settings
+from django.urls import reverse
 from PIL import Image
 
 from . import admin_config, context_processors, rate_limit, url_safety
@@ -25,12 +28,13 @@ from .upload import upload_limit
 from .middleware import (
     AppSecurityHeadersMiddleware,
     DynamicCsrfTrustedOriginsMiddleware,
+    HideDisabledApiBrowserPagesMiddleware,
     LoggingContextMiddleware,
     RateLimitMiddleware,
     SLOBaselineMiddleware,
 )
 from .notifications.external import ExternalNotificationEvent, dispatch_external_notification
-from .settings import _build_csrf_trusted_origins
+from .settings import _build_csrf_trusted_origins, _build_database_config
 from .storage.seaweedfs_storage import SeaweedFSStorage
 from .upload.upload_handlers import PerFileSizeLimitUploadHandler
 
@@ -41,6 +45,24 @@ OTHER_TEST_CLIENT_IP = "192.0.2.2"
 APP_TEST_CLIENT_IP = "192.0.2.3"
 OTHER_APP_TEST_CLIENT_IP = "192.0.2.4"
 SENSITIVE_ENDPOINT_TEST_CLIENT_IP = "192.0.2.5"
+
+
+class FrenchNotificationLanguageTests(SimpleTestCase):
+    @override_settings(SESSION_ENGINE="django.contrib.sessions.backends.signed_cookies")
+    def test_english_browser_preference_does_not_override_french(self):
+        response = self.client.get(
+            reverse("login"),
+            HTTP_ACCEPT_LANGUAGE="en-US,en;q=0.9",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '<html lang="fr-fr">')
+
+    def test_django_auth_validation_message_uses_french_catalog(self):
+        message = str(AuthenticationForm.error_messages["invalid_login"])
+
+        self.assertIn("mot de passe", message.lower())
+        self.assertNotIn("please enter", message.lower())
 
 
 class ConfigFileTests(SimpleTestCase):
@@ -121,12 +143,76 @@ class ConfigFileTests(SimpleTestCase):
 
 
 class FrontendAssetTests(SimpleTestCase):
+
     def test_favicon_has_real_ico_content(self):
         favicon_path = finders.find("imgs/logo.ico")
 
         self.assertIsNotNone(favicon_path)
         with Image.open(favicon_path) as favicon:
             self.assertEqual(favicon.format, "ICO")
+
+
+class DatabaseSettingsTests(SimpleTestCase):
+    def test_local_database_config_preserves_postgres_fallbacks(self):
+        config = _build_database_config(
+            {
+                "DB_MODE": "local",
+                "POSTGRES_DB": "local_db",
+                "POSTGRES_USER": "local_user",
+                "POSTGRES_PASSWORD": "local_password",
+            }
+        )
+
+        self.assertEqual(config["HOST"], "db")
+        self.assertEqual(config["PORT"], "5432")
+        self.assertEqual(config["NAME"], "local_db")
+        self.assertEqual(config["USER"], "local_user")
+        self.assertEqual(config["PASSWORD"], "local_password")
+        self.assertEqual(config["OPTIONS"], {"sslmode": "prefer"})
+
+    def test_external_database_config_uses_explicit_settings(self):
+        config = _build_database_config(
+            {
+                "DB_MODE": "external",
+                "DATABASE_HOST": "postgres.example.test",
+                "DATABASE_PORT": "6543",
+                "DATABASE_NAME": "factory",
+                "DATABASE_USER": "factory_app",
+                "DATABASE_PASSWORD": "external_password",
+                "DATABASE_SSLMODE": "verify-full",
+            }
+        )
+
+        self.assertEqual(
+            config,
+            {
+                "ENGINE": "django.db.backends.postgresql",
+                "HOST": "postgres.example.test",
+                "PORT": "6543",
+                "NAME": "factory",
+                "USER": "factory_app",
+                "PASSWORD": "external_password",
+                "OPTIONS": {"sslmode": "verify-full"},
+            },
+        )
+
+    def test_external_database_requires_host_name_and_user(self):
+        with self.assertRaisesMessage(
+            ImproperlyConfigured,
+            "External DB mode requires: DATABASE_HOST, DATABASE_NAME, DATABASE_USER.",
+        ):
+            _build_database_config({"DB_MODE": "external"})
+
+    def test_database_mode_port_and_sslmode_are_validated(self):
+        with self.assertRaisesMessage(ImproperlyConfigured, "DB_MODE must be one of"):
+            _build_database_config({"DB_MODE": "remote"})
+
+        with self.assertRaisesMessage(ImproperlyConfigured, "DATABASE_PORT must be"):
+            _build_database_config({"DATABASE_PORT": "not-a-port"})
+
+        with self.assertRaisesMessage(ImproperlyConfigured, "DATABASE_SSLMODE must be"):
+            _build_database_config({"DATABASE_SSLMODE": "unsafe"})
+
 
 
 class UrlSafetyTests(SimpleTestCase):
@@ -254,6 +340,47 @@ class SeaweedFSStorageTests(SimpleTestCase):
 class MiddlewareTests(SimpleTestCase):
     def setUp(self) -> None:
         self.factory = RequestFactory()
+
+    def test_disabled_api_access_hides_browser_pages_with_404(self):
+        middleware = HideDisabledApiBrowserPagesMiddleware(lambda request: HttpResponse("ok"))
+        for path in ("/api/", "/api/schema/", "/api/docs/", "/api/redoc/", "/api/auth/login/", "/api/dats/"):
+            with self.subTest(path=path):
+                request = self.factory.get(
+                    path,
+                    HTTP_ACCEPT="text/html,application/xhtml+xml",
+                    HTTP_SEC_FETCH_MODE="navigate",
+                )
+                request.user = type("User", (), {"is_authenticated": True, "can_use_api": False})()
+
+                with self.assertRaises(Http404):
+                    middleware(request)
+
+    def test_api_json_clients_keep_api_permission_response(self):
+        middleware = HideDisabledApiBrowserPagesMiddleware(lambda request: HttpResponse("API response"))
+        request = self.factory.get("/api/dats/", HTTP_ACCEPT="application/json")
+        request.user = type("User", (), {"is_authenticated": True, "can_use_api": False})()
+
+        response = middleware(request)
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_disabled_api_access_does_not_hide_account_ui(self):
+        middleware = HideDisabledApiBrowserPagesMiddleware(lambda request: HttpResponse("account UI"))
+        request = self.factory.get("/account/profile/", HTTP_ACCEPT="text/html")
+        request.user = type("User", (), {"is_authenticated": True, "can_use_api": False})()
+
+        response = middleware(request)
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_api_enabled_user_can_open_browser_pages(self):
+        middleware = HideDisabledApiBrowserPagesMiddleware(lambda request: HttpResponse("ok"))
+        request = self.factory.get("/api/dats/", HTTP_ACCEPT="text/html", HTTP_SEC_FETCH_MODE="navigate")
+        request.user = type("User", (), {"is_authenticated": True, "can_use_api": True})()
+
+        response = middleware(request)
+
+        self.assertEqual(response.status_code, 200)
 
     def test_logging_context_uses_request_id_header(self):
         def get_response(request):

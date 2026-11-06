@@ -11,6 +11,13 @@ from django.db import transaction
 from django.db.models import F
 
 from .config.section_blueprints import SECTION_BLUEPRINTS
+from .resources import (
+    LEGACY_RESOURCE_TYPES,
+    RESOURCE_ENTRY_KEY,
+    RESOURCE_SECTION_SLUG,
+    RESOURCE_SUB_SECTION_SLUG,
+    group_resource_rows,
+)
 
 PLACEHOLDER_SUBSECTION_COUNT = 3
 SECTION_STATUS_ENTRY_KEY = "suivi_sections"
@@ -370,6 +377,21 @@ def ensure_default_sections(dat, *, apps=None) -> None:
                         if entry_updates:
                             entry.save(update_fields=entry_updates + ["updated_at"])
                         _initialise_validation_statuses(entry, section)
+
+                    if (
+                        section_definition["slug"] == RESOURCE_SECTION_SLUG
+                        and part_definition["slug"] == RESOURCE_SUB_SECTION_SLUG
+                        and entry.key == RESOURCE_ENTRY_KEY
+                        and any(key in existing_entries for key in LEGACY_RESOURCE_TYPES)
+                    ):
+                        values = {
+                            key: existing_entries[key].value
+                            for key in LEGACY_RESOURCE_TYPES if key in existing_entries
+                        }
+                        values[RESOURCE_ENTRY_KEY] = entry.value
+                        rows = group_resource_rows(values)
+                        if rows != entry.value:
+                            entry.update_value(rows)
 
                 # Remove entries no longer defined
                 removable_entries = [

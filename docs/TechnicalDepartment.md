@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Cintamaya <contact@cintamaya.com>
+SPDX-FileCopyrightText: 2026 Baptiste COQUELET <github.com/BaptisteCoquelet>
+SPDX-License-Identifier: CC-BY-ND-4.0
+-->
+
 # Directions techniques et organisation des utilisateurs
 
 **Public visé :** administrateurs fonctionnels, responsables d'équipe et développeurs.  
@@ -7,7 +13,7 @@
 
 ## Vue d'ensemble
 
-CintaFactory sépare deux axes :
+DoDat sépare deux axes :
 
 - **direction technique** : rattachement des rôles et groupes qui réalisent ou valident le travail technique ;
 - **direction métier** : rattachement fonctionnel de l'application et du DAT.

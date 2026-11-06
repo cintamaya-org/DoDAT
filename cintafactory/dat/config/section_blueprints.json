@@ -1015,7 +1015,7 @@
       {
         "slug": "derogations-pssi",
         "title": "Dérogation(s) à la PSSI",
-        "tooltip":"Détail et justification des dérogations à la PSSI nécessaires",
+        "tooltip": "Détail et justification des dérogations à la PSSI nécessaires",
         "entries": [
           {
             "key": "derogations_pssi",
@@ -1071,7 +1071,7 @@
       {
         "slug": "risques",
         "title": "Risques",
-        "tooltip":"Détail des risques identifiés, des mesures de traitement en place ou à prévoir, et des risques résiduels",
+        "tooltip": "Détail des risques identifiés, des mesures de traitement en place ou à prévoir, et des risques résiduels",
         "entries": [
           {
             "key": "analyse_risques",
@@ -1111,7 +1111,7 @@
                 {
                   "key": "descriptif",
                   "label": "Descriptif",
-                  "type": "textarea", 
+                  "type": "textarea",
                   "rows": 2
                 }
               ]
@@ -1220,7 +1220,7 @@
       {
         "slug": "plan-traitement-risques",
         "title": "Plan de Traitement des Risques",
-        "tooltip":"Détail du plan de traitement à mettre en place",
+        "tooltip": "Détail du plan de traitement à mettre en place",
         "entries": [
           {
             "key": "plan_traitement_risques",
@@ -1334,371 +1334,30 @@
         "title": "Ressources de la solution",
         "entries": [
           {
-            "key": "ressources_existantes",
-            "label": "Ressources sans modification",
+            "key": "ressources",
+            "label": "Ressources",
             "type": "repeater",
             "config": {
               "columns": [
                 {
-                  "key": "id",
-                  "label": "ID",
-                  "type": "text"
-                },
-                {
-                  "key": "environnement",
-                  "label": "Environnement (test, préprod…)",
+                  "key": "type_ressource",
+                  "label": "Type de ressource",
                   "type": "select",
                   "choices": [
                     {
-                      "value": "production",
-                      "label": "Production"
+                      "value": "sans_modification",
+                      "label": "Sans modification"
                     },
                     {
-                      "value": "preproduction",
-                      "label": "Préproduction"
+                      "value": "a_ajouter",
+                      "label": "À ajouter"
                     },
                     {
-                      "value": "recette",
-                      "label": "Recette"
-                    },
-                    {
-                      "value": "integration",
-                      "label": "Intégration"
-                    },
-                    {
-                      "value": "developpement",
-                      "label": "Développement"
-                    },
-                    {
-                      "value": "autre",
-                      "label": "Autre"
+                      "value": "a_supprimer",
+                      "label": "À supprimer"
                     }
                   ]
                 },
-                {
-                  "key": "clouder",
-                  "label": "Clouder",
-                  "type": "select",
-                  "choices": [
-                    {
-                      "value": "on_prem",
-                      "label": "On-prem"
-                    },
-                    {
-                      "value": "cloud",
-                      "label": "Cloud"
-                    }
-                  ]
-                },
-                {
-                  "key": "type_service",
-                  "label": "Type de Service",
-                  "type": "select",
-                  "choices": [
-                    {
-                      "value": "iaas",
-                      "label": "IaaS"
-                    },
-                    {
-                      "value": "paas",
-                      "label": "PaaS"
-                    },
-                    {
-                      "value": "saas",
-                      "label": "SaaS"
-                    },
-                    {
-                      "value": "caas",
-                      "label": "CaaS"
-                    },
-                    {
-                      "value": "faas",
-                      "label": "FaaS"
-                    },
-                    {
-                      "value": "autre",
-                      "label": "Autre"
-                    }
-                  ]
-                },
-                {
-                  "key": "type_gabarit",
-                  "label": "Type de gabarit",
-                  "type": "text"
-                },
-                {
-                  "key": "type_serveur",
-                  "label": "Type de serveur",
-                  "type": "select",
-                  "choices": [
-                    {
-                      "value": "virtuel",
-                      "label": "Virtuel"
-                    },
-                    {
-                      "value": "physique",
-                      "label": "Physique"
-                    }
-                  ]
-                },
-                {
-                  "key": "nb_instances",
-                  "label": "Nombre d’instances",
-                  "type": "text",
-                  "placeholder": "Ex: 3"
-                },
-                {
-                  "key": "anti_affinite",
-                  "label": "Anti-Affinité",
-                  "type": "select",
-                  "choices": [
-                    {
-                      "value": "oui",
-                      "label": "Oui"
-                    },
-                    {
-                      "value": "non",
-                      "label": "Non"
-                    }
-                  ]
-                },
-                {
-                  "key": "compute",
-                  "label": "Compute",
-                  "type": "text",
-                  "placeholder": "Ex: 4 vCPU"
-                },
-                {
-                  "key": "compute_garanti",
-                  "label": "Compute Garanti",
-                  "type": "select",
-                  "choices": [
-                    {
-                      "value": "oui",
-                      "label": "Oui"
-                    },
-                    {
-                      "value": "non",
-                      "label": "Non"
-                    }
-                  ]
-                },
-                {
-                  "key": "quantite_memoire_go",
-                  "label": "Quantité Mémoire (Go)",
-                  "type": "text",
-                  "placeholder": "Ex: 16"
-                },
-                {
-                  "key": "quantite_stockage_go",
-                  "label": "Quantité Stockage (Go)",
-                  "type": "text",
-                  "placeholder": "Ex: 200"
-                },
-                {
-                  "key": "haute_disponibilite",
-                  "label": "Haute disponibilité",
-                  "type": "select",
-                  "choices": [
-                    {
-                      "value": "oui",
-                      "label": "Oui"
-                    },
-                    {
-                      "value": "non",
-                      "label": "Non"
-                    }
-                  ]
-                }
-              ]
-            }
-          },
-          {
-            "key": "ressources_a_ajouter",
-            "label": "Ressources à ajouter",
-            "type": "repeater",
-            "config": {
-              "columns": [
-                {
-                  "key": "id",
-                  "label": "ID",
-                  "type": "text"
-                },
-                {
-                  "key": "environnement",
-                  "label": "Environnement (test, préprod…)",
-                  "type": "select",
-                  "choices": [
-                    {
-                      "value": "production",
-                      "label": "Production"
-                    },
-                    {
-                      "value": "preproduction",
-                      "label": "Préproduction"
-                    },
-                    {
-                      "value": "recette",
-                      "label": "Recette"
-                    },
-                    {
-                      "value": "integration",
-                      "label": "Intégration"
-                    },
-                    {
-                      "value": "developpement",
-                      "label": "Développement"
-                    },
-                    {
-                      "value": "autre",
-                      "label": "Autre"
-                    }
-                  ]
-                },
-                {
-                  "key": "clouder",
-                  "label": "Clouder",
-                  "type": "select",
-                  "choices": [
-                    {
-                      "value": "on_prem",
-                      "label": "On-prem"
-                    },
-                    {
-                      "value": "cloud",
-                      "label": "Cloud"
-                    }
-                  ]
-                },
-                {
-                  "key": "type_service",
-                  "label": "Type de Service",
-                  "type": "select",
-                  "choices": [
-                    {
-                      "value": "iaas",
-                      "label": "IaaS"
-                    },
-                    {
-                      "value": "paas",
-                      "label": "PaaS"
-                    },
-                    {
-                      "value": "saas",
-                      "label": "SaaS"
-                    },
-                    {
-                      "value": "caas",
-                      "label": "CaaS"
-                    },
-                    {
-                      "value": "faas",
-                      "label": "FaaS"
-                    },
-                    {
-                      "value": "autre",
-                      "label": "Autre"
-                    }
-                  ]
-                },
-                {
-                  "key": "type_gabarit",
-                  "label": "Type de gabarit",
-                  "type": "text"
-                },
-                {
-                  "key": "type_serveur",
-                  "label": "Type de serveur",
-                  "type": "select",
-                  "choices": [
-                    {
-                      "value": "virtuel",
-                      "label": "Virtuel"
-                    },
-                    {
-                      "value": "physique",
-                      "label": "Physique"
-                    }
-                  ]
-                },
-                {
-                  "key": "nb_instances",
-                  "label": "Nombre d’instances",
-                  "type": "text",
-                  "placeholder": "Ex: 3"
-                },
-                {
-                  "key": "anti_affinite",
-                  "label": "Anti-Affinité",
-                  "type": "select",
-                  "choices": [
-                    {
-                      "value": "oui",
-                      "label": "Oui"
-                    },
-                    {
-                      "value": "non",
-                      "label": "Non"
-                    }
-                  ]
-                },
-                {
-                  "key": "compute",
-                  "label": "Compute",
-                  "type": "text",
-                  "placeholder": "Ex: 4 vCPU"
-                },
-                {
-                  "key": "compute_garanti",
-                  "label": "Compute Garanti",
-                  "type": "select",
-                  "choices": [
-                    {
-                      "value": "oui",
-                      "label": "Oui"
-                    },
-                    {
-                      "value": "non",
-                      "label": "Non"
-                    }
-                  ]
-                },
-                {
-                  "key": "quantite_memoire_go",
-                  "label": "Quantité Mémoire (Go)",
-                  "type": "text",
-                  "placeholder": "Ex: 16"
-                },
-                {
-                  "key": "quantite_stockage_go",
-                  "label": "Quantité Stockage (Go)",
-                  "type": "text",
-                  "placeholder": "Ex: 200"
-                },
-                {
-                  "key": "haute_disponibilite",
-                  "label": "Haute disponibilité",
-                  "type": "select",
-                  "choices": [
-                    {
-                      "value": "oui",
-                      "label": "Oui"
-                    },
-                    {
-                      "value": "non",
-                      "label": "Non"
-                    }
-                  ]
-                }
-              ]
-            }
-          },
-          {
-            "key": "ressources_a_supprimer",
-            "label": "Ressources à supprimer",
-            "type": "repeater",
-            "config": {
-              "columns": [
                 {
                   "key": "id",
                   "label": "ID",

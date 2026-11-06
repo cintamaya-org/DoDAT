@@ -80,7 +80,7 @@
   "tags": ["plan6", "overview", "uptime", "success-rate"],
   "templating": {"list": []},
   "time": {"from": "now-6h", "to": "now"},
-  "title": "Cinta Service Overview",
+  "title": "DoDat Service Overview",
   "uid": "cinta-service-overview",
   "version": 1
 }

@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from django.core.exceptions import PermissionDenied
 from django.db.models import Count, Q
 from django.http import JsonResponse
+from django.urls import reverse_lazy
 from django.views.decorators.http import require_safe
 
 from cintafactory.pagination import (
@@ -20,6 +21,7 @@ from cintafactory.pagination import (
     PaginatedMaterialListMixin,
     PaginatedModelViewSetMixin,
 )
+from cintafactory.french_messages import FrenchCreateMessageMixin, FrenchUpdateMessageMixin
 from cintafactory.select_options import MAX_REMOTE_SELECT_RESULTS, normalize_remote_select_query
 
 from .forms import BusinessDirectionForm, BusinessGroupForm, RoleForm, TechnicalDirectionForm, UserForm
@@ -65,7 +67,7 @@ class ModuleContextMixin:
         return context
 
 
-class ModuleAwareCreateView(ModuleContextMixin, CreateModelView):
+class ModuleAwareCreateView(FrenchCreateMessageMixin, ModuleContextMixin, CreateModelView):
     pass
 
 
@@ -73,12 +75,38 @@ class ModuleAwareListView(ModuleContextMixin, PaginatedMaterialListMixin, ListMo
     pass
 
 
-class ModuleAwareUpdateView(ModuleContextMixin, UpdateModelView):
+class ModuleAwareUpdateView(FrenchUpdateMessageMixin, ModuleContextMixin, UpdateModelView):
     pass
 
 
 class ModuleAwareDetailView(ModuleContextMixin, DetailModelView):
     pass
+
+
+class UserCrudListView(ModuleAwareListView):
+    """Add active-status filtering to the user CRUD list."""
+
+    template_name = "users/user_crud_list.html"
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        status = self.request.GET.get("status")
+        if status == "active":
+            return queryset.filter(is_active=True)
+        if status == "inactive":
+            return queryset.filter(is_active=False)
+        return queryset
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        status = self.request.GET.get("status", "all")
+        context["user_status_filter"] = (
+            status if status in {"active", "inactive"} else "all"
+        )
+        query_params = self.request.GET.copy()
+        query_params.pop("page", None)
+        context["base_querystring"] = query_params.urlencode()
+        return context
 
 
 class UserGraphContextMixin:
@@ -146,6 +174,14 @@ class RoleViewSet(BaseSecuredViewSet):
     layout = Layout(Row("name", "slug"), Row("technical_direction", "is_admin_role"))
 
 
+class DirectionCreateView(ModuleAwareCreateView):
+    template_name = "users/direction_create.html"
+
+
+class TechnicalDirectionCreateView(DirectionCreateView):
+    success_url = reverse_lazy("users:technical_direction_list")
+
+
 class TechnicalDirectionViewSet(BaseSecuredViewSet):
     model = TechnicalDirection
     queryset = TechnicalDirection.objects.all()
@@ -154,10 +190,14 @@ class TechnicalDirectionViewSet(BaseSecuredViewSet):
     ordering = ("name",)
     search_fields = ("name", "slug")
     form_class = TechnicalDirectionForm
-    create_view_class = ModuleAwareCreateView
+    create_view_class = TechnicalDirectionCreateView
     update_view_class = ModuleAwareUpdateView
     detail_view_class = ModuleAwareDetailView
     layout = Layout(Row("name", "slug"))
+
+
+class BusinessDirectionCreateView(DirectionCreateView):
+    success_url = reverse_lazy("users:business_direction_list")
 
 
 class BusinessDirectionViewSet(BaseSecuredViewSet):
@@ -168,7 +208,7 @@ class BusinessDirectionViewSet(BaseSecuredViewSet):
     ordering = ("name",)
     search_fields = ("name", "slug")
     form_class = BusinessDirectionForm
-    create_view_class = ModuleAwareCreateView
+    create_view_class = BusinessDirectionCreateView
     update_view_class = ModuleAwareUpdateView
     detail_view_class = ModuleAwareDetailView
     layout = Layout(Row("name", "slug"))
@@ -200,6 +240,7 @@ class BusinessGroupViewSet(BaseSecuredViewSet):
 
 
 class UserViewSet(BaseSecuredViewSet):
+    list_view_class = UserCrudListView
     model = User
     queryset = User.objects.select_related(
         "business_group",
@@ -234,7 +275,7 @@ class UserViewSet(BaseSecuredViewSet):
         Fieldset("Profil", Row("first_name", "last_name"), Row("profile_picture")),
         Fieldset("Organisation", Row("business_group", "role")),
         Fieldset("Securite", Row("password1", "password2")),
-        Fieldset("Roles et droits", Row("is_active", "is_staff", "is_superuser")),
+        Fieldset("Roles et droits", Row("is_active", "is_staff", "is_superuser"), Row("can_use_api")),
     )
 
     def role_direction(self, obj):

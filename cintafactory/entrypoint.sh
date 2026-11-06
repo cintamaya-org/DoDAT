@@ -17,14 +17,8 @@ GUNICORN_CONF="${APP_DIR}/gunicorn.conf.py"
 # Assure un import Django correct (cintafactory.*) via CWD
 cd "$APP_DIR"
 
-# Attente Postgres si HOST/PORT fournis
-if [ -n "${DATABASE_HOST:-}" ] && [ -n "${DATABASE_PORT:-}" ]; then
-  echo "Attente de Postgres ${DATABASE_HOST}:${DATABASE_PORT} ..."
-  for i in {1..120}; do
-    nc -z "${DATABASE_HOST}" "${DATABASE_PORT}" && echo "Postgres OK" && break
-    sleep 1
-  done
-fi
+# Wait for an authenticated PostgreSQL connection without logging credentials.
+python "$MANAGE_PY" wait_for_database --timeout "${DATABASE_WAIT_TIMEOUT:-120}"
 
 # Migrations / static (désactivables via variables)
 if [ "${RUN_MIGRATIONS:-1}" = "1" ]; then

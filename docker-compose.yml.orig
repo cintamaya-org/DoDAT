@@ -1,0 +1,219 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: cintafactory/dockerfile
+    container_name: ${APP_NAME}_web
+    restart: unless-stopped
+    environment:
+      DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE}
+      APP_MODULE: ${APP_MODULE}
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-0}
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in .env}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      PORT: ${APP_PORT:-8000}
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-1}
+      COLLECT_STATIC: ${COLLECT_STATIC:-1}
+      # DB
+      DATABASE_HOST: ${DATABASE_HOST:-db}
+      DATABASE_PORT: ${DATABASE_PORT:-5432}
+      DATABASE_NAME: ${POSTGRES_DB}
+      DATABASE_USER: ${POSTGRES_USER}
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@${DATABASE_HOST:-db}:${DATABASE_PORT:-5432}/${POSTGRES_DB}
+      # SeaweedFS / uploads
+      SEAWEEDFS_FILER_URL: ${SEAWEEDFS_FILER_URL:-http://seaweedfs:8888}
+      SEAWEEDFS_PUBLIC_URL: ${SEAWEEDFS_PUBLIC_URL:-http://seaweedfs:8888}
+      SEAWEEDFS_BASE_DIR: ${SEAWEEDFS_BASE_DIR:-media}
+      SEAWEEDFS_TIMEOUT: ${SEAWEEDFS_TIMEOUT:-30}
+      SEAWEEDFS_JWT_WRITE_KEY: ${SEAWEEDFS_JWT_WRITE_KEY:?Set SEAWEEDFS_JWT_WRITE_KEY in .env}
+      SEAWEEDFS_JWT_READ_KEY: ${SEAWEEDFS_JWT_READ_KEY:?Set SEAWEEDFS_JWT_READ_KEY in .env}
+      LIKEC4_EXPORT_URL: ${LIKEC4_EXPORT_URL:-http://likec4-exporter:9000/export}
+      LIKEC4_EXPORT_DELETE_OLD: ${LIKEC4_EXPORT_DELETE_OLD:-1}
+      LIKEC4_EXPORT_ENABLED: ${LIKEC4_EXPORT_ENABLED:-1}
+      # ClamAV
+      CLAMAV_HOST: ${CLAMAV_HOST:-clamav}
+      CLAMAV_PORT: ${CLAMAV_PORT:-3310}
+      CLAMAV_TIMEOUT: ${CLAMAV_TIMEOUT:-30}
+      # DRAWIO
+      DRAWIO_BASE_URL: ${DRAWIO_BASE_URL:-http://drawio:8080}
+      DRAWIO_PUBLIC_URL: ${DRAWIO_PUBLIC_URL:-http://drawio:8080}
+      DRAWIO_LIBS: ${DRAWIO_LIBS:-general}
+      DRAWIO_CLIBS: ${DRAWIO_CLIBS:-}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      LIKEC4_METADATA_TOKEN: ${LIKEC4_METADATA_TOKEN:?Set LIKEC4_METADATA_TOKEN in .env}
+      LIKEC4_API_TOKEN: ${LIKEC4_API_TOKEN:?Set LIKEC4_API_TOKEN in .env}
+    depends_on:
+      db:
+        condition: service_healthy
+      clamav:
+        condition: service_started
+      seaweedfs:
+        condition: service_started
+    ports:
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${HOST_PORT}:${APP_PORT:-8000}"
+    networks:
+      - swag-network
+      - app-internal
+    command: ["/entrypoint.sh"]
+
+  db:
+    image: postgres:16
+    container_name: ${APP_NAME}_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h 127.0.0.1 -p 5432"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    networks:
+      - app-internal
+
+  drawio:
+    image: jgraph/drawio
+    container_name: ${APP_NAME}_drawio
+    restart: unless-stopped
+    environment:
+      EXPORT_URL: http://drawio-export:8000/export
+    expose:
+      - "8080"
+    depends_on:
+      - drawio-export
+    networks:
+      - app-internal
+
+  drawio-export:
+    image: jgraph/export-server
+    container_name: ${APP_NAME}_drawio_export
+    restart: unless-stopped
+    expose:
+      - "8000"
+    networks:
+      - app-internal
+
+  likec4:
+    image: likec4-cli
+    container_name: ${APP_NAME}_likec4
+    restart: unless-stopped
+    build:
+      context: ./likec4
+      dockerfile: Dockerfile
+      args:
+        GRAPHVIZ_VERSION: ${LIKEC4_GRAPHVIZ_VERSION:-}
+        PLAYWRIGHT_VER: ${LIKEC4_PLAYWRIGHT_VER:-}
+        LIKEC4_VER: ${LIKEC4_VER:-}
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["node server.js & mkdir -p ${LIKEC4_PREVIEW_DIR:-/tmp/likec4-previews} && touch ${LIKEC4_PREVIEW_DIR:-/tmp/likec4-previews}/bootstrap.c4 && /usr/local/bin/likec4 dev ${LIKEC4_PREVIEW_DIR:-/tmp/likec4-previews} --host 0.0.0.0"]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      LIKEC4_C4_FILE: ${LIKEC4_C4_FILE:-likec4/default.c4}
+      LIKEC4_EDITOR_PORT: ${LIKEC4_EDITOR_PORT:-4173}
+      LIKEC4_PREVIEW_DIR: ${LIKEC4_PREVIEW_DIR:-/tmp/likec4-previews}
+      SEAWEEDFS_FILER_URL: ${SEAWEEDFS_FILER_URL:-http://seaweedfs:8888}
+      SEAWEEDFS_BASE_DIR: ${SEAWEEDFS_BASE_DIR:-media}
+      SEAWEEDFS_JWT_WRITE_KEY: ${SEAWEEDFS_JWT_WRITE_KEY:?Set SEAWEEDFS_JWT_WRITE_KEY in .env}
+      SEAWEEDFS_JWT_READ_KEY: ${SEAWEEDFS_JWT_READ_KEY:?Set SEAWEEDFS_JWT_READ_KEY in .env}
+      LIKEC4_METADATA_URL: http://web:${APP_PORT:-8000}/diagrams/likec4/metadata/
+      LIKEC4_METADATA_TOKEN: ${LIKEC4_METADATA_TOKEN:?Set LIKEC4_METADATA_TOKEN in .env}
+      LIKEC4_API_TOKEN: ${LIKEC4_API_TOKEN:?Set LIKEC4_API_TOKEN in .env}
+    volumes:
+      - ./likec4:/data
+    networks:
+      - app-internal
+
+  likec4-exporter:
+    image: likec4-cli
+    container_name: ${APP_NAME}_likec4_exporter
+    restart: unless-stopped
+    build:
+      context: ./likec4
+      dockerfile: Dockerfile
+      args:
+        GRAPHVIZ_VERSION: ${LIKEC4_GRAPHVIZ_VERSION:-}
+        PLAYWRIGHT_VER: ${LIKEC4_PLAYWRIGHT_VER:-}
+        LIKEC4_VER: ${LIKEC4_VER:-}
+    command: ["node", "/opt/likec4-worker/exporter.js"]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      LIKEC4_EXPORT_PORT: ${LIKEC4_EXPORT_PORT:-9000}
+      LIKEC4_EXPORT_FORMAT: ${LIKEC4_EXPORT_FORMAT:-png}
+      LIKEC4_EXPORT_VIEW: ${LIKEC4_EXPORT_VIEW:-}
+      LIKEC4_EXPORT_MAX_RETRIES: ${LIKEC4_EXPORT_MAX_RETRIES:-3}
+      LIKEC4_EXPORT_DELETE_OLD: ${LIKEC4_EXPORT_DELETE_OLD:-1}
+      LIKEC4_EXPORT_LOCAL_DIR: ${LIKEC4_EXPORT_LOCAL_DIR:-/var/likec4-exports}
+      SEAWEEDFS_FILER_URL: ${SEAWEEDFS_FILER_URL:-http://seaweedfs:8888}
+      SEAWEEDFS_BASE_DIR: ${SEAWEEDFS_BASE_DIR:-media}
+      SEAWEEDFS_JWT_WRITE_KEY: ${SEAWEEDFS_JWT_WRITE_KEY:?Set SEAWEEDFS_JWT_WRITE_KEY in .env}
+      SEAWEEDFS_JWT_READ_KEY: ${SEAWEEDFS_JWT_READ_KEY:?Set SEAWEEDFS_JWT_READ_KEY in .env}
+      LIKEC4_METADATA_URL: http://web:${APP_PORT:-8000}/diagrams/likec4/metadata/
+      LIKEC4_METADATA_TOKEN: ${LIKEC4_METADATA_TOKEN:?Set LIKEC4_METADATA_TOKEN in .env}
+      LIKEC4_API_TOKEN: ${LIKEC4_API_TOKEN:?Set LIKEC4_API_TOKEN in .env}
+    volumes:
+      - likec4_exports_data:/var/likec4-exports
+    depends_on:
+      - seaweedfs
+      - web
+    networks:
+      - app-internal
+
+  clamav:
+    image: clamav/clamav:latest
+    container_name: ${APP_NAME}_clamav
+    restart: unless-stopped
+    expose:
+      - "3310"
+    networks:
+      - app-internal
+      - service-egress
+
+  seaweedfs:
+    image: chrislusf/seaweedfs:latest
+    container_name: ${APP_NAME}_seaweedfs
+    restart: unless-stopped
+    command: "server -dir=/data -master -volume -filer"
+    environment:
+      WEED_JWT_FILER_SIGNING_KEY: ${SEAWEEDFS_JWT_WRITE_KEY:?Set SEAWEEDFS_JWT_WRITE_KEY in .env}
+      WEED_JWT_FILER_SIGNING_EXPIRES_AFTER_SECONDS: ${SEAWEEDFS_JWT_TTL_SECONDS:-60}
+      WEED_JWT_FILER_SIGNING_READ_KEY: ${SEAWEEDFS_JWT_READ_KEY:?Set SEAWEEDFS_JWT_READ_KEY in .env}
+      WEED_JWT_FILER_SIGNING_READ_EXPIRES_AFTER_SECONDS: ${SEAWEEDFS_JWT_TTL_SECONDS:-60}
+      WEED_JWT_SIGNING_KEY: ${SEAWEEDFS_VOLUME_JWT_WRITE_KEY:?Set SEAWEEDFS_VOLUME_JWT_WRITE_KEY in .env}
+      WEED_JWT_SIGNING_EXPIRES_AFTER_SECONDS: ${SEAWEEDFS_JWT_TTL_SECONDS:-60}
+      WEED_JWT_SIGNING_READ_KEY: ${SEAWEEDFS_VOLUME_JWT_READ_KEY:?Set SEAWEEDFS_VOLUME_JWT_READ_KEY in .env}
+      WEED_JWT_SIGNING_READ_EXPIRES_AFTER_SECONDS: ${SEAWEEDFS_JWT_TTL_SECONDS:-60}
+      WEED_CORS_ALLOWED_ORIGINS_VALUES: ${SEAWEEDFS_ALLOWED_ORIGINS:-}
+      WEED_FILER_EXPOSE_DIRECTORY_METADATA_ENABLED: "false"
+    expose:
+      - "9333"
+      - "8888"
+      - "8080"
+    volumes:
+      - seaweedfs_data:/data
+    networks:
+      - app-internal
+
+volumes:
+  pgdata:
+    name: "${APP_NAME}_pgdata"
+  seaweedfs_data:
+    name: "${APP_NAME}_seaweedfs_data"
+  likec4_exports_data:
+    name: "${APP_NAME}_likec4_exports"
+
+networks:
+  app-internal:
+    internal: true
+  service-egress:
+  swag-network:
+    external: true
+    name: swag-network
