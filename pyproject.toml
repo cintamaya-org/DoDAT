@@ -30,7 +30,7 @@ dependencies = [
   "Pillow==13.0.0",
   "requests==2.34.2",
   "WeasyPrint==70.0",
-  "pydyf>=0.10.0,<0.12",
+  "pydyf>=0.10.0,<0.14",
 ]
 
 [tool.uv]
