@@ -10,7 +10,8 @@ from django.db.models.signals import m2m_changed, post_migrate
 from django.dispatch import receiver
 from diagrams.models import DrawIODiagram, LikeC4Diagram
 
-from .sync import sync_workflow_definitions
+from .graph_config import load_graph, publish_graph
+from .models import Workflow
 
 
 def track_diagram_sections(sender, instance, action, **kwargs):
@@ -23,7 +24,7 @@ def track_diagram_sections(sender, instance, action, **kwargs):
     if dat_id is None or _executing.get():
         return
     if action.startswith("pre_"):
-        workflow = WorkflowInstance.objects.select_for_update().select_related("definition_version").filter(object_id=str(dat_id), workflow__code="dat-validation").first()
+        workflow = WorkflowInstance.objects.select_for_update(of=("self",)).filter(object_id=str(dat_id), workflow__code="dat-validation").first()
         if workflow and is_graph(workflow) and workflow.current_state in {"valider", "refuse"}:
             raise WorkflowTransitionUnavailable("Ce DAT est clôturé.")
     elif action.startswith("post_"):
@@ -39,19 +40,13 @@ logger = logging.getLogger(__name__)
 
 @receiver(post_migrate)
 def sync_workflows_on_migrate(sender, **kwargs):
-    """
-    Keep declarative workflow definitions and DB state aligned.
-
-    post_migrate is used to avoid hitting the database before migrations are
-    applied. Errors are logged instead of raised in order to keep migrations
-    resilient: an operator can fix the issue and re-run sync later.
-    """
-
-    # Avoid executing for unrelated apps.
+    """Bootstrap the first publication. Later switches require sync_workflows."""
     if getattr(sender, "label", None) != "workflows":
         return
 
     try:
-        sync_workflow_definitions()
+        if Workflow.objects.filter(code="dat-validation", active_version__isnull=False).exists():
+            return
+        publish_graph(load_graph(), only_if_unpublished=True)
     except Exception:
         logger.exception("Unable to synchronise workflow definitions after migrations.")

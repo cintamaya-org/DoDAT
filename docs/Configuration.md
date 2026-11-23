@@ -49,14 +49,7 @@ La priorité de chargement est `sync_workflows --json`, puis `DAT_WORKFLOW_JSON`
 
 ### Sélectionner un circuit
 
-Depuis le répertoire qui contient `manage.py`, copier la bibliothèque livrée dans la configuration locale.
-
-```bash
-mkdir -p conf
-cp -n workflows/config/*.json conf/
-```
-
-Pour choisir le circuit parallèle livré, renseigner le sélecteur `conf/workflows.json` comme suit.
+Le circuit par défaut est `cintafactory/workflows/config/dat-validation.json`. Pour choisir le circuit parallèle livré, modifier le fichier `workflows.json` dans ce même dossier.
 
 ```json
 {"active_workflow": "parallel-review.json"}
@@ -68,7 +61,7 @@ Le sélecteur et les définitions résident dans le même dossier. `active_workf
 
 En développement, le répertoire du projet Django est déjà monté dans le service `web`. Le chemin local `cintafactory/conf/workflows.json` y est accessible sous `/app/conf/workflows.json`.
 
-Pour une image déployée, placer le sélecteur et les définitions dans un dossier de l’hôte et monter ce dossier en lecture seule via une surcharge Compose.
+En production, Compose monte déjà `cintafactory/workflows/config/` depuis l’hôte, en lecture seule dans le service web. Modifier les JSON dans ce dossier permet de changer le circuit sans reconstruire l’image. Pour utiliser un autre dossier de l’hôte, ajouter une surcharge Compose.
 
 ```yaml
 services:
@@ -88,7 +81,7 @@ python manage.py sync_workflows --check
 python manage.py sync_workflows
 ```
 
-La vérification contrôle notamment les dépendances, les rôles et les cibles. La publication active la version sélectionnée pour les nouveaux DAT. Les DAT existants suivent leur version épinglée. Le réglage global des référents s’applique aussi aux circuits actifs épinglés qui déclarent ces étapes. Pour le contrat JSON et la procédure de bascule, voir [Workflows DAT](Workflow.md).
+La vérification contrôle notamment les dépendances, les rôles et les cibles et affiche le nombre de DAT ouverts à redémarrer. La publication active la version sélectionnée pour les nouveaux DAT et redémarre les DAT ouverts qui utilisent un autre circuit. Les DAT clôturés conservent leur version et leur historique. Le réglage global des référents s’applique aussi aux circuits actifs épinglés qui déclarent ces étapes. Pour le contrat JSON et la procédure de bascule, voir [Workflows DAT](Workflow.md).
 
 ## Base de données
 

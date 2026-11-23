@@ -6,10 +6,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from itertools import batched
 from typing import Any
 
 from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
+from django.db.models import CharField, Exists, OuterRef, Q
+from django.db.models.functions import Cast
 
 from .events import workflow_transitioned
 from .exceptions import (
@@ -17,6 +20,7 @@ from .exceptions import (
     WorkflowPermissionDenied,
     WorkflowTransitionUnavailable,
 )
+from .graph_schema import TERMINAL_STATES
 from .models import Workflow, WorkflowInstance, WorkflowTransitionEvent
 from .registry import get_workflow_adapter
 
@@ -46,44 +50,28 @@ def ensure_workflow_instance(obj: Any, *, workflow_code: str = "dat-validation")
     if isinstance(cache, dict) and workflow_code in cache:
         return cache[workflow_code]
 
-    content_type = ContentType.objects.get_for_model(obj, for_concrete_model=False)
-    try:
-        workflow = Workflow.objects.select_related("active_version").get(
-            code=workflow_code,
-            content_type=content_type,
-            is_active=True,
-        )
-    except Workflow.DoesNotExist as exc:
-        raise WorkflowConfigurationError(
-            f"Active workflow '{workflow_code}' is not configured for '{obj._meta.label}'"
-        ) from exc
-    if workflow.active_version_id is None:
-        raise WorkflowConfigurationError(f"Workflow '{workflow_code}' has no published version")
+    return bind_workflow_instances([obj], workflow_code=workflow_code)[str(obj.pk)]
 
-    adapter = get_workflow_adapter(obj)
-    specification = workflow.active_version.specification
-    if specification.get("schema_version") == 2:
-        initial_state = obj.status if getattr(obj, "status", "") in {"valider", "refuse"} else "nouvelle_demande"
+
+def _initial_instance(obj, workflow):
+    version = workflow.active_version
+    spec = version.specification
+    data = {}
+    if spec.get("schema_version") == 2:
+        state = "nouvelle_demande"
+        if obj.status in TERMINAL_STATES:
+            state = obj.status
+            data["archived"] = True
     else:
-        initial_state = adapter.initial_state(obj, specification)
-    state_codes = {state["status"] for state in specification.get("steps", [])}
-    if specification.get("schema_version") != 2 and initial_state not in state_codes:
-        raise WorkflowConfigurationError(
-            f"Adapter returned unknown initial state '{initial_state}' for '{workflow_code}'"
-        )
-
-    instance, _created = WorkflowInstance.objects.get_or_create(
-        workflow=workflow,
-        content_type=content_type,
-        object_id=str(obj.pk),
-        defaults={
-            "definition_version": workflow.active_version,
-            "current_state": initial_state,
-            "data": {"archived": True} if specification.get("schema_version") == 2 and initial_state in {"valider", "refuse"} else {},
-        },
+        state = get_workflow_adapter(obj).initial_state(obj, spec)
+        if state not in {step["status"] for step in spec.get("steps", [])}:
+            raise WorkflowConfigurationError(
+                f"Adapter returned unknown initial state '{state}' for '{workflow.code}'"
+            )
+    return WorkflowInstance(
+        workflow=workflow, definition_version=version, content_type_id=workflow.content_type_id,
+        object_id=str(obj.pk), current_state=state, data=data,
     )
-    _cache_instance(obj, workflow_code, instance)
-    return instance
 
 
 def workflow_state(obj: Any, *, workflow_code: str = "dat-validation") -> str:
@@ -102,7 +90,7 @@ def bind_workflow_instances(
     first = objects[0]
     content_type = ContentType.objects.get_for_model(first, for_concrete_model=False)
     try:
-        workflow = Workflow.objects.select_related("active_version").get(
+        workflow = Workflow.objects.get(
             code=workflow_code,
             content_type=content_type,
             is_active=True,
@@ -115,39 +103,20 @@ def bind_workflow_instances(
         raise WorkflowConfigurationError(f"Workflow '{workflow_code}' has no published version")
 
     object_by_id = {str(obj.pk): obj for obj in objects}
-    instances = list(
-        WorkflowInstance.objects.filter(
-            workflow=workflow,
-            content_type=content_type,
-            object_id__in=object_by_id,
-        ).select_related("definition_version")
-    )
+    instances = WorkflowInstance.objects.filter(
+        workflow=workflow, content_type=content_type, object_id__in=object_by_id,
+    ).select_related("definition_version")
     found = {instance.object_id: instance for instance in instances}
-    missing_ids = set(object_by_id) - set(found)
+    missing_ids = object_by_id.keys() - found.keys()
     if missing_ids:
-        adapter = get_workflow_adapter(first)
-        specification = workflow.active_version.specification
-        WorkflowInstance.objects.bulk_create(
-            [
-                WorkflowInstance(
-                    workflow=workflow,
-                    definition_version=workflow.active_version,
-                    content_type=content_type,
-                    object_id=object_id,
-                    current_state=("nouvelle_demande" if specification.get("schema_version") == 2 else adapter.initial_state(object_by_id[object_id], specification)),
-                )
-                for object_id in missing_ids
-            ],
-            ignore_conflicts=True,
-        )
-        instances = list(
-            WorkflowInstance.objects.filter(
-                workflow=workflow,
-                content_type=content_type,
-                object_id__in=object_by_id,
-            ).select_related("definition_version")
-        )
-        found = {instance.object_id: instance for instance in instances}
+        # Wait for concurrent publication before reading the version used for new pins.
+        with transaction.atomic():
+            workflow = Workflow.objects.select_for_update().get(pk=workflow.pk)
+            WorkflowInstance.objects.bulk_create(
+                [_initial_instance(object_by_id[key], workflow) for key in sorted(missing_ids)],
+                ignore_conflicts=True,
+            )
+            found = {instance.object_id: instance for instance in instances.all()}
 
     for object_id, instance in found.items():
         _cache_instance(object_by_id[object_id], workflow_code, instance)
@@ -215,7 +184,7 @@ def workflow_permission_roles_for_state(
     *,
     workflow_code: str = "dat-validation",
 ) -> tuple[str, ...]:
-    workflow = Workflow.objects.select_related("active_version").get(
+    workflow = Workflow.objects.get(
         code=workflow_code,
         is_active=True,
     )
@@ -291,7 +260,7 @@ def transition_workflow(
 
 
 def workflow_states(*, workflow_code: str = "dat-validation") -> tuple[dict, ...]:
-    workflow = Workflow.objects.select_related("active_version").get(
+    workflow = Workflow.objects.get(
         code=workflow_code,
         is_active=True,
     )
@@ -427,42 +396,74 @@ def migrate_workflow_instances(
         )
 
 
+def _pins_for_dat(workflow):
+    return workflow.instances.filter(
+        content_type_id=workflow.content_type_id, object_id=Cast(OuterRef("pk"), CharField()),
+    )
+
+
+def pin_closed_dats(workflow):
+    """Under the publication lock, preserve the outgoing version for unpinned archives."""
+    from dat.models import DAT
+
+    closed = DAT.objects.filter(status__in=TERMINAL_STATES).exclude(Exists(_pins_for_dat(workflow)))
+    for batch in batched(closed.only("pk", "status").iterator(chunk_size=500), 500):
+        WorkflowInstance.objects.bulk_create([_initial_instance(dat, workflow) for dat in batch])
+
+
+def restart_dat(workflow, dat, instance=None, *, actor=None):
+    """Start fresh approvals under the publication and instance locks."""
+    from .graph_engine import _reconcile, actor_name
+
+    if instance is None:
+        previous_state, previous_version = dat.status, None
+        instance = _initial_instance(dat, workflow)
+        instance.save(force_insert=True)
+    else:
+        previous_state = instance.current_state
+        previous_version = instance.definition_version.version
+        instance.node_attempts.filter(is_current=True).update(is_current=False, status="superseded")
+        instance.definition_version = workflow.active_version
+        instance.current_state = "nouvelle_demande"
+        instance.data = {}
+        instance.save(update_fields=["definition_version", "current_state", "data", "updated_at"])
+    WorkflowTransitionEvent.objects.create(
+        instance=instance, event="workflow-restarted", from_state=previous_state,
+        to_state="nouvelle_demande", actor=actor, actor_display=actor_name(actor),
+        metadata={
+            "from_version": previous_version, "to_version": workflow.active_version.version,
+            "legacy_approvals_carried": False,
+        },
+    )
+    _reconcile(instance, dat, actor=actor)
+
+
 def _restart_graph_instances(workflow, *, object_ids=None, actor=None, preview=False):
     """Explicit cutover, including previously unpinned active DATs. Finals stay archived."""
     from dat.models import DAT
-    from .graph_engine import _execution, _reconcile, actor_name
+    from .graph_engine import _execution
 
-    queryset = DAT.objects.exclude(status__in=["valider", "refuse"]).order_by("pk")
+    queryset = DAT.objects.exclude(status__in=TERMINAL_STATES).order_by("pk")
     if object_ids:
         queryset = queryset.filter(pk__in=object_ids)
-    examined = migrated = 0
-    content_type = ContentType.objects.get_for_model(DAT)
+    pins = _pins_for_dat(workflow)
+    closed_pins = pins.filter(Q(current_state__in=TERMINAL_STATES) | Q(data__archived=True))
+    open_dats = queryset.exclude(Exists(closed_pins))
+    examined = open_dats.count()
+    candidates = open_dats.exclude(Exists(pins.filter(definition_version_id=workflow.active_version_id)))
+    if preview:
+        return WorkflowMigrationResult(workflow.code, workflow.active_version.version, examined, candidates.count())
+
+    migrated = 0
     with _execution():
-        for dat in queryset.iterator(chunk_size=100):
-            instance = WorkflowInstance.objects.select_for_update().filter(workflow=workflow, object_id=str(dat.pk)).first()
-            if instance is not None and instance.current_state in {"valider", "refuse"}:
+        for dat in candidates.iterator(chunk_size=100):
+            instance = workflow.instances.select_for_update().filter(
+                content_type_id=workflow.content_type_id, object_id=str(dat.pk),
+            ).first()
+            # An approval may have closed the DAT while the publisher waited on its lock.
+            if instance and (instance.current_state in TERMINAL_STATES or instance.data.get("archived")):
                 continue
-            examined += 1
-            if instance is not None and instance.definition_version_id == workflow.active_version_id:
-                continue
-            if preview:
-                migrated += 1
-                continue
-            previous = {"state": dat.status, "version": instance.definition_version.version if instance else None}
-            if instance is None:
-                instance, created = WorkflowInstance.objects.get_or_create(workflow=workflow, content_type=content_type, object_id=str(dat.pk), defaults={"definition_version": workflow.active_version, "current_state": "nouvelle_demande"})
-                instance = WorkflowInstance.objects.select_for_update().get(pk=instance.pk)
-                if not created and (instance.current_state in {"valider", "refuse"} or instance.definition_version_id == workflow.active_version_id):
-                    continue
-                if not created:
-                    previous = {"state": instance.current_state, "version": instance.definition_version.version}
-            instance.node_attempts.filter(is_current=True).update(is_current=False, status="superseded")
-            instance.definition_version = workflow.active_version
-            instance.current_state = "nouvelle_demande"
-            instance.data = {}
-            instance.save(update_fields=["definition_version", "current_state", "data", "updated_at"])
-            WorkflowTransitionEvent.objects.create(instance=instance, event="workflow-restarted", from_state=previous["state"], to_state="nouvelle_demande", actor=actor, actor_display=actor_name(actor), metadata={"from_version": previous["version"], "to_version": workflow.active_version.version, "legacy_approvals_carried": False})
-            _reconcile(instance, dat, actor=actor)
+            restart_dat(workflow, dat, instance, actor=actor)
             migrated += 1
     return WorkflowMigrationResult(workflow.code, workflow.active_version.version, examined, migrated)
 

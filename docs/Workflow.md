@@ -8,7 +8,9 @@ SPDX-License-Identifier: CC-BY-ND-4.0
 
 Le circuit est un graphe d'approbation défini en JSON, versionné en base. Chaque DAT utilise une version épinglée. Les étapes peuvent avancer en parallèle ; l'état du DAT est une synthèse, pas le moteur du circuit.
 
-Le circuit livré par défaut est `cintafactory/workflows/config/dat-validation.json`. Il suit le parcours besoin → prérequis → préparation → urbanisation et cybersécurité en parallèle → validation SSI → hébergement/exploitation → validation finale. La validation SSI attend directement les deux approbations parallèles.
+Le circuit livré par défaut est `cintafactory/workflows/config/dat-validation.json`. Il suit le parcours besoin → prérequis → préparation → urbanisation et cybersécurité en parallèle → première version du DAT → validation SSI → hébergement/exploitation → validation finale. Le jalon « Première version du DAT » se termine automatiquement après les deux approbations parallèles. Dans ce circuit, un refus clôture le DAT. Une demande de correction aux prérequis renvoie au besoin, et une demande de correction SSI renvoie à la préparation.
+
+La variante à huit étapes `dat-validation-refusal-routes.json` applique les règles de refus suivantes.
 
 | Étape | Effet du refus |
 | --- | --- |
@@ -39,16 +41,17 @@ La bibliothèque contient un fichier par workflow et un sélecteur `workflows.js
 ```text
 workflows/config/
 ├── workflows.json          # Sélection active
-├── dat-validation.json     # Circuit complet livré par défaut
+├── dat-validation.json     # Circuit actif par défaut, neuf étapes
+├── dat-validation-refusal-routes.json  # Variante à huit étapes avec retours sur refus
 └── parallel-review.json    # Besoin → architecture et sécurité en parallèle → validation finale
 ```
 
-Pour sélectionner le second circuit, modifier `workflows.json` :
+Pour sélectionner la revue parallèle, modifier `workflows.json` :
 
 ```json
 {
   "active_workflow": "parallel-review.json"
-  }
+}
 ```
 
 Pour ajouter un workflow, copier un fichier existant dans ce dossier, adapter son `name`, ses étapes, ses rôles et ses cibles, puis renseigner son nom de fichier dans `active_workflow`. Chaque fichier conserve le code applicatif `dat-validation` : les fichiers représentent les circuits possibles pour les DAT, tandis que ce code maintient leur lien avec les versions et les historiques en base. Les fichiers non sélectionnés ne sont ni chargés ni publiés.
@@ -64,7 +67,7 @@ Modifier ensuite `conf/workflows.json` et les fichiers de workflow de ce dossier
 
 Le sélecteur n'accepte que `active_workflow`, contenant un nom de fichier JSON sans chemin. Un fichier absent, invalide, contenant des clés dupliquées ou sortant du dossier via un lien symbolique produit une erreur ; aucun autre circuit ne le remplace silencieusement. La lecture et `--check` ne créent aucun fichier de configuration.
 
-Après modification de la sélection ou d'un workflow, exécuter `sync_workflows --check`, puis `sync_workflows` pour publier. Le nouveau circuit s'applique aux nouveaux DAT. Les DAT existants conservent leur version épinglée, même après changement de sélection ou retour à un ancien fichier. Revenir à un contenu déjà publié réactive sa version existante. La sélection et la publication ne changent pas les droits d'édition des sections.
+Après modification, exécuter `python manage.py sync_workflows --check` pour connaître la version cible et le nombre de DAT ouverts à redémarrer. Exécuter ensuite `python manage.py sync_workflows` pour publier. Une seule version est active pour les nouveaux DAT. Les DAT ouverts sur une autre version reprennent au début, avec de nouvelles approbations. Les anciennes décisions restent consultables dans leur historique. Les DAT clôturés conservent leur circuit et leur statut. Si une modification autorisée du contenu approuvé rouvre ensuite un DAT sur un ancien circuit, il redémarre sur la version active. Un retour à un fichier déjà publié réutilise sa version. Répéter la commande avec la même sélection conserve les approbations en cours sur cette version.
 
 ## Contrat JSON
 
@@ -180,22 +183,9 @@ python manage.py sync_workflows
 
 `--check` valide et simule la publication dans une transaction annulée. Les rôles et les cibles sont vérifiés avant publication. Les cycles, dépendances inconnues, routes de correction non valides, branches ignorées, conditions inconnues et instructions exécutables sont rejetés.
 
-La synchronisation après migration utilise la même sélection de bibliothèque. Pour publier ponctuellement un fichier extérieur à la bibliothèque, utiliser `sync_workflows --json /chemin/dat-validation.json`, avec `--check` pour le valider sans conserver les écritures. Cette surcharge ne modifie pas le sélecteur ; la prochaine synchronisation sans `--json` utilisera à nouveau la sélection configurée. Modifier un fichier sans le publier ne modifie aucune instance.
+Après migration, la sélection sert uniquement à initialiser une installation sans version publiée. Un changement de sélection sur une installation existante prend effet lors de la publication explicite. Pour publier ponctuellement un fichier extérieur à la bibliothèque, utiliser `sync_workflows --json /chemin/dat-validation.json`, avec `--check` pour le valider sans conserver les écritures. Cette surcharge ne modifie pas le sélecteur ; la prochaine synchronisation sans `--json` utilisera à nouveau la sélection configurée. Modifier un fichier sans le publier ne modifie aucune instance.
 
-Les DAT existants conservent leur version. Les circuits historiques sont consultables mais n'exécutent plus leurs anciennes transitions. Les DAT terminés restent archivés. Pour redémarrer les DAT actifs avec des approbations neuves :
-
-```bash
-# Simulation : aucune modification conservée.
-python manage.py migrate_workflow_instances dat-validation --restart-active
-
-# Pilote limité à un DAT.
-python manage.py migrate_workflow_instances dat-validation --restart-active --object-id UUID_DU_DAT --apply
-
-# Bascule de tous les DAT encore actifs, après vérification des compteurs.
-python manage.py migrate_workflow_instances dat-validation --restart-active --apply
-```
-
-La bascule conserve les contenus, affectations d'édition et historiques. Les anciens indicateurs de validation ne sont jamais convertis en approbations. Une nouvelle publication ne réécrit pas les instances épinglées.
+La publication enregistre le changement de version et le redémarrage des DAT ouverts dans une même transaction. Chaque redémarrage conserve le contenu et les affectations, archive les tentatives précédentes et ajoute un événement `workflow-restarted` avec les versions de départ et d’arrivée.
 
 ## API de revue
 
@@ -213,6 +203,7 @@ Les sessions HTML et les clients JSON utilisent les mêmes contrôles serveur et
 | `workflows/config/workflows.json` | Sélecteur livré de la bibliothèque |
 | `conf/workflows.json` | Sélecteur local facultatif, prioritaire sur celui livré |
 | `workflows/config/dat-validation.json` | Circuit complet livré |
+| `workflows/config/dat-validation-refusal-routes.json` | Variante à huit étapes avec retours sur refus |
 | `workflows/config/parallel-review.json` | Circuit de revue parallèle simplifié |
 | `workflows/graph_schema.py` | Contrat, validation et dépendances |
 | `workflows/graph_config.py` | Chargement, publication et références |

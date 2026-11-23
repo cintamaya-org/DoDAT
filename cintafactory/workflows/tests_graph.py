@@ -3,6 +3,7 @@
 
 from copy import deepcopy
 from io import StringIO
+from pathlib import Path
 from unittest import mock
 from uuid import uuid4
 
@@ -24,11 +25,13 @@ from .services import ensure_workflow_instance, migrate_workflow_instances
 
 
 class GraphFixture:
+    workflow_file = "dat-validation.json"
+
     def setUp(self):
         notifications = mock.patch("cintafactory.notifications.external.dispatch_external_notification", return_value=[])
         notifications.start()
         self.addCleanup(notifications.stop)
-        self.spec = load_graph()
+        self.spec = load_graph(Path(__file__).with_name("config") / self.workflow_file)
         if not get_user_model().objects.exists():
             get_user_model().objects.create_user(username="graph-bootstrap")
         direction, _ = TechnicalDirection.objects.get_or_create(slug="graph-review", defaults={"name": "Graph review"})
@@ -77,6 +80,8 @@ class GraphFixture:
 
 
 class ApprovalGraphTests(GraphFixture, TestCase):
+    workflow_file = "dat-validation-refusal-routes.json"
+
     def test_diagram_parallel_join_and_explicit_final_approval(self):
         self.prepare()
         attempts = reconcile_graph(self.dat)
@@ -614,6 +619,8 @@ class ApprovalGraphTests(GraphFixture, TestCase):
 
 
 class GraphConcurrencyTests(GraphFixture, TransactionTestCase):
+    workflow_file = "dat-validation-refusal-routes.json"
+
     def concurrent(self, calls):
         from concurrent.futures import ThreadPoolExecutor
         from threading import Barrier

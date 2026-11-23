@@ -107,7 +107,7 @@ def participant_role_slugs(dat=None):
 
 
 @transaction.atomic
-def publish_graph(spec):
+def publish_graph(spec, *, only_if_unpublished=False):
     from dat.config.section_blueprints import SECTION_BLUEPRINTS
     from dat.models import DAT
     from users.models import Role
@@ -126,10 +126,19 @@ def publish_graph(spec):
     workflow = Workflow.objects.select_for_update().get(pk=workflow.pk)
     if workflow.content_type_id != content_type.pk:
         raise WorkflowConfigurationError("A workflow code cannot change its target model.")
-    version = WorkflowDefinitionVersion.objects.filter(workflow=workflow, checksum=digest(spec)).first()
+    if only_if_unpublished and workflow.active_version_id:
+        return workflow.active_version
+    checksum = digest(spec)
+    version = WorkflowDefinitionVersion.objects.filter(workflow=workflow, checksum=checksum).first()
+    if version and workflow.active_version_id == version.pk and workflow.is_active:
+        return version
     if version is None:
         number = (workflow.versions.aggregate(number=Max("version"))["number"] or 0) + 1
-        version = WorkflowDefinitionVersion.objects.create(workflow=workflow, version=number, checksum=digest(spec), specification=spec)
+        version = WorkflowDefinitionVersion.objects.create(workflow=workflow, version=number, checksum=checksum, specification=spec)
+    if workflow.active_version_id:
+        from .services import pin_closed_dats
+
+        pin_closed_dats(workflow)
     workflow.name = spec.get("name", spec["code"])
     workflow.active_version = version
     workflow.is_active = True

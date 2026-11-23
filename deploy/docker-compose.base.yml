@@ -9,6 +9,13 @@ services:
     build:
       context: ..
       dockerfile: cintafactory/dockerfile
+    volumes:
+      - type: bind
+        source: ../cintafactory/workflows/config
+        target: /app/cintafactory/workflows/config
+        read_only: true
+        bind:
+          create_host_path: false
     restart: unless-stopped
     environment:
       DJANGO_SETTINGS_MODULE: cintafactory.cintafactory.settings

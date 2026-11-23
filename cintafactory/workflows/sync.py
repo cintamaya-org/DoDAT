@@ -37,12 +37,26 @@ def _iter_expected_permissions(
         yield (permission_def.permission, None, user_id)
 
 
+@transaction.atomic
+def sync_selected_workflow(path=None, *, preview=False):
+    """Publish one graph and move its open dossiers in the same transaction."""
+    from .graph_config import load_graph, publish_graph
+    from .services import migrate_workflow_instances
+
+    version = publish_graph(load_graph(path))
+    result = migrate_workflow_instances(
+        workflow_code=version.workflow.code, restart_active=True, preview=preview,
+    )
+    if preview:
+        transaction.set_rollback(True)
+    return result
+
+
 def sync_workflow_definitions(definitions: Sequence[WorkflowDefinition] | None = None) -> None:
     """Synchronise declarative workflow definitions with the database."""
 
     if definitions is None:
-        from .graph_config import load_graph, publish_graph
-        publish_graph(load_graph())
+        sync_selected_workflow()
         return
 
     Workflow = apps.get_model("workflows", "Workflow")

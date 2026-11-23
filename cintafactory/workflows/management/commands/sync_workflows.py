@@ -5,15 +5,13 @@
 from __future__ import annotations
 
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 
-from workflows.sync import sync_workflow_definitions
-from workflows.graph_config import load_graph, publish_graph
-from workflows.exceptions import WorkflowConfigurationError
+from workflows.sync import sync_selected_workflow
+from workflows.exceptions import WorkflowError
 
 
 class Command(BaseCommand):
-    help = "Publish the workflow selected by the JSON library configuration."
+    help = "Publish the selected workflow and restart open DATs using another version."
 
     def add_arguments(self, parser):
         parser.add_argument("--json", dest="json_path", help="Publish a workflow graph from a JSON file.")
@@ -25,16 +23,11 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         try:
-            with transaction.atomic():
-                if options.get("json_path"):
-                    publish_graph(load_graph(options["json_path"]))
-                else:
-                    sync_workflow_definitions()
-                if options["check"]:
-                    transaction.set_rollback(True)
-        except WorkflowConfigurationError as exc:
+            result = sync_selected_workflow(options["json_path"], preview=options["check"])
+        except WorkflowError as exc:
             raise CommandError(str(exc)) from exc
         if options["check"]:
-            self.stdout.write(self.style.SUCCESS("Workflow definitions are valid; no changes saved."))
-            return
-        self.stdout.write(self.style.SUCCESS("Workflow definitions synchronised and published."))
+            message = f"Workflow v{result.target_version} is valid. Open DATs to restart: {result.migrated}. No changes saved."
+        else:
+            message = f"Published workflow v{result.target_version}. Open DATs restarted: {result.migrated}."
+        self.stdout.write(self.style.SUCCESS(message))

@@ -231,6 +231,8 @@ SUMMARY_STATES = (
     ("refuse", "Refusé", "completed", ("terminal", "rejected")),
 )
 
+TERMINAL_STATES = frozenset(code for code, _, _, capabilities in SUMMARY_STATES if "terminal" in capabilities)
+
 
 def summary_metadata(state):
     for code, name, lane, capabilities in SUMMARY_STATES:

@@ -15,17 +15,16 @@ from django.urls import reverse
 
 from .exceptions import WorkflowPermissionDenied, WorkflowTransitionUnavailable
 from .graph_schema import (
-    SECTION_REFERENT, approval_roles, descendants, is_referent_gate, refusal_policy, topological_nodes,
+    SECTION_REFERENT, TERMINAL_STATES, approval_roles, descendants, is_referent_gate, refusal_policy, topological_nodes,
 )
 from .graph_targets import TargetFacts, digest
 from .models import (
-    WorkflowApprovalDecision, WorkflowContentSnapshot, WorkflowInstance,
+    Workflow, WorkflowApprovalDecision, WorkflowContentSnapshot, WorkflowInstance,
     WorkflowNodeAttempt, WorkflowTransitionEvent,
 )
 
 _executing = ContextVar("workflow_graph_executing", default=False)
 logger = logging.getLogger(__name__)
-TERMINAL_STATES = {"valider", "refuse"}
 SATISFIED_STATUSES = {"completed", "skipped"}
 REFUSAL_BLOCKED = "refusal_blocked"
 
@@ -267,7 +266,7 @@ def reconcile_graph(dat, *, instance=None, actor=None):
     if not is_graph(instance):
         return {}
     with transaction.atomic(), _execution():
-        locked = WorkflowInstance.objects.select_for_update().select_related("definition_version").get(pk=instance.pk)
+        locked = WorkflowInstance.objects.select_for_update(of=("self",)).get(pk=instance.pk)
         attempts, _facts = _reconcile(locked, dat, actor=actor)
         from .services import _cache_instance
         _cache_instance(dat, locked.workflow.code, locked)
@@ -281,7 +280,14 @@ def content_mutation(dat_id, *, allow_terminal_metadata=False, require_referent_
         yield
         return
     with transaction.atomic():
-        instance = WorkflowInstance.objects.select_for_update().select_related("definition_version", "workflow").filter(
+        # Metadata edits can reopen an approved DAT. Serialize the choice of version
+        # with publication before locking the instance, in the same order as a switch.
+        workflow = None
+        if allow_terminal_metadata:
+            workflow = Workflow.objects.select_for_update(of=("self",)).filter(
+                code="dat-validation", instances__object_id=str(dat_id),
+            ).first()
+        instance = WorkflowInstance.objects.select_for_update(of=("self",)).filter(
             content_type__app_label="dat", content_type__model="dat", object_id=str(dat_id), workflow__code="dat-validation",
         ).first()
         if instance is None or (require_referent_gate and (
@@ -311,6 +317,11 @@ def content_mutation(dat_id, *, allow_terminal_metadata=False, require_referent_
                     referents = _active_referents(facts.dat) if any(is_referent_gate(node) for node in nodes.values()) else {}
                     changed = any(attempt.snapshot_id and nodes[attempt.node_id]["type"] != "milestone" and (attempt.snapshot.digest != digest(facts.resolve(nodes[attempt.node_id]["target"])) or attempt.assignments != _assignments(nodes[attempt.node_id], participants, referents)) for attempt in instance.node_attempts.filter(is_current=True).select_related("snapshot"))
                     if not changed:
+                        return
+                    if workflow and workflow.active_version_id != instance.definition_version_id:
+                        from .services import restart_dat
+
+                        restart_dat(workflow, dat, instance)
                         return
                     previous = instance.current_state
                     instance.current_state = "en_cours"
@@ -372,7 +383,7 @@ def act_on_node(dat, node_id, actor, *, outcome, attempt_id, request_id, comment
     conflict = None
     decision = None
     with transaction.atomic(), _execution():
-        instance = WorkflowInstance.objects.select_for_update().select_related("definition_version", "workflow").get(pk=instance.pk)
+        instance = WorkflowInstance.objects.select_for_update(of=("self",)).get(pk=instance.pk)
         if not is_graph(instance):
             raise WorkflowTransitionUnavailable("Workflow historique archivé.")
         spec = instance.definition_version.specification

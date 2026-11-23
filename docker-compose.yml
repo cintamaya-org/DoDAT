@@ -8,6 +8,13 @@ services:
       context: .
       dockerfile: cintafactory/dockerfile
     container_name: ${APP_NAME}_web
+    volumes:
+      - type: bind
+        source: ./cintafactory/workflows/config
+        target: /app/cintafactory/workflows/config
+        read_only: true
+        bind:
+          create_host_path: false
     restart: unless-stopped
     environment:
       DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE}
