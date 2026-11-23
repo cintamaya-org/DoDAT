@@ -83,7 +83,7 @@ Utilisateur absent, anonyme ou schéma inattendu : aucun DAT retourné. Ce compo
 | Modifier responsables de section | Administrateur du DAT. |
 | Modifier participant d'une section | Administrateur du DAT, ou responsable actuel de cette section pour sa ligne éditable. |
 | Ajouter/retirer administrateur DAT | Administrateur du DAT ; promotion limitée au propriétaire, aux participants et aux responsables de section proposés par l'éditeur ; propriétaire non retirable. |
-| Éditer une section ou sous-section | Responsable ou participant explicitement affecté à cette section ; DAT non final. La section `validation` n'est pas éditable par ce mécanisme. |
+| Éditer une section ou sous-section | Propriétaire pour `informations-generales` et `besoins`, ou responsable/participant explicitement affecté à cette section ; DAT non final. La section `validation` n'est pas éditable par ce mécanisme. |
 | Modifier statut de section | Même contrôle que l'édition de section ; DAT non final. |
 | Valider côté responsable | Section explicitement éditable par l'utilisateur, section déjà validée et DAT non final. Le code ne distingue pas ici responsable et participant : l'une ou l'autre affectation explicite suffit. |
 | Décider validation/refus/réserve | Administrateur global, architecte référent affecté, ou comité de validation affecté. |
@@ -93,24 +93,26 @@ Utilisateur absent, anonyme ou schéma inattendu : aucun DAT retourné. Ce compo
 
 ## Affectation de section
 
-`DATSection.can_user_edit()` appelle `user_is_assigned_to_section()`.
+`DATSection.can_user_edit()` appelle `user_can_edit_section()`. Le propriétaire du DAT peut éditer `informations-generales` et `besoins` sans affectation explicite. Cette règle reste soumise aux verrous du workflow dans les vues d'édition.
 
-Utilisateur considéré affecté uniquement s'il est :
+Pour les autres sections, `user_is_assigned_to_section()` considère l'utilisateur affecté uniquement s'il est :
 
 - `DATSectionResponsible.user` ; ou
 - `DATSectionParticipant.user`.
 
-Être propriétaire, administrateur global, responsable de groupe ou participant général du DAT ne suffit pas à cette fonction. Un administrateur doit d'abord affecter la personne à la section si l'opération passe par `can_user_edit()`.
+Pour ces autres sections, être propriétaire, administrateur global, responsable de groupe ou participant général du DAT ne suffit pas à cette fonction. Un administrateur doit d'abord affecter la personne à la section si l'opération passe par `can_user_edit()`.
 
 La liste `DATSection.allowed_roles` limite les candidats proposés pour les affectations de section et intervient dans le helper de responsabilité de groupe. Elle ne donne pas directement le droit d'édition.
 
-`DATSubSection.allowed_roles` est actuellement synchronisée et exportée, mais `DATSubSection.can_user_edit()` ne la consulte pas : l'autorisation d'une sous-section hérite uniquement de l'affectation explicite de sa section parente. Ne pas considérer cette liste comme un contrôle d'accès effectif.
+`DATSubSection.allowed_roles` est actuellement synchronisée et exportée, mais `DATSubSection.can_user_edit()` ne la consulte pas : l'autorisation d'une sous-section hérite des droits d'édition de sa section parente, y compris l'accès du propriétaire aux deux sections initiales. Ne pas considérer cette liste comme un contrôle d'accès effectif.
 
 ## Workflow
 
-Les permissions `WorkflowStepPermission` associent une étape à un type `read`/`write` et à au moins un rôle ou utilisateur. Le schéma autorise techniquement les deux champs sur une même ligne, même si la synchronisation normale crée des lignes séparées.
+Les approbations utilisent le graphe JSON épinglé à chaque DAT. Chaque étape cible un DAT, une section, une sous-section ou un champ et demande les rôles déclarés dans `all_roles` ou `any_role`. Seules les personnes actives affectées à ces rôles sur ce DAT peuvent décider. Un rôle global ou un statut d'administrateur ne remplace pas cette affectation.
 
-La synchronisation normale aligne ces lignes sur la définition publiée ; le tableau général les affiche. Le tableau « Mes tâches » lit les permissions de la spécification de workflow épinglée à l'instance, pas directement ces lignes. Les transitions métier utilisent encore séparément les rôles, gardes et actions de cette même spécification via `transition_workflow()`. Ne pas utiliser une ligne `WorkflowStepPermission` comme preuve unique d'autorisation.
+Les approbateurs n'obtiennent aucun droit d'édition. Les affectations explicites de section restent autoritatives pour modifier son contenu, et donnent la visibilité du DAT même lorsqu'un rôle d'approbation est réaffecté. Les décisions sont liées à une tentative et à une copie du contenu ; les modifications et réaffectations invalident les revues concernées. Les endpoints HTML et JSON appliquent les mêmes contrôles côté serveur.
+
+`WorkflowStepPermission` et les anciennes gardes ne définissent plus les approbateurs des nouveaux circuits. Les étapes du tableau sont des synthèses. Les circuits historiques sont archivés ; `transition_workflow()` ne peut plus les faire avancer.
 
 Voir [Workflow.md](Workflow.md).
 

@@ -1,5 +1,7 @@
 {% load dat_extras %}
-<section id="section-validation" class="dat-validation-workspace" aria-labelledby="dat-validation-title">
+{% include 'workflows/graph_nodes.html' %}
+{% if not approval_graph %}
+<section class="dat-validation-workspace" aria-labelledby="dat-validation-title">
   <article class="card cinta-card dat-validation-overview">
     <div class="card-content">
       <div class="dat-validation-panel-heading">
@@ -234,3 +236,4 @@
     </article>
   </div>
 </section>
+{% endif %}

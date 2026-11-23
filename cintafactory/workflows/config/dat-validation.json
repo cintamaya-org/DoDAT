@@ -1,0 +1,22 @@
+{
+  "schema_version": 2,
+  "engine_version": 1,
+  "code": "dat-validation",
+  "name": "Validation des DAT",
+  "policies": {
+    "missing_assignee": "block",
+    "on_content_change": "invalidate_affected",
+    "request_changes_requires_comment": true
+  },
+  "nodes": [
+    {"id": "need", "name": "Nouveau besoin", "type": "submission", "target": {"section": "besoins"}},
+    {"id": "prerequisites", "name": "Contrôle des prérequis", "type": "approval", "target": {"section": "besoins"}, "after": ["need"], "approvers": {"all_roles": ["architecte-referent"]}, "on_request_changes": {"restart_at": "need"}, "on_reject": {"mode": "return", "restart_at": "need"}},
+    {"id": "preparation", "name": "Préparation du dossier", "type": "approval", "target": {"section": "architecture"}, "after": ["prerequisites"], "approvers": {"all_roles": ["architecte-technique"]}, "on_reject": {"mode": "block", "retry_roles": ["architecte-technique"]}},
+    {"id": "urbanisation", "name": "Urbanisation", "type": "approval", "target": {"section": "urbanisme"}, "after": ["preparation"], "approvers": {"all_roles": ["urbaniste"]}, "on_reject": {"mode": "return", "restart_at": "preparation"}},
+    {"id": "cyber", "name": "Volet cybersécurité", "type": "approval", "target": {"section": "cybersecurite"}, "after": ["preparation"], "approvers": {"all_roles": ["analyste-secu"]}, "on_reject": {"mode": "return", "restart_at": "preparation"}},
+    {"id": "ssi", "name": "Validation SSI", "type": "approval", "target": {"section": "cybersecurite"}, "after": ["urbanisation", "cyber"], "approvers": {"all_roles": ["rssi"]}, "on_request_changes": {"restart_at": "preparation"}, "on_reject": {"mode": "return", "restart_at": "preparation"}},
+    {"id": "hosting", "name": "Hébergement, exploitation et capacité", "type": "approval", "target": {"section": "exploitation"}, "after": ["ssi"], "approvers": {"all_roles": ["infra-exploitation"]}, "on_reject": {"mode": "return", "restart_at": "ssi"}},
+    {"id": "final", "name": "Validation du DAT complet", "type": "approval", "target": {"dat": true}, "after": ["hosting"], "approvers": {"all_roles": ["comite-validation"]}, "on_reject": {"mode": "close"}}
+  ],
+  "complete_when": {"all": ["final"]}
+}

@@ -15,6 +15,7 @@
 />
 <script src="{% static 'js/tooltip_utils.js' %}" defer></script>
 <script src="{% static 'js/dat_workflow_diagram.js' %}" defer></script>
+{% if selected_section_slug == "validation" %}{% include 'workflows/partials/review_assets.html' %}{% endif %}
 {% endblock %}
 
 {% block content %}
@@ -366,5 +367,6 @@
   <span class="wf-tooltip__text" hidden></span>
 </div>
 <script src="{% static 'js/dat_table_pagination.js' %}"></script>
+<script src="{% static 'js/dat_sub_section_toggle.js' %}"></script>
 <script src="{% static 'js/dat_my_dat_detail.js' %}"></script>
 {% endblock %}

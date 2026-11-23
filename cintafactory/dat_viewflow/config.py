@@ -62,7 +62,12 @@ def load_dat_viewflow_template() -> dict[str, Any]:
 def build_dat_viewflow_template(dat, workflow_process=None) -> dict[str, Any]:
     try:
         workflow_instance = ensure_workflow_instance(dat)
-        raw_template = workflow_instance.definition_version.specification.get("visualization") or {}
+        spec = workflow_instance.definition_version.specification
+        if spec.get("schema_version") == 2:
+            from workflows.graph_schema import visualization
+            raw_template = visualization(spec)
+        else:
+            raw_template = spec.get("visualization") or {}
         template = _normalize_template(raw_template)
     except WorkflowError:
         # Compatibility fallback for deployments before workflow sync has run.

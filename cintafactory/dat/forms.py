@@ -149,6 +149,7 @@ class DATForm(forms.ModelForm):
         self._participant_field_order: List[str] = []
         self._pending_participant_assignments: Optional[Dict[str, object]] = None
         self._roles_without_users: List[str] = []
+        self._approval_role_slugs = None
         self._required_roles: Set[str] = self._determine_required_roles()
 
         if "application" in self.fields:
@@ -200,6 +201,10 @@ class DATForm(forms.ModelForm):
         return f"{cls.participant_field_prefix}{safe_slug}"
 
     def _determine_required_roles(self) -> Set[str]:
+        from workflows.graph_config import participant_role_slugs
+        self._approval_role_slugs = participant_role_slugs(self.instance)
+        if self._approval_role_slugs is not None:
+            return {DAT_PORTEUR_ROLE_SLUG}
         current_status = getattr(self.instance, "status", None)
         if not current_status:
             current_status = workflow_initial_state()
@@ -209,17 +214,18 @@ class DATForm(forms.ModelForm):
 
     def _initialise_participant_fields(self) -> None:
         UserModel = get_user_model()
-        roles = Role.objects.filter(slug__in=DAT_REQUIRED_PARTICIPANT_ROLE_SLUGS)
+        role_slugs = tuple(dict.fromkeys((*DAT_REQUIRED_PARTICIPANT_ROLE_SLUGS, *(self._approval_role_slugs or ()))))
+        roles = Role.objects.filter(slug__in=role_slugs)
         role_map = {role.slug: role for role in roles}
 
         existing_participants: Dict[str, DATParticipant] = {}
         if self.instance.pk:
             for participant in self.instance.participants.select_related("role", "user"):
                 role = participant.role
-                if role and role.slug in DAT_REQUIRED_PARTICIPANT_ROLE_SLUGS:
+                if role and role.slug in role_slugs:
                     existing_participants.setdefault(role.slug, participant)
 
-        for slug in DAT_REQUIRED_PARTICIPANT_ROLE_SLUGS:
+        for slug in role_slugs:
             field_name = self.participant_field_name(slug)
             role = role_map.get(slug)
             label = role.name if role else DAT_REQUIRED_PARTICIPANT_ROLE_LABELS.get(slug, slug)
@@ -338,6 +344,7 @@ class DATForm(forms.ModelForm):
                 assignments[slug] = user
         return assignments
 
+    @transaction.atomic
     def save(self, commit=True):
         instance = super().save(commit=False)
         assignments = self._collect_participant_assignments()
@@ -373,6 +380,11 @@ class DATForm(forms.ModelForm):
             self._pending_participant_assignments = None
 
     def _save_participants(self, instance: DAT, assignments: Dict[str, object]) -> None:
+        from workflows.graph_engine import content_mutation
+        with content_mutation(instance.pk, allow_terminal_metadata=True):
+            self._save_dat_roles(instance, assignments)
+
+    def _save_dat_roles(self, instance: DAT, assignments: Dict[str, object]) -> None:
         if not assignments:
             return
 
@@ -397,7 +409,8 @@ class DATForm(forms.ModelForm):
 
         removable_slugs = set(existing_participants) - set(assignments)
         if removable_slugs:
-            instance.participants.filter(role__slug__in=removable_slugs).delete()
+            for participant in instance.participants.filter(role__slug__in=removable_slugs):
+                participant.delete()
 
     class Meta:
         model = DAT
@@ -556,8 +569,13 @@ class DATSubSectionForm(forms.Form):
                 self.add_error(name, exc)
         return cleaned
 
-    @transaction.atomic
     def save(self):
+        from workflows.graph_engine import content_mutation
+        with content_mutation(self.sub_section.section.dat_id):
+            return self._save_entries()
+
+    @transaction.atomic
+    def _save_entries(self):
         if not self.is_valid():
             raise ValueError("Cannot save an invalid form.")
         changes: dict[str, dict[str, str]] = {}

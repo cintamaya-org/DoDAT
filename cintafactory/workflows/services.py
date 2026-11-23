@@ -62,9 +62,12 @@ def ensure_workflow_instance(obj: Any, *, workflow_code: str = "dat-validation")
 
     adapter = get_workflow_adapter(obj)
     specification = workflow.active_version.specification
-    initial_state = adapter.initial_state(obj, specification)
+    if specification.get("schema_version") == 2:
+        initial_state = obj.status if getattr(obj, "status", "") in {"valider", "refuse"} else "nouvelle_demande"
+    else:
+        initial_state = adapter.initial_state(obj, specification)
     state_codes = {state["status"] for state in specification.get("steps", [])}
-    if initial_state not in state_codes:
+    if specification.get("schema_version") != 2 and initial_state not in state_codes:
         raise WorkflowConfigurationError(
             f"Adapter returned unknown initial state '{initial_state}' for '{workflow_code}'"
         )
@@ -76,6 +79,7 @@ def ensure_workflow_instance(obj: Any, *, workflow_code: str = "dat-validation")
         defaults={
             "definition_version": workflow.active_version,
             "current_state": initial_state,
+            "data": {"archived": True} if specification.get("schema_version") == 2 and initial_state in {"valider", "refuse"} else {},
         },
     )
     _cache_instance(obj, workflow_code, instance)
@@ -130,7 +134,7 @@ def bind_workflow_instances(
                     definition_version=workflow.active_version,
                     content_type=content_type,
                     object_id=object_id,
-                    current_state=adapter.initial_state(object_by_id[object_id], specification),
+                    current_state=("nouvelle_demande" if specification.get("schema_version") == 2 else adapter.initial_state(object_by_id[object_id], specification)),
                 )
                 for object_id in missing_ids
             ],
@@ -152,7 +156,11 @@ def bind_workflow_instances(
 
 def workflow_state_metadata(obj: Any, *, workflow_code: str = "dat-validation") -> dict:
     instance = ensure_workflow_instance(obj, workflow_code=workflow_code)
-    return _state_metadata(instance.definition_version.specification, instance.current_state)
+    if instance.definition_version.specification.get("schema_version") == 2:
+        from .graph_schema import summary_metadata
+        return summary_metadata(instance.current_state)
+    metadata = _state_metadata(instance.definition_version.specification, instance.current_state)
+    return {**metadata, "capabilities": tuple({"terminal"} | (set(metadata.get("capabilities", ())) & {"approved", "rejected"}))}
 
 
 def workflow_state_label(obj: Any, *, workflow_code: str = "dat-validation") -> str:
@@ -166,6 +174,11 @@ def workflow_state_permission_roles(
     *,
     workflow_code: str = "dat-validation",
 ) -> tuple[str, ...]:
+    instance = ensure_workflow_instance(obj, workflow_code=workflow_code)
+    if instance.definition_version.specification.get("schema_version") == 2:
+        from .graph_schema import approval_roles
+        ready = set(instance.node_attempts.filter(is_current=True, status="ready").values_list("node_id", flat=True))
+        return tuple(dict.fromkeys(role for node in instance.definition_version.specification["nodes"] if node["id"] in ready for role in approval_roles(node))) if permission == "write" else ()
     state = workflow_state_metadata(obj, workflow_code=workflow_code)
     return _permission_roles(state, permission)
 
@@ -180,6 +193,9 @@ def workflow_actor_has_any_state_permission(
     if actor is None or not getattr(actor, "is_authenticated", False):
         return False
     instance = ensure_workflow_instance(obj, workflow_code=workflow_code)
+    if instance.definition_version.specification.get("schema_version") == 2:
+        from .graph_schema import referenced_roles
+        return obj.participants.filter(user=actor, role__slug__in=referenced_roles(instance.definition_version.specification)).exists()
     role_slug = getattr(getattr(actor, "role", None), "slug", None)
     username = getattr(actor, "get_username", lambda: "")()
     for state in instance.definition_version.specification.get("steps", []):
@@ -205,6 +221,9 @@ def workflow_permission_roles_for_state(
     )
     if workflow.active_version_id is None:
         raise WorkflowConfigurationError(f"Workflow '{workflow_code}' has no published version")
+    if workflow.active_version.specification.get("schema_version") == 2:
+        from .graph_schema import referenced_roles
+        return tuple(referenced_roles(workflow.active_version.specification)) if permission == "write" else ()
     metadata = _state_metadata(workflow.active_version.specification, state)
     return _permission_roles(metadata, permission)
 
@@ -227,20 +246,9 @@ def workflow_can(
     context: dict | None = None,
     workflow_code: str = "dat-validation",
 ) -> bool:
-    instance = ensure_workflow_instance(obj, workflow_code=workflow_code)
-    adapter = get_workflow_adapter(obj)
-    candidates = _transition_candidates(
-        instance.definition_version.specification,
-        instance.current_state,
-        event,
-    )
-    for candidate in candidates:
-        roles = tuple(candidate.get("roles") or ())
-        if roles and not adapter.actor_has_any_role(obj, actor, roles):
-            continue
-        guard = str(candidate.get("guard") or "always")
-        if adapter.evaluate_guard(guard, obj, actor=actor, context=context):
-            return True
+    ensure_workflow_instance(obj, workflow_code=workflow_code)
+    # Event-only authorization was retired. Graph authorization requires a node
+    # attempt and is enforced by act_on_node(). Legacy instances are read-only.
     return False
 
 
@@ -276,82 +284,10 @@ def transition_workflow(
 ) -> TransitionResult:
     """Apply one authorized, guarded transition atomically."""
 
-    ensured = ensure_workflow_instance(obj, workflow_code=workflow_code)
-    with transaction.atomic():
-        instance = (
-            WorkflowInstance.objects.select_for_update()
-            .select_related("definition_version", "workflow")
-            .get(pk=ensured.pk)
-        )
-        specification = instance.definition_version.specification
-        adapter = get_workflow_adapter(obj)
-        candidates = _transition_candidates(specification, instance.current_state, event)
-        selected = None
-        permission_denied = False
-        for candidate in candidates:
-            roles = tuple(candidate.get("roles") or ())
-            if roles and not adapter.actor_has_any_role(obj, actor, roles):
-                permission_denied = True
-                continue
-            guard = str(candidate.get("guard") or "always")
-            if not adapter.evaluate_guard(guard, obj, actor=actor, context=context):
-                continue
-            selected = candidate
-            break
-
-        if selected is None:
-            if strict:
-                if permission_denied:
-                    raise WorkflowPermissionDenied(
-                        f"Actor cannot perform workflow event '{event}' from '{instance.current_state}'"
-                    )
-                raise WorkflowTransitionUnavailable(
-                    f"Workflow event '{event}' is unavailable from '{instance.current_state}'"
-                )
-            return TransitionResult(
-                instance=instance,
-                changed=False,
-                event=event,
-                from_state=instance.current_state,
-                to_state=instance.current_state,
-            )
-
-        source = instance.current_state
-        target = str(selected["target"])
-        action = str(selected.get("action") or "")
-        if action:
-            adapter.perform_action(action, obj, actor=actor, context=context)
-
-        instance.current_state = target
-        instance.save(update_fields=["current_state", "updated_at"])
-        adapter.project_state(obj, target, actor=actor)
-
-        audit_event = WorkflowTransitionEvent.objects.create(
-            instance=instance,
-            event=event,
-            from_state=source,
-            to_state=target,
-            actor=actor if getattr(actor, "is_authenticated", False) else None,
-            actor_display=_actor_display(actor),
-            metadata=_json_payload(metadata),
-        )
-        _cache_instance(obj, workflow_code, instance)
-        transaction.on_commit(
-            lambda: workflow_transitioned.send(
-                sender=type(obj),
-                instance=instance,
-                transition_event=audit_event,
-                content_object=obj,
-            )
-        )
-        return TransitionResult(
-            instance=instance,
-            changed=source != target,
-            event=event,
-            from_state=source,
-            to_state=target,
-            audit_event=audit_event,
-        )
+    ensure_workflow_instance(obj, workflow_code=workflow_code)
+    raise WorkflowTransitionUnavailable(
+        "Les transitions historiques sont archivées. Utilisez une étape d'approbation."
+    )
 
 
 def workflow_states(*, workflow_code: str = "dat-validation") -> tuple[dict, ...]:
@@ -361,6 +297,9 @@ def workflow_states(*, workflow_code: str = "dat-validation") -> tuple[dict, ...
     )
     if workflow.active_version_id is None:
         raise WorkflowConfigurationError(f"Workflow '{workflow_code}' has no published version")
+    if workflow.active_version.specification.get("schema_version") == 2:
+        from .graph_schema import SUMMARY_STATES, summary_metadata
+        return tuple({**summary_metadata(code), "key": code, "order": index, "is_initial": index == 0} for index, (code, *_rest) in enumerate(SUMMARY_STATES))
     steps = workflow.active_version.specification.get("steps", [])
     return tuple(sorted(steps, key=lambda step: (step.get("order", 0), step.get("key", ""))))
 
@@ -378,6 +317,8 @@ def migrate_workflow_instances(
     state_mapping: dict[str, str] | None = None,
     object_ids: tuple[str, ...] | list[str] | None = None,
     actor: Any = None,
+    restart_active: bool = False,
+    preview: bool = False,
 ) -> WorkflowMigrationResult:
     """Explicitly move selected instances to active version with validated state mapping."""
 
@@ -390,6 +331,16 @@ def migrate_workflow_instances(
         if workflow.active_version_id is None:
             raise WorkflowConfigurationError(f"Workflow '{workflow_code}' has no published version")
         target_specification = workflow.active_version.specification
+        if target_specification.get("schema_version") == 2:
+            if not restart_active or mapping:
+                raise WorkflowConfigurationError("Approval graphs require --restart-active and do not accept state mappings. Old approvals are never carried forward.")
+            if object_ids:
+                from uuid import UUID
+                try:
+                    object_ids = [UUID(str(value)) for value in object_ids]
+                except (ValueError, TypeError, AttributeError) as exc:
+                    raise WorkflowConfigurationError("DAT object IDs must be UUIDs.") from exc
+            return _restart_graph_instances(workflow, object_ids=object_ids, actor=actor, preview=preview)
         valid_states = {
             str(state.get("status")) for state in target_specification.get("steps", [])
         }
@@ -474,6 +425,46 @@ def migrate_workflow_instances(
             examined=len(instances),
             migrated=migrated,
         )
+
+
+def _restart_graph_instances(workflow, *, object_ids=None, actor=None, preview=False):
+    """Explicit cutover, including previously unpinned active DATs. Finals stay archived."""
+    from dat.models import DAT
+    from .graph_engine import _execution, _reconcile, actor_name
+
+    queryset = DAT.objects.exclude(status__in=["valider", "refuse"]).order_by("pk")
+    if object_ids:
+        queryset = queryset.filter(pk__in=object_ids)
+    examined = migrated = 0
+    content_type = ContentType.objects.get_for_model(DAT)
+    with _execution():
+        for dat in queryset.iterator(chunk_size=100):
+            instance = WorkflowInstance.objects.select_for_update().filter(workflow=workflow, object_id=str(dat.pk)).first()
+            if instance is not None and instance.current_state in {"valider", "refuse"}:
+                continue
+            examined += 1
+            if instance is not None and instance.definition_version_id == workflow.active_version_id:
+                continue
+            if preview:
+                migrated += 1
+                continue
+            previous = {"state": dat.status, "version": instance.definition_version.version if instance else None}
+            if instance is None:
+                instance, created = WorkflowInstance.objects.get_or_create(workflow=workflow, content_type=content_type, object_id=str(dat.pk), defaults={"definition_version": workflow.active_version, "current_state": "nouvelle_demande"})
+                instance = WorkflowInstance.objects.select_for_update().get(pk=instance.pk)
+                if not created and (instance.current_state in {"valider", "refuse"} or instance.definition_version_id == workflow.active_version_id):
+                    continue
+                if not created:
+                    previous = {"state": instance.current_state, "version": instance.definition_version.version}
+            instance.node_attempts.filter(is_current=True).update(is_current=False, status="superseded")
+            instance.definition_version = workflow.active_version
+            instance.current_state = "nouvelle_demande"
+            instance.data = {}
+            instance.save(update_fields=["definition_version", "current_state", "data", "updated_at"])
+            WorkflowTransitionEvent.objects.create(instance=instance, event="workflow-restarted", from_state=previous["state"], to_state="nouvelle_demande", actor=actor, actor_display=actor_name(actor), metadata={"from_version": previous["version"], "to_version": workflow.active_version.version, "legacy_approvals_carried": False})
+            _reconcile(instance, dat, actor=actor)
+            migrated += 1
+    return WorkflowMigrationResult(workflow.code, workflow.active_version.version, examined, migrated)
 
 
 def _transition_candidates(specification: dict, state: str, event: str) -> list[dict]:

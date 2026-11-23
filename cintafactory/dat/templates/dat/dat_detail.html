@@ -39,6 +39,7 @@
           {% endif %}
         </div>
         <div class="u-flex u-flex-wrap u-gap-0-75 u-mt-0-5">
+          <a href="{% url 'workflows:graph_detail' dat.pk %}" class="btn-flat">Approbations du dossier</a>
           <a href="#dat-history-modal" class="btn waves-effect waves-light modal-trigger cinta-btn-primary">
             <i class="material-icons left" aria-hidden="true">history</i>
             Voir l'historique
@@ -406,6 +407,7 @@
   <span class="wf-tooltip__text" hidden></span>
 </div>
 <script src="{% static 'js/dat_table_pagination.js' %}"></script>
+<script src="{% static 'js/dat_sub_section_toggle.js' %}"></script>
 <script src="{% static 'js/dat_dat_detail.js' %}"></script>
 
 

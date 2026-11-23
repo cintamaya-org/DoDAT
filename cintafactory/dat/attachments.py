@@ -436,6 +436,12 @@ def get_attachment_storage() -> SeaweedFSStorage:
 
 
 def create_section_attachment(section, uploaded_file, *, uploaded_by=None):
+    from workflows.graph_engine import content_mutation
+    with content_mutation(section.dat_id):
+        return _create_section_attachment(section, uploaded_file, uploaded_by=uploaded_by)
+
+
+def _create_section_attachment(section, uploaded_file, *, uploaded_by=None):
     from .models import DATSectionAttachment
 
     try:
@@ -484,6 +490,12 @@ def create_section_attachment(section, uploaded_file, *, uploaded_by=None):
 
 
 def delete_section_attachment(attachment) -> None:
+    from workflows.graph_engine import content_mutation
+    with content_mutation(attachment.section.dat_id):
+        _delete_section_attachment(attachment)
+
+
+def _delete_section_attachment(attachment) -> None:
     storage = get_attachment_storage()
     path = getattr(attachment, "storage_path", "")
     if path:

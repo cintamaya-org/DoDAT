@@ -22,23 +22,38 @@
         {% endwith %}
       </h6>
       {% endwith %}
-      {% if part.section_part.description %}
-        <p class="dat-sub-section__description">{{ part.section_part.description }}</p>
-      {% endif %}
     </div>
+    <button
+      type="button"
+      class="dat-sub-section__toggle"
+      aria-expanded="true"
+      aria-controls="sub-section-content-{{ container_section.metadata.slug }}-{{ part.section_part.slug }}"
+      aria-label="Afficher ou masquer la sous-section : {{ part.section_part.title }}"
+    >
+      <svg class="dat-sub-section__toggle-arrow" width="32" height="24" viewBox="0 0 32 24" fill="none" aria-hidden="true" focusable="false">
+        <path d="M3 19L16 5L29 19" stroke="currentColor" stroke-width="1.5" />
+      </svg>
+    </button>
+    {% if part.can_edit %}
+      <a
+        href="{% url 'dat:sub_section_edit' dat.pk container_section.metadata.slug part.section_part.slug %}"
+        class="btn waves-effect waves-light cinta-btn-primary dat-subsection-edit-btn"
+        data-edit-url="{% url 'dat:sub_section_edit' dat.pk container_section.metadata.slug part.section_part.slug %}"
+        data-sub-section-slug="{{ part.section_part.slug }}"
+        data-sub-section-title="{{ part.section_part.title }}"
+      >
+        <i class="material-icons left" aria-hidden="true">edit</i>
+        Modifier
+      </a>
+    {% endif %}
+  </div>
+  <div class="dat-sub-section__content" id="sub-section-content-{{ container_section.metadata.slug }}-{{ part.section_part.slug }}">
+  {% if part.section_part.description %}
+    <p class="dat-sub-section__description">{{ part.section_part.description }}</p>
+  {% endif %}
     {% if part.can_edit or part.has_drawio_table %}
       <div class="dat-sub-section__actions">
         {% if part.can_edit %}
-          <a
-            href="{% url 'dat:sub_section_edit' dat.pk container_section.metadata.slug part.section_part.slug %}"
-            class="btn waves-effect waves-light cinta-btn-primary dat-subsection-edit-btn"
-            data-edit-url="{% url 'dat:sub_section_edit' dat.pk container_section.metadata.slug part.section_part.slug %}"
-            data-sub-section-slug="{{ part.section_part.slug }}"
-            data-sub-section-title="{{ part.section_part.title }}"
-          >
-            <i class="material-icons left" aria-hidden="true">edit</i>
-            Modifier
-          </a>
           {% if container_section.metadata.slug == "architecture" and part.section_part.slug == "schemas" %}
             <button type="button"
                     class="btn waves-effect waves-light cinta-btn-primary dat-schema-parse-trigger"
@@ -67,7 +82,6 @@
         {% endif %}
       </div>
     {% endif %}
-  </div>
   {% if part.entries %}
     <div class="responsive-table" {% if part.has_drawio_table %}id="{{ drawio_table_id }}" data-drawio-table="true"{% endif %}>
       <table class="highlight">
@@ -88,99 +102,105 @@
                     {% with columns=entry.config|dat_columns %}
                       {% if value %}
                         {% dat_repeater_pagination entry container_section.metadata.slug value as pagination %}
-                        <div class="responsive-table"{% if pagination %} data-dat-table-pagination data-page-size="{{ pagination.page_size }}" data-page="1"{% endif %}>
-                          <table class="highlight">
-                            <thead>
-                              <tr>
-                                {% for column in columns %}
-                                  <th>{{ column.label }}</th>
-                                {% endfor %}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {% for row in value %}
-                                <tr{% if pagination and forloop.counter > pagination.page_size %} hidden{% endif %}>
+                        <div{% if pagination %} data-dat-table-pagination data-page-size="{{ pagination.page_size }}" data-page="1"{% endif %}>
+                          {% if pagination.num_pages > 1 %}
+                            {% include "components/table_search.html" with table_id=drawio_table_id|add:"-"|add:entry.key table_label=entry.label only %}
+                          {% endif %}
+                          <div class="responsive-table">
+                            <table class="highlight"{% if pagination %} id="{{ drawio_table_id }}-{{ entry.key }}"{% endif %}>
+                              <thead>
+                                <tr>
                                   {% for column in columns %}
-                                    <td>
-                                      {% with cell=row|get_item:column.key %}
-                                        {% if column.render == "link" %}
-                                          {% if cell %}
-                                            <a href="{{ cell }}" class="btn btn-flat waves-effect cinta-btn-secondary" target="_blank" rel="noopener">
-                                              {% if column.icon %}<i class="material-icons left" aria-hidden="true">{{ column.icon }}</i>{% endif %}
-                                              {{ column.button_label|default:column.label }}
-                                            </a>
-                                          {% else %}
-                                            <span class="chip grey lighten-3">—</span>
-                                          {% endif %}
-                                        {% elif column.render == "drawio_diagram" %}
-                                          {% include "dat/components/drawio_diagram_cell.html" with cell=cell part=part column=column row=row %}
-                                        {% elif container and container_section.metadata.slug == "validation" and entry.key == "suivi_sections" and column.key == "reserve_message" %}
-                                          {% with row_slug=row|get_item:"section_slug" reserve_message=row|get_item:"reserve_message" reserve_by=row|get_item:"reserve_by_display" reserve_by_id=row|get_item:"reserve_by_id" %}
-                                            {% if reserve_message %}
-                                              <p class="u-m-0 u-pre-wrap">{{ reserve_message }}</p>
-                                              <div class="dat-sub-section__reserve-actions">
-                                                <span class="chip grey lighten-3">Par {{ reserve_by|default:"—" }}</span>
-                                                {% if row_slug and container.validation_reserve_clear_allowed_sections and container.validation_reserve_clear_allowed_sections|get_item:row_slug %}
-                                                  <form method="post" action="{% url 'dat:section_reserve_clear' dat.pk row_slug %}" class="dat-sub-section__inline-form">
-                                                    {% csrf_token %}
-                                                    <button type="submit" class="btn btn-flat waves-effect cinta-btn-secondary text-muted-dark">
-                                                      Lever la réserve
-                                                    </button>
-                                                  </form>
-                                                {% endif %}
-                                              </div>
+                                    <th>{{ column.label }}</th>
+                                  {% endfor %}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {% for row in value %}
+                                  <tr{% if pagination and forloop.counter > pagination.page_size %} hidden{% endif %}>
+                                    {% for column in columns %}
+                                      <td data-column-key="{{ column.key }}">
+                                        {% with cell=row|get_item:column.key %}
+                                          {% if column.render == "link" %}
+                                            {% if cell %}
+                                              <a href="{{ cell }}" class="btn btn-flat waves-effect cinta-btn-secondary" target="_blank" rel="noopener">
+                                                {% if column.icon %}<i class="material-icons left" aria-hidden="true">{{ column.icon }}</i>{% endif %}
+                                                {{ column.button_label|default:column.label }}
+                                              </a>
                                             {% else %}
                                               <span class="chip grey lighten-3">—</span>
-                                              {% if row_slug and container.validation_reserve_allowed_sections and container.validation_reserve_allowed_sections|get_item:row_slug %}
-                                                <form method="post" action="{% url 'dat:section_reserve' dat.pk row_slug %}" class="dat-reserve-create-form dat-sub-section__inline-form-spaced" data-section-title="{{ row|get_item:'section' }}">
-                                                  {% csrf_token %}
-                                                  <input type="hidden" name="reserve_message" value="">
-                                                  <button type="submit" class="btn btn-flat waves-effect cinta-btn-secondary">
-                                                    Mettre en réserve
-                                                  </button>
-                                                </form>
-                                              {% endif %}
                                             {% endif %}
-                                          {% endwith %}
-                                        {% elif column.type == "textarea" %}
-                                          <p class="u-m-0 u-pre-wrap">{{ cell|default:"—" }}</p>
-                                        {% else %}
-                                          <span>{{ cell|default:"—" }}</span>
-                                          {% if container and container_section.metadata.slug == "validation" and entry.key == "suivi_sections" and column.key == "statut_responsable" and container.validation_allowed_sections %}
-                                            {% with row_slug=row|get_item:"section_slug" validated_value=container.status_values|get_item:"validated" %}
-                                              {% if row_slug and container.validation_allowed_sections|get_item:row_slug %}
-                                                {% if row|get_item:"statut_responsable" == validated_value %}
-                                                  <span class="chip green lighten-4 dat-sub-section__chip-spaced">Validée</span>
-                                                {% elif row|get_item:"statut" != validated_value %}
-                                                  <span class="chip grey lighten-3 dat-sub-section__chip-spaced">Attente section</span>
-                                                {% else %}
-                                                  <form method="post" action="{% url 'dat:section_responsible_status' dat.pk row_slug %}" class="dat-sub-section__inline-form-spaced">
+                                          {% elif column.render == "drawio_diagram" %}
+                                            {% include "dat/components/drawio_diagram_cell.html" with cell=cell part=part column=column row=row %}
+                                          {% elif container and container_section.metadata.slug == "validation" and entry.key == "suivi_sections" and column.key == "reserve_message" %}
+                                            {% with row_slug=row|get_item:"section_slug" reserve_message=row|get_item:"reserve_message" reserve_by=row|get_item:"reserve_by_display" reserve_by_id=row|get_item:"reserve_by_id" %}
+                                              {% if reserve_message %}
+                                                <p class="u-m-0 u-pre-wrap">{{ reserve_message }}</p>
+                                                <div class="dat-sub-section__reserve-actions">
+                                                  <span class="chip grey lighten-3">Par {{ reserve_by|default:"—" }}</span>
+                                                  {% if row_slug and container.validation_reserve_clear_allowed_sections and container.validation_reserve_clear_allowed_sections|get_item:row_slug %}
+                                                    <form method="post" action="{% url 'dat:section_reserve_clear' dat.pk row_slug %}" class="dat-sub-section__inline-form">
+                                                      {% csrf_token %}
+                                                      <button type="submit" class="btn btn-flat waves-effect cinta-btn-secondary text-muted-dark">
+                                                        Lever la réserve
+                                                      </button>
+                                                    </form>
+                                                  {% endif %}
+                                                </div>
+                                              {% else %}
+                                                <span class="chip grey lighten-3">—</span>
+                                                {% if row_slug and container.validation_reserve_allowed_sections and container.validation_reserve_allowed_sections|get_item:row_slug %}
+                                                  <form method="post" action="{% url 'dat:section_reserve' dat.pk row_slug %}" class="dat-reserve-create-form dat-sub-section__inline-form-spaced" data-section-title="{{ row|get_item:'section' }}">
                                                     {% csrf_token %}
-                                                    <input type="hidden" name="status" value="{{ validated_value }}">
-                                                    <button type="submit" class="btn waves-effect waves-light cinta-btn-primary dat-sub-section__compact-button">
-                                                      Valider
+                                                    <input type="hidden" name="reserve_message" value="">
+                                                    <button type="submit" class="btn btn-flat waves-effect cinta-btn-secondary">
+                                                      Mettre en réserve
                                                     </button>
                                                   </form>
                                                 {% endif %}
                                               {% endif %}
                                             {% endwith %}
+                                          {% elif column.type == "textarea" %}
+                                            <p class="u-m-0 u-pre-wrap">{{ cell|default:"—" }}</p>
+                                          {% else %}
+                                            <span>{{ cell|default:"—" }}</span>
+                                            {% if container and container_section.metadata.slug == "validation" and entry.key == "suivi_sections" and column.key == "statut_responsable" and container.validation_allowed_sections %}
+                                              {% with row_slug=row|get_item:"section_slug" validated_value=container.status_values|get_item:"validated" %}
+                                                {% if row_slug and container.validation_allowed_sections|get_item:row_slug %}
+                                                  {% if row|get_item:"statut_responsable" == validated_value %}
+                                                    <span class="chip green lighten-4 dat-sub-section__chip-spaced">Validée</span>
+                                                  {% elif row|get_item:"statut" != validated_value %}
+                                                    <span class="chip grey lighten-3 dat-sub-section__chip-spaced">Attente section</span>
+                                                  {% else %}
+                                                    <form method="post" action="{% url 'dat:section_responsible_status' dat.pk row_slug %}" class="dat-sub-section__inline-form-spaced">
+                                                      {% csrf_token %}
+                                                      <input type="hidden" name="status" value="{{ validated_value }}">
+                                                      <button type="submit" class="btn waves-effect waves-light cinta-btn-primary dat-sub-section__compact-button">
+                                                        Valider
+                                                      </button>
+                                                    </form>
+                                                  {% endif %}
+                                                {% endif %}
+                                              {% endwith %}
+                                            {% endif %}
                                           {% endif %}
-                                        {% endif %}
-                                      {% endwith %}
-                                    </td>
-                                  {% endfor %}
-                                </tr>
-                              {% endfor %}
-                            </tbody>
-                          </table>
+                                        {% endwith %}
+                                      </td>
+                                    {% endfor %}
+                                  </tr>
+                                {% endfor %}
+                              </tbody>
+                            </table>
+                          </div>
                           {% if pagination.num_pages > 1 %}
-                            <nav class="dat-list__pagination" aria-label="Pagination {{ entry.label }}">
+                            <p class="text-muted" data-table-search-empty hidden>Aucune ligne ne correspond à votre recherche.</p>
+                            <div class="dat-list__pagination" role="navigation" aria-label="Pagination {{ entry.label }}">
                               <div data-table-page-status aria-live="polite">Page 1 sur {{ pagination.num_pages }} · {{ pagination.total }} ligne{{ pagination.total|pluralize }}</div>
                               <div class="dat-list__pagination-actions">
-                                <button type="button" class="btn-flat waves-effect" data-table-page-step="-1" disabled>Précédent</button>
-                                <button type="button" class="btn-flat waves-effect" data-table-page-step="1">Suivant</button>
+                                <button type="button" class="btn waves-effect waves-light cinta-btn-primary" data-table-page-step="-1" disabled>Précédent</button>
+                                <button type="button" class="btn waves-effect waves-light cinta-btn-primary" data-table-page-step="1">Suivant</button>
                               </div>
-                            </nav>
+                            </div>
                           {% endif %}
                         </div>
                       {% else %}
@@ -204,5 +224,6 @@
   {% else %}
     <p class="u-m-0 text-muted-soft">Aucune donnée pour cette sous-section.</p>
   {% endif %}
+  </div>
 </div>
 {% endwith %}

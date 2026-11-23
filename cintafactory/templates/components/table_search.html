@@ -1,0 +1,15 @@
+<div class="dat-table-search">
+  <label for="{{ table_id }}-search">Rechercher dans {{ table_label }}</label>
+  <input
+    id="{{ table_id }}-search"
+    type="search"
+    class="browser-default"
+    placeholder="Rechercher…"
+    minlength="2"
+    autocomplete="off"
+    aria-controls="{{ table_id }}"
+    aria-describedby="{{ table_id }}-search-help"
+    data-table-search
+  >
+  <small id="{{ table_id }}-search-help" class="text-muted">Saisissez au moins 2 caractères.</small>
+</div>

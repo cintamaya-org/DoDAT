@@ -25,40 +25,43 @@
       </p>
     </div>
     <div class="divider"></div>
-    <div class="section">
-      <span class="card-title">Connexions OAuth</span>
-      <p class="grey-text text-darken-1"></p>
+    <section class="section account-oauth-section" aria-labelledby="account-oauth-title">
+      <h2 id="account-oauth-title" class="card-title">Connexions OAuth</h2>
       {% if oauth_providers %}
         <div class="account-oauth-grid">
           {% for provider in oauth_providers %}
-            <div class="card-panel account-oauth-card u-flex u-flex-col u-gap-0-65">
-              {% if provider.icon %}
-                <img src="{% static provider.icon %}" alt="" aria-hidden="true" class="account-oauth-icon">
-              {% endif %}
-              <strong>{{ provider.label }}</strong>
-              <div class="u-flex u-items-center u-justify-between u-gap-0-5 account-oauth-card__status-actions">
-                <div class="u-inline-flex u-items-center u-gap-0-5 account-oauth-card__status">
+            <div class="account-oauth-card">
+              <div class="account-oauth-card__header">
+                <div class="account-oauth-card__logo" aria-hidden="true">
+                  {% if provider.icon %}
+                    <img src="{% static provider.icon %}" alt="" class="account-oauth-icon">
+                  {% else %}
+                    <i class="material-icons">link</i>
+                  {% endif %}
+                </div>
+                <div class="account-oauth-card__identity">
+                  <h3 class="account-oauth-card__name">{{ provider.label }}</h3>
                   {% if not provider.enabled %}
-                    <span class="chip orange lighten-4 orange-text text-darken-3">Non disponible</span>
+                    <span class="account-oauth-card__status account-oauth-card__status--unavailable">Non disponible</span>
                   {% elif provider.connected %}
-                    <span class="chip green lighten-4 green-text text-darken-3">
-                      Connecte{% if provider.connected_count > 1 %} ({{ provider.connected_count }}){% endif %}
+                    <span class="account-oauth-card__status account-oauth-card__status--connected">
+                      Connecté{% if provider.connected_count > 1 %} ({{ provider.connected_count }}){% endif %}
                     </span>
                   {% else %}
-                    <span class="chip grey lighten-2 grey-text text-darken-2">Non connecte</span>
+                    <span class="account-oauth-card__status">Non connecté</span>
                   {% endif %}
                 </div>
-                <div class="account-oauth-card__action">
-                  {% if provider.enabled %}
-                    {% if provider.connected %}
-                      <button type="button" class="btn waves-effect waves-light cinta-btn-secondary" disabled>Deconnecter</button>
-                    {% else %}
-                      <button type="button" class="btn waves-effect waves-light cinta-btn-secondary" disabled>Connecter</button>
-                    {% endif %}
+              </div>
+              <div class="account-oauth-card__action">
+                {% if provider.enabled %}
+                  {% if provider.connected %}
+                    <button type="button" class="btn waves-effect waves-light cinta-btn-secondary" disabled>Déconnecter</button>
                   {% else %}
-                    <button type="button" class="btn waves-effect waves-light cinta-btn-secondary" disabled>Non disponible</button>
+                    <button type="button" class="btn waves-effect waves-light cinta-btn-secondary" disabled>Connecter</button>
                   {% endif %}
-                </div>
+                {% else %}
+                  <button type="button" class="btn waves-effect waves-light cinta-btn-secondary" disabled>Non disponible</button>
+                {% endif %}
               </div>
             </div>
           {% endfor %}
@@ -66,7 +69,7 @@
       {% else %}
         <p class="grey-text text-darken-1">Aucun fournisseur OAuth enregistre.</p>
       {% endif %}
-    </div>
+    </section>
   </div>
   <div class="card-action">
     <a href="{% url 'account:password_change' %}" class="btn waves-effect waves-light cinta-btn-primary">

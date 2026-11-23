@@ -1,0 +1,22 @@
+<div class="review-size" data-layout="{{ layout.key }}" style="width:{{ layout.width }}px;height:{{ layout.height }}px">
+  <div class="review-canvas" style="width:{{ layout.width }}px;height:{{ layout.height }}px">
+    {% for band in layout.bands %}
+      <div class="review-lane" style="top:{{ band.top }}px;height:{{ band.height }}px"><span>{{ band.label }}</span></div>
+    {% endfor %}
+    <svg class="review-edges" aria-hidden="true">
+      <defs><marker id="review-arrow-{{ layout.key }}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10 Z"/></marker></defs>
+      <g>
+        {% for edge in layout.edges %}
+          <path d="{{ edge.path }}" data-from="{{ edge.source }}" data-to="{{ edge.target }}" class="{{ edge.style }}"{% if edge.returned %} marker-end="url(#review-arrow-{{ layout.key }})"{% endif %}></path>
+        {% endfor %}
+      </g>
+    </svg>
+    {% for node in layout.nodes %}
+      <a href="#review-{{ node.id }}" class="review-node" aria-controls="review-{{ node.id }}" data-node="{{ node.id }}" data-tone="{{ node.tone }}"
+         style="left:{{ node.x }}px;top:{{ node.y }}px" title="{{ node.name }} · {{ node.status }}" aria-label="{{ node.name }} · {{ node.status }} · {{ node.roles|default:node.lane }}">
+        <span class="review-dot" aria-hidden="true">{% if node.tone == 'completed' %}✓{% elif node.tone == 'rejected' %}×{% else %}{{ forloop.counter|stringformat:"02d" }}{% endif %}</span>
+        <strong>{{ node.name }}</strong><small>{% if layout.key == 'lanes' %}{{ node.status }}{% else %}{{ node.roles|default:node.lane }}{% endif %}</small>
+      </a>
+    {% endfor %}
+  </div>
+</div>

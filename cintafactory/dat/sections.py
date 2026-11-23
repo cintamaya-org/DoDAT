@@ -243,6 +243,14 @@ def _initialise_validation_statuses(entry, section) -> None:
 
 
 def ensure_default_sections(dat, *, apps=None) -> None:
+    if apps is not None:
+        return _ensure_default_sections(dat, apps=apps)
+    from workflows.graph_engine import content_mutation
+    with content_mutation(dat.pk):
+        return _ensure_default_sections(dat)
+
+
+def _ensure_default_sections(dat, *, apps=None) -> None:
     """
     Ensure the default DAT sections structure exists for the given DAT instance.
     """
@@ -483,6 +491,9 @@ def sync_dat_sections_if_needed(dat) -> bool:
     if not getattr(dat, "pk", None):
         return False
     if not dat_sections_need_sync(dat):
+        return False
+    from workflows.services import workflow_has_capability
+    if workflow_has_capability(dat, "terminal"):
         return False
     ensure_default_sections(dat)
     cache = getattr(dat, "_prefetched_objects_cache", None)

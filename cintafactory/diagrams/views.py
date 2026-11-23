@@ -1051,6 +1051,10 @@ def drawio_proxy(request, path: str = ""):
 @login_required
 @require_http_methods(["GET", "HEAD", "POST"])
 def likec4_proxy(request, path: str = ""):
+    return _likec4_proxy(request, path)
+
+
+def _likec4_proxy(request, path: str = "", *, workflow_locked=False):
     upstream_base = getattr(settings, "LIKEC4_EDITOR_URL", "").rstrip("/")
     normalized_path = (path or "").strip()
     if not upstream_base or not is_http_url(upstream_base):
@@ -1131,6 +1135,12 @@ def likec4_proxy(request, path: str = ""):
         revision = match.group(2)
     elif normalized_path != "security.js":
         raise Http404("LikeC4 editor unavailable.")
+
+    if operation == "write" and not workflow_locked:
+        from workflows.graph_engine import content_mutation
+        with content_mutation(diagram.dat_id):
+            require_diagram_write(diagram, request.user)
+            return _likec4_proxy(request, path, workflow_locked=True)
 
     if normalized_path in api_paths:
         if operation == "write":

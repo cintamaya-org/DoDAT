@@ -4,16 +4,19 @@
 
 from __future__ import annotations
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from workflows.sync import sync_workflow_definitions
+from workflows.graph_config import load_graph, publish_graph
+from workflows.exceptions import WorkflowConfigurationError
 
 
 class Command(BaseCommand):
-    help = "Synchronise declarative workflow definitions with the database."
+    help = "Publish the workflow selected by the JSON library configuration."
 
     def add_arguments(self, parser):
+        parser.add_argument("--json", dest="json_path", help="Publish a workflow graph from a JSON file.")
         parser.add_argument(
             "--check",
             action="store_true",
@@ -21,11 +24,17 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        if options["check"]:
+        try:
             with transaction.atomic():
-                sync_workflow_definitions()
-                transaction.set_rollback(True)
+                if options.get("json_path"):
+                    publish_graph(load_graph(options["json_path"]))
+                else:
+                    sync_workflow_definitions()
+                if options["check"]:
+                    transaction.set_rollback(True)
+        except WorkflowConfigurationError as exc:
+            raise CommandError(str(exc)) from exc
+        if options["check"]:
             self.stdout.write(self.style.SUCCESS("Workflow definitions are valid; no changes saved."))
             return
-        sync_workflow_definitions()
         self.stdout.write(self.style.SUCCESS("Workflow definitions synchronised and published."))

@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from uuid import UUID
 
 from django.contrib import messages
@@ -41,6 +43,335 @@ from .notifications import (
 )
 
 from cintafactory.pagination import DEFAULT_PAGE_SIZE
+
+
+_MISSING_NOTIFICATION_VALUE = object()
+_MAX_NOTIFICATION_DETAIL_DEPTH = 10
+
+
+def _parse_notification_json(value):
+    """Parse a serialized JSON value while preserving ordinary text."""
+    if not isinstance(value, str) or not value.strip():
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError, RecursionError):
+        return value
+
+
+def _normalise_notification_value(value, depth: int = 0):
+    if depth > _MAX_NOTIFICATION_DETAIL_DEPTH:
+        return value
+    if isinstance(value, str):
+        parsed = _parse_notification_json(value)
+        if isinstance(parsed, str):
+            return parsed
+        return _normalise_notification_value(parsed, depth + 1)
+    if isinstance(value, dict):
+        return {
+            key: _normalise_notification_value(child, depth + 1)
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [_normalise_notification_value(child, depth + 1) for child in value]
+    return value
+
+
+def _notification_field_label(value) -> str:
+    label = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", str(value))
+    words = re.split(r"[_\-\s]+", label.strip())
+    acronyms = {"api", "dat", "id", "url"}
+    return " ".join(
+        word.upper() if word.casefold() in acronyms else word.capitalize()
+        for word in words
+        if word
+    )
+
+
+def _notification_scalar(value) -> str:
+    if value is _MISSING_NOTIFICATION_VALUE or value is None or value == "":
+        return "—"
+    if isinstance(value, bool):
+        return "Oui" if value else "Non"
+    return str(value)
+
+
+def _notification_value_summary(value) -> str:
+    if value is _MISSING_NOTIFICATION_VALUE or value is None or value == "":
+        return "—"
+    if isinstance(value, bool):
+        return "Oui" if value else "Non"
+    if isinstance(value, dict):
+        count = len(value)
+        return f"{count} champ" if count == 1 else f"{count} champs"
+    if isinstance(value, list):
+        count = len(value)
+        return f"{count} élément" if count == 1 else f"{count} éléments"
+    return str(value)
+
+
+def _notification_value_lines(value) -> list[dict[str, object]]:
+    """Flatten nested JSON into safe, labeled lines for the notification template."""
+    lines: list[dict[str, object]] = []
+
+    def add(label, scalar, depth, *, group=False):
+        lines.append({
+            "label": label,
+            "value": scalar,
+            "depth": min(depth, _MAX_NOTIFICATION_DETAIL_DEPTH),
+            "is_group": group,
+        })
+
+    def visit(current, label, depth):
+        if depth > _MAX_NOTIFICATION_DETAIL_DEPTH:
+            add(label or "Détail", "Contenu imbriqué : consulter le JSON brut.", depth)
+            return
+        if isinstance(current, dict):
+            if not current:
+                add(label or "Détail", "Aucun champ.", depth)
+                return
+            if label:
+                add(label, "", depth, group=True)
+            for key, child in current.items():
+                child_label = _notification_field_label(key)
+                if isinstance(child, (dict, list)):
+                    visit(child, child_label, depth + 1)
+                else:
+                    add(child_label, _notification_scalar(child), depth + 1)
+            return
+        if isinstance(current, list):
+            if not current:
+                add(label or "Détail", "Aucun élément.", depth)
+                return
+            if label:
+                add(label, "", depth, group=True)
+            for index, child in enumerate(current, start=1):
+                visit(child, f"Élément {index}", depth + 1)
+            return
+        add(label or "Valeur", _notification_scalar(current), depth)
+
+    visit(value, "", 0)
+    return lines
+
+
+def _notification_identity_token(value):
+    if value is None or value == "":
+        return None
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return None
+
+
+def _notification_array_identity_key(before: list, after: list) -> str | None:
+    if (
+        not before
+        or not after
+        or not all(isinstance(row, dict) for row in before)
+        or not all(isinstance(row, dict) for row in after)
+    ):
+        return None
+    shared_keys = set(before[0]).intersection(after[0])
+    for row in before:
+        shared_keys.intersection_update(row)
+    for row in after:
+        shared_keys.intersection_update(row)
+    candidates = [key for key in ("id", "key") if key in shared_keys]
+    candidates.extend(
+        sorted(
+            key
+            for key in shared_keys
+            if key.endswith("_id") and key not in {"id", "key"}
+        )
+    )
+    for key in candidates:
+        before_tokens = [_notification_identity_token(row.get(key)) for row in before]
+        after_tokens = [_notification_identity_token(row.get(key)) for row in after]
+        if (
+            all(token is not None for token in before_tokens)
+            and all(token is not None for token in after_tokens)
+            and len(before_tokens) == len(set(before_tokens))
+            and len(after_tokens) == len(set(after_tokens))
+        ):
+            return key
+    return None
+
+
+def _notification_diff_path(path: str, label: str) -> str:
+    return f"{path} · {label}" if path else label
+
+
+def _notification_diff_leaf(path: str, kind: str, before, after) -> dict[str, str]:
+    return {
+        "path": path or "Valeur",
+        "kind": kind,
+        "before": _notification_value_summary(before),
+        "after": _notification_value_summary(after),
+    }
+
+
+def _notification_added_or_removed_leaf(value, path: str, kind: str) -> dict[str, str]:
+    before = value if kind == "removed" else _MISSING_NOTIFICATION_VALUE
+    after = _MISSING_NOTIFICATION_VALUE if kind == "removed" else value
+    return _notification_diff_leaf(path, kind, before, after)
+
+
+def _notification_added_or_removed(
+    value,
+    path: str,
+    kind: str,
+    depth: int = 0,
+) -> list[dict[str, str]]:
+    if depth > _MAX_NOTIFICATION_DETAIL_DEPTH:
+        return [_notification_added_or_removed_leaf(value, path, kind)]
+    if isinstance(value, dict):
+        if not value:
+            return [_notification_added_or_removed_leaf(value, path, kind)]
+        result = []
+        for key, child in value.items():
+            result.extend(_notification_added_or_removed(
+                child,
+                _notification_diff_path(path, _notification_field_label(key)),
+                kind,
+                depth + 1,
+            ))
+        return result
+    if isinstance(value, list):
+        if not value:
+            return [_notification_added_or_removed_leaf(value, path, kind)]
+        result = []
+        for index, child in enumerate(value, start=1):
+            result.extend(_notification_added_or_removed(
+                child,
+                _notification_diff_path(path, f"Élément {index}"),
+                kind,
+                depth + 1,
+            ))
+        return result
+    before = value if kind == "removed" else _MISSING_NOTIFICATION_VALUE
+    after = _MISSING_NOTIFICATION_VALUE if kind == "removed" else value
+    return [_notification_diff_leaf(path, kind, before, after)]
+
+
+def _notification_value_differences(
+    before,
+    after,
+    path: str = "",
+    depth: int = 0,
+) -> list[dict[str, str]]:
+    if type(before) is type(after) and before == after:
+        return []
+    if depth > _MAX_NOTIFICATION_DETAIL_DEPTH:
+        return [_notification_diff_leaf(path, "changed", before, after)]
+    if before is _MISSING_NOTIFICATION_VALUE:
+        return _notification_added_or_removed(after, path, "added", depth)
+    if after is _MISSING_NOTIFICATION_VALUE:
+        return _notification_added_or_removed(before, path, "removed", depth)
+    if isinstance(before, dict) and isinstance(after, dict):
+        result = []
+        for key in dict.fromkeys((*before.keys(), *after.keys())):
+            child_path = _notification_diff_path(path, _notification_field_label(key))
+            result.extend(_notification_value_differences(
+                before.get(key, _MISSING_NOTIFICATION_VALUE),
+                after.get(key, _MISSING_NOTIFICATION_VALUE),
+                child_path,
+                depth + 1,
+            ))
+        return result
+    if isinstance(before, list) and isinstance(after, list):
+        identity_key = _notification_array_identity_key(before, after)
+        if identity_key:
+            before_by_id = {
+                _notification_identity_token(row[identity_key]): row
+                for row in before
+            }
+            after_by_id = {
+                _notification_identity_token(row[identity_key]): row
+                for row in after
+            }
+            result = []
+            for row in after:
+                token = _notification_identity_token(row[identity_key])
+                identity_label = (
+                    f"{_notification_field_label(identity_key)} {row[identity_key]}"
+                )
+                row_path = _notification_diff_path(path, identity_label)
+                old_row = before_by_id.get(token, _MISSING_NOTIFICATION_VALUE)
+                if old_row is _MISSING_NOTIFICATION_VALUE:
+                    result.extend(
+                        _notification_added_or_removed(row, row_path, "added", depth + 1)
+                    )
+                else:
+                    result.extend(
+                        _notification_value_differences(old_row, row, row_path, depth + 1)
+                    )
+            for row in before:
+                token = _notification_identity_token(row[identity_key])
+                if token not in after_by_id:
+                    identity_label = (
+                        f"{_notification_field_label(identity_key)} {row[identity_key]}"
+                    )
+                    result.extend(_notification_added_or_removed(
+                        row,
+                        _notification_diff_path(path, identity_label),
+                        "removed",
+                        depth + 1,
+                    ))
+            return result
+        result = []
+        for index in range(max(len(before), len(after))):
+            row_path = _notification_diff_path(path, f"Élément {index + 1}")
+            old_value = before[index] if index < len(before) else _MISSING_NOTIFICATION_VALUE
+            new_value = after[index] if index < len(after) else _MISSING_NOTIFICATION_VALUE
+            result.extend(
+                _notification_value_differences(old_value, new_value, row_path, depth + 1)
+            )
+        return result
+    if isinstance(before, (dict, list)) or isinstance(after, (dict, list)):
+        return [_notification_diff_leaf(path, "changed", before, after)]
+    return [_notification_diff_leaf(path, "changed", before, after)]
+
+
+def _notification_change_views(details) -> list[dict[str, object]]:
+    details = _normalise_notification_value(_parse_notification_json(details))
+    changes = details.get("changes") if isinstance(details, dict) else None
+    if not isinstance(changes, dict):
+        return []
+    result = []
+    for key, change in changes.items():
+        if not isinstance(change, dict):
+            change = {"to": change}
+        raw_before = change.get("from", _MISSING_NOTIFICATION_VALUE)
+        raw_after = change.get("to", _MISSING_NOTIFICATION_VALUE)
+        before = _normalise_notification_value(_parse_notification_json(raw_before))
+        after = _normalise_notification_value(_parse_notification_json(raw_after))
+        result.append({
+            "label": str(change.get("label") or _notification_field_label(key)),
+            "part": str(change.get("part") or ""),
+            "before_lines": _notification_value_lines(before),
+            "after_lines": _notification_value_lines(after),
+            "differences": _notification_value_differences(before, after),
+        })
+    return result
+
+
+def _notification_detail_lines(details) -> list[dict[str, object]]:
+    return _notification_value_lines(
+        _normalise_notification_value(_parse_notification_json(details))
+    )
+
+
+def _notification_has_details(details) -> bool:
+    return not (details is None or details == "" or details == {} or details == [])
+
+
+def _notification_raw_json(details) -> str:
+    if not _notification_has_details(details):
+        return ""
+    try:
+        return json.dumps(details, ensure_ascii=False, indent=2, default=str)
+    except (TypeError, ValueError, RecursionError):
+        return str(details)
 
 
 class WorkflowOverviewView(LoginRequiredMixin, TemplateView):
@@ -239,6 +570,9 @@ class WorkflowBoardView(LoginRequiredMixin, TemplateView):
         step_by_state = {step.state: step for step in steps}
 
         active_spec = self.workflow.active_version.specification if self.workflow.active_version else {}
+        if active_spec.get("schema_version") == 2:
+            from .graph_schema import SUMMARY_STATES
+            active_spec = {"steps": [{"status": code, "lane": lane} for code, _name, lane, _caps in SUMMARY_STATES]}
         state_lanes = {
             item.get("status"): item.get("lane", "in_progress")
             for item in active_spec.get("steps", [])
@@ -366,13 +700,37 @@ class WorkflowNotificationsView(LoginRequiredMixin, TemplateView):
                 "dat_application_name": getattr(application, "name", "") if application else "",
             }
             if entry.history is not None:
+                details = entry.history.details
+                change_views = (
+                    _notification_change_views(details)
+                    if entry.history.action in {
+                        DATHistoryAction.UPDATED,
+                        DATHistoryAction.SECTION_UPDATED,
+                    }
+                    else []
+                )
+                if entry.history.action in {
+                    DATHistoryAction.STATUS_CHANGED,
+                    DATHistoryAction.OWNER_CHANGED,
+                    DATHistoryAction.SECTION_UPDATED,
+                } or (entry.history.action == DATHistoryAction.UPDATED and change_views):
+                    detail_lines = []
+                else:
+                    detail_lines = (
+                        _notification_detail_lines(details)
+                        if _notification_has_details(details)
+                        else []
+                    )
                 payload.update(
                     {
                         "history": entry.history,
                         "title": entry.history.get_action_display(),
                         "actor_name": entry.history.actor_name(),
                         "created_at": entry.history.performed_at,
-                        "details": entry.history.details or {},
+                        "details": details or {},
+                        "detail_lines": detail_lines,
+                        "change_views": change_views,
+                        "raw_details_json": _notification_raw_json(details),
                         "action": entry.history.action,
                         "status_from": entry.history.status_change_from,
                         "status_to": entry.history.status_change_to,
@@ -380,6 +738,7 @@ class WorkflowNotificationsView(LoginRequiredMixin, TemplateView):
                     }
                 )
             elif entry.user_notification is not None:
+                details = entry.user_notification.extra_data
                 payload.update(
                     {
                         "user_notification": entry.user_notification,
@@ -387,7 +746,13 @@ class WorkflowNotificationsView(LoginRequiredMixin, TemplateView):
                         "actor_name": entry.user_notification.actor_name,
                         "created_at": entry.user_notification.created_at,
                         "message": entry.user_notification.message,
-                        "details": entry.user_notification.extra_data or {},
+                        "details": details or {},
+                        "detail_lines": (
+                            _notification_detail_lines(details)
+                            if _notification_has_details(details)
+                            else []
+                        ),
+                        "raw_details_json": _notification_raw_json(details),
                         "action": entry.user_notification.level,
                         "level": entry.user_notification.level,
                         "level_display": entry.user_notification.get_level_display(),
@@ -451,6 +816,21 @@ class MyTasksBoardView(WorkflowBoardView):
 
         dat_items = self.get_dat_items()
         for dat in dat_items:
+            from .graph_engine import graph_context, is_graph
+            from .services import ensure_workflow_instance
+            instance = ensure_workflow_instance(dat, workflow_code=self.workflow_code)
+            if is_graph(instance):
+                graph = graph_context(dat, self.request.user)
+                if graph is None or instance.current_state in {"valider", "refuse"}:
+                    continue
+                role = dat.participants.filter(user=self.request.user).values_list("role__slug", flat=True).first()
+                relevant = [node for node in graph["nodes"] if role in node["roles"]]
+                if graph["has_actions"]:
+                    columns["in_progress"].append(dat)
+                elif relevant:
+                    key = "blocked" if any(node["attempt"].status != "completed" for node in relevant) else "validation"
+                    columns[key].append(dat)
+                continue
             if not workflow_actor_has_any_state_permission(
                 dat,
                 self.request.user,

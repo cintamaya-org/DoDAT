@@ -76,3 +76,10 @@ tmp/
 shell.sh
 
 uv.lock
+
+.Temp_workflow/
+Temp_workflow
+Temp_workflow/**
+Temp_workflow/*
+/Temp_workflow/**
+/Temp_workflow/*

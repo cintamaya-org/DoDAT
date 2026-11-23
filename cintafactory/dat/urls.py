@@ -129,6 +129,7 @@ urlpatterns = [
     path("manage/dats/dashboard/", views.DatDashboardView.as_view(), name="dashboard"),
     path("manage/dats/import/", views.DatImportView.as_view(), name="import"),
     path("search/", views.DatSearchPageView.as_view(), name="search_page"),
+    path("search/options/<str:field>/", views.search_filter_options, name="search_filter_options"),
 
     # CRUD
     path("manage/dats/", views.DatAdminList.as_view(), name="admin_list"),

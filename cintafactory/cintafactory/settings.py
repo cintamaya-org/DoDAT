@@ -32,6 +32,10 @@ APPLICATION_NAME = "DoDat"
 
 load_dotenv(BASE_DIR / ".env", override=False)
 load_dotenv(BASE_DIR.parent / ".env", override=False)
+DAT_WORKFLOW_CONFIG = os.getenv("DAT_WORKFLOW_CONFIG", "")
+DAT_WORKFLOW_JSON = os.getenv("DAT_WORKFLOW_JSON", "")
+DAT_WORKFLOW_REQUIRE_SECTION_REFERENTS = os.getenv("DAT_WORKFLOW_REQUIRE_SECTION_REFERENTS", "0").strip().lower() in {"1", "true", "yes", "on"}
+WORKFLOW_SNAPSHOT_MAX_BYTES = int(os.getenv("WORKFLOW_SNAPSHOT_MAX_BYTES", str(64 * 1024 * 1024)))
 
 
 # Quick-start development settings - unsuitable for production
@@ -138,6 +142,7 @@ AUTH_USER_MODEL = "users.User"
 LOGIN_REDIRECT_URL = "/account/profile/"
 
 MIDDLEWARE = [
+    "workflows.middleware.WorkflowConflictMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "cintafactory.middleware.AppSecurityHeadersMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",

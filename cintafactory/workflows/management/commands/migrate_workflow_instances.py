@@ -13,6 +13,7 @@ class Command(BaseCommand):
     help = "Migrate pinned workflow instances to active definition version. Dry-run by default."
 
     def add_arguments(self, parser):
+        parser.add_argument("--restart-active", action="store_true", help="Restart active DATs with fresh graph approvals. Completed DATs remain archived.")
         parser.add_argument("workflow_code")
         parser.add_argument(
             "--map",
@@ -47,6 +48,7 @@ class Command(BaseCommand):
                     workflow_code=options["workflow_code"],
                     state_mapping=mapping,
                     object_ids=options["object_id"],
+                    **({"restart_active": True, "preview": not options["apply"]} if options["restart_active"] else {}),
                 )
                 if not options["apply"]:
                     transaction.set_rollback(True)

@@ -3,6 +3,7 @@
 {% block menu_toggle_label %}{% endblock %}
 
 {% block app_menu_items %}
+  <li><a href="{% url 'workflows:my_approvals' %}"><i class="material-icons">approval</i>Mes approbations</a></li>
   {% comment %} <li>
     <a href="{% url 'workflows:overview' %}">
       <i class="material-icons">insights</i>Workflow overview

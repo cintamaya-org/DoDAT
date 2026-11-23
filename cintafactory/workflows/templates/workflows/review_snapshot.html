@@ -1,0 +1,14 @@
+{% extends 'material/frontend/base_module.html' %}
+{% block title %}Version revue · {{ dat.reference }}{% endblock %}
+{% block page_title %}Version présentée à la revue{% endblock %}
+{% block content %}
+  <a href="{% url 'workflows:graph_detail' dat.pk %}" class="btn-flat">Retour aux approbations</a>
+  <p>{{ dat.reference }} · Version conservée le {{ snapshot.created_at|date:'d/m/Y H:i' }}</p>
+  {% if snapshot.content.dat %}<article class="card cinta-card"><div class="card-content"><h2 class="card-title">{{ snapshot.content.dat.title }}</h2><p>{{ snapshot.content.dat.description }}</p></div></article>{% endif %}
+  {% for part in parts %}
+    <article class="card cinta-card"><div class="card-content"><h2 class="card-title">{{ part.label }}</h2><pre>{{ part.display }}</pre></div></article>
+  {% endfor %}
+  {% for artifact in snapshot.content.artifacts %}
+    <p><a href="{% url 'workflows:review_asset' dat.pk snapshot.pk artifact.sha256 %}">Télécharger la version revue : {{ artifact.name }}</a></p>
+  {% endfor %}
+{% endblock %}

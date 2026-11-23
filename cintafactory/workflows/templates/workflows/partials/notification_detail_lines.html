@@ -1,0 +1,9 @@
+{% if lines %}
+  <ul class="wf-notification__value-list">
+    {% for line in lines %}
+      <li class="{% if line.is_group %}wf-notification__value-line--group{% endif %}" style="padding-left: {{ line.depth }}rem;">
+        {% if line.label %}<strong>{{ line.label }}</strong>{% if line.value %} : {% endif %}{% endif %}{{ line.value }}
+      </li>
+    {% endfor %}
+  </ul>
+{% endif %}

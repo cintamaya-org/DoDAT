@@ -181,6 +181,78 @@ class WorkflowTransitionEvent(models.Model):
     def __str__(self) -> str:  # pragma: no cover - human readable helper
         return f"{self.from_state} → {self.to_state} ({self.event})"
 
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValidationError("Workflow audit events are immutable.")
+        return super().save(*args, **kwargs)
+
+
+class WorkflowContentSnapshot(models.Model):
+    """Immutable content evidence; excludes workflow status and generated exports."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    instance = models.ForeignKey(WorkflowInstance, on_delete=models.CASCADE, related_name="content_snapshots")
+    target = models.JSONField()
+    digest = models.CharField(max_length=64)
+    content = models.JSONField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["instance", "digest"], name="workflow_snapshot_digest_idx")]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValidationError("Workflow snapshots are immutable.")
+        return super().save(*args, **kwargs)
+
+
+class WorkflowNodeAttempt(models.Model):
+    """One activation of a graph node; superseded attempts remain historical."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    instance = models.ForeignKey(WorkflowInstance, on_delete=models.CASCADE, related_name="node_attempts")
+    node_id = models.SlugField(max_length=64)
+    number = models.PositiveIntegerField(default=1)
+    is_current = models.BooleanField(default=True)
+    status = models.CharField(max_length=24, default="waiting")
+    blockers = models.JSONField(default=list)
+    assignments = models.JSONField(default=dict)
+    dependencies = models.JSONField(default=dict)
+    snapshot = models.ForeignKey(WorkflowContentSnapshot, on_delete=models.RESTRICT, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["instance", "node_id", "number"], name="workflow_node_attempt_number"),
+            models.UniqueConstraint(fields=["instance", "node_id"], condition=models.Q(is_current=True), name="workflow_node_current_unique"),
+        ]
+        indexes = [models.Index(fields=["instance", "is_current", "status"], name="workflow_node_current_idx")]
+
+
+class WorkflowApprovalDecision(models.Model):
+    """Append-only decisions bound to an attempt, DAT assignment and content."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    attempt = models.ForeignKey(WorkflowNodeAttempt, on_delete=models.CASCADE, related_name="decisions")
+    snapshot = models.ForeignKey(WorkflowContentSnapshot, on_delete=models.RESTRICT)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
+    actor_display = models.CharField(max_length=255)
+    role_slug = models.SlugField(max_length=100, blank=True)
+    assignment_id = models.UUIDField(null=True, blank=True)
+    outcome = models.CharField(max_length=24)
+    comment = models.TextField(blank=True)
+    request_id = models.UUIDField(unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["attempt", "role_slug"], name="workflow_decision_role_unique")]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValidationError("Workflow decisions are immutable.")
+        return super().save(*args, **kwargs)
+
 
 class WorkflowStep(models.Model):
     """Single workflow column/state displayed on the Kanban board."""

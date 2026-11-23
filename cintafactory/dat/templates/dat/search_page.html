@@ -1,45 +1,43 @@
 {% extends current_module.base_template %}
+{% load static %}
 {% block title %}Rechercher{% endblock %}
 {% block page_title %}Rechercher{% endblock %}
+{% block extrahead %}
+  {{ block.super }}
+  <script src="{% static 'js/dat_search_filters.js' %}" defer></script>
+{% endblock %}
 
 {% block content %}
 <div class="card cinta-card dat-search-page">
   <div class="card-content dat-search-page__content">
     <form method="get" class="dat-search-page__form">
-      <div class="dat-search-page__toolbar">
-        <div class="dat-search-page__search-shell dat-search-page__input-wrap">
+      <div class="dat-list__filters u-flex u-gap-0-5 u-flex-wrap">
+        <div class="dat-list__field dat-list__search-field u-m-0">
+          <label for="dat-search-page-query">Recherche</label>
           <input
             id="dat-search-page-query"
-            class="dat-search-page__input"
             type="search"
             name="q"
-            placeholder="Search"
-            aria-label="Rechercher"
+            placeholder="Rechercher par référence, titre, application..."
             value="{{ search_query|default_if_none:'' }}"
           >
         </div>
-        <button type="submit" class="btn waves-effect waves-light cinta-btn-primary dat-search-page__action-btn">
-          <i class="material-icons" aria-hidden="true">search</i>Rechercher
-        </button>
-        {% if search_query or not include_applications or not include_dats %}
-          <a href="{% url 'dat:search_page' %}" class="btn-flat waves-effect dat-search-page__reset-btn">
-            <i class="material-icons" aria-hidden="true">restart_alt</i>Réinitialiser
-          </a>
-        {% else %}
-          <button type="button" class="btn-flat disabled dat-search-page__reset-btn">
-            <i class="material-icons" aria-hidden="true">restart_alt</i>Réinitialiser
-          </button>
-        {% endif %}
+        <div class="dat-list__filter-actions u-flex u-gap-0-5 u-items-center">
+          <button type="submit" class="btn waves-effect waves-light cinta-btn-primary">Rechercher</button>
+          {% if can_reset %}
+            <a href="{% url 'dat:search_page' %}" class="btn-flat waves-effect">Réinitialiser</a>
+          {% endif %}
+        </div>
       </div>
 
-      <details class="dat-search-page__filters dat-attachments-collapsible">
+      <details class="dat-search-page__filters dat-attachments-collapsible" {% if advanced_filters_open %}open{% endif %}>
         <summary class="dat-search-page__filters-summary dat-attachments-toggle">
-          <span class="dat-attachments-toggle-label dat-attachments-toggle-label--closed">Afficher les filtres</span>
-          <span class="dat-attachments-toggle-label dat-attachments-toggle-label--open">Masquer les filtres</span>
+          <span class="dat-attachments-toggle-label dat-attachments-toggle-label--closed">Afficher les filtres avancés</span>
+          <span class="dat-attachments-toggle-label dat-attachments-toggle-label--open">Masquer les filtres avancés</span>
           <i class="material-icons dat-attachments-toggle-icon" aria-hidden="true">expand_more</i>
         </summary>
         <div class="dat-search-page__filters-body">
-          <p class="dat-search-page__filters-title">Filtres de recherche</p>
+          <p class="dat-search-page__filters-title">Filtres avancés</p>
           <div class="dat-search-page__filters-options">
             <input type="hidden" name="applications" value="0">
             <label class="topbar-search__filter dat-search-page__filter-option">
@@ -48,14 +46,77 @@
             </label>
             <input type="hidden" name="dats" value="0">
             <label class="topbar-search__filter dat-search-page__filter-option">
-              <input type="checkbox" name="dats" value="1" {% if include_dats %}checked{% endif %}>
+              <input type="checkbox" name="dats" value="1" data-search-dats-toggle {% if include_dats %}checked{% endif %}>
               <span>DAT</span>
             </label>
           </div>
+          <div class="dat-search-page__advanced-grid">
+            {% for field in common_filter_fields %}
+              <div class="dat-list__field">
+                <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                {{ field }}
+              </div>
+            {% endfor %}
+          </div>
+          <fieldset class="dat-search-page__dat-filters" data-search-dat-filters {% if not include_dats %}hidden disabled{% endif %}>
+            <legend>Filtres propres aux DAT</legend>
+            <p class="text-muted">Ces filtres s’appliquent uniquement aux résultats DAT.</p>
+            <div class="dat-search-page__advanced-grid">
+              <div class="dat-list__field">
+                <label for="{{ filter_form.owner.id_for_label }}">{{ filter_form.owner.label }}</label>
+                {{ filter_form.owner }}
+              </div>
+              <div>
+                <label class="material-checkbox-option">
+                  {{ filter_form.mine }}<span>{{ filter_form.mine.label }}</span>
+                </label>
+                <p class="text-muted">DAT dont je suis porteur, participant ou responsable de section, parmi ceux auxquels j’ai accès.</p>
+              </div>
+            </div>
+            <fieldset class="dat-search-page__statuses">
+              <legend>{{ filter_form.status.label }}</legend>
+              <div class="dat-search-page__filters-options">
+                {% for value, label in status_choices %}
+                  <label class="material-checkbox-option">
+                    <input type="checkbox" name="status" value="{{ value }}" {% if value in filter_form.status.value %}checked{% endif %}>
+                    <span>{{ label }}</span>
+                  </label>
+                {% endfor %}
+              </div>
+            </fieldset>
+          </fieldset>
+          <div class="dat-search-page__advanced-grid">
+            {% for field in date_filter_fields %}
+              <div class="dat-list__field">
+                <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                {{ field }}
+              </div>
+            {% endfor %}
+          </div>
+          <p class="text-muted">Les dates de mise à jour concernent la fiche ; les modifications des sections ne sont pas toutes incluses. Vous pouvez rechercher avec les filtres seuls, sans texte.</p>
         </div>
       </details>
     </form>
 
+    {% if active_filters %}
+      <div class="dat-search-page__active-filters" aria-label="Filtres actifs">
+        {% for filter in active_filters %}
+          <a class="chip" href="{{ filter.url }}" aria-label="Retirer le filtre {{ filter.label }}">{{ filter.label }} <span aria-hidden="true">×</span></a>
+        {% endfor %}
+      </div>
+    {% endif %}
+    {% if filter_form.errors %}
+      <div class="dat-list__error" role="alert">
+        {% for field in filter_form %}
+          {% if field.errors %}
+            <div id="{{ field.auto_id }}_error">
+              {% for error in field.errors %}<p>{{ field.label }} : {{ error }}</p>{% endfor %}
+            </div>
+          {% endif %}
+        {% endfor %}
+        {% for error in filter_form.non_field_errors %}<p>{{ error }}</p>{% endfor %}
+      </div>
+    {% endif %}
     {% if filters_empty %}
       <p class="dat-list__error">Sélectionnez au moins un filtre.</p>
     {% elif search_too_short %}
@@ -92,10 +153,10 @@
           </tbody>
         </table>
       </div>
-    {% elif search_query and not filters_empty and not search_too_short %}
+    {% elif has_search and not filters_empty and not search_too_short and not filter_form.errors %}
       <p class="dat-search-page__empty">Aucun résultat.</p>
     {% else %}
-      <p class="dat-search-page__empty">Saisissez une recherche puis validez.</p>
+      <p class="dat-search-page__empty">Saisissez une recherche ou sélectionnez des filtres, puis validez.</p>
     {% endif %}
 
     {% include "components/pagination.html" %}

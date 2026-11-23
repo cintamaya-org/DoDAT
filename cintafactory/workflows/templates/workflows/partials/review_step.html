@@ -1,0 +1,51 @@
+  <small>Tentative {{ node.attempt.number }}</small>
+  <p>Contenu : <a href="{% url 'dat:my_detail' dat.pk %}?section={{ node.target.section|default:'validation' }}">{{ node.target_label }}</a></p>
+  {% if node.roles %}<p>Approbateurs : {{ node.role_names|join:', ' }}{% if node.approvers.any_role %} (un rôle suffit){% else %} (tous requis){% endif %}</p>{% endif %}
+  {% if node.section_referent %}<p>Approbateur : référent de la section{% if approval_graph.require_section_referents %} (requis){% else %} (facultatif){% endif %}</p>{% endif %}
+  {% if node.remaining_roles %}<p>Approbations attendues : {{ node.remaining_role_names|join:', ' }}</p>{% endif %}
+  {% if node.after %}<p>Après : {{ node.dependency_names|join:', ' }}</p>{% endif %}
+  {% if node.type == 'approval' %}<p>Si des corrections sont demandées : retour à « {{ node.correction_name }} ».</p>{% endif %}
+  {% if node.refusal_link %}
+    <p><a class="workflow-refusal-link" href="#review-{{ node.refusal_link.to }}">↶ Retour après refus vers « {{ node.refusal_destination }} »</a></p>
+  {% endif %}
+  {% if node.attempt.blockers %}
+    <ul class="review-blockers">
+    {% for blocker in node.display_blockers %}
+      <li>{% if blocker.code == 'dependency_pending' %}Approbation précédente attendue : {{ blocker.node_name }}
+      {% elif blocker.code == 'missing_assignee' %}Rôle sans utilisateur affecté : {{ blocker.role_name }}
+      {% elif blocker.code == 'missing_section_referent' %}Un référent actif doit être affecté à cette section. <a href="{% url 'dat:my_detail' dat.pk %}?section=informations-generales">Responsables des sections</a>
+      {% elif blocker.code == 'refusal_blocked' %}Une reprise est requise par l’un des rôles suivants : {{ node.retry_role_names|join:', ' }}.
+      {% elif blocker.code == 'target_missing' %}Contenu à approuver introuvable.
+      {% elif blocker.code == 'readiness_failed' %}Les conditions de soumission ne sont pas remplies.
+      {% elif blocker.code == 'snapshot_unavailable' %}Une pièce jointe ou un diagramme est indisponible. La revue reprendra lorsque son contenu sera accessible.
+      {% elif blocker.code == 'workflow_rejected' %}Le dossier a été refusé.
+      {% endif %}</li>
+    {% endfor %}
+    </ul>
+  {% endif %}
+  {% for decision in node.decisions %}
+    <p><strong>{{ decision.actor_display }}</strong> · {{ decision.role_name }} · {% if decision.outcome == 'approve' %}Approuvé{% elif decision.outcome == 'submit' %}Soumis{% else %}{{ decision.outcome }}{% endif %} · {{ decision.created_at|date:'d/m/Y H:i' }}<br>{{ decision.comment }}</p>
+  {% endfor %}
+  {% if node.attempt.snapshot_id %}<p><a href="{% url 'workflows:review_snapshot' dat.pk node.attempt.snapshot_id %}">Voir la version présentée à la revue</a></p>{% endif %}
+  {% if node.can_submit or node.can_approve or node.can_retry %}
+    <form method="post" action="{% url 'workflows:node_action' dat.pk node.id %}">
+      {% csrf_token %}
+      <input type="hidden" name="attempt_id" value="{{ node.attempt.pk }}">
+      <input type="hidden" name="request_id" value="{{ node.request_id }}">
+      {% if node.can_submit %}
+        <button type="submit" name="outcome" value="submit" class="btn waves-effect waves-light">Soumettre pour revue</button>
+      {% elif node.can_retry %}
+        <button type="submit" name="outcome" value="retry" class="btn waves-effect waves-light">Reprendre cette étape</button>
+      {% else %}
+        <label for="comment-{{ node.id }}">Commentaire (obligatoire pour demander des corrections ou refuser)</label>
+        <textarea id="comment-{{ node.id }}" name="comment" class="materialize-textarea" maxlength="10000"></textarea>
+        <button type="submit" name="outcome" value="approve" class="btn waves-effect waves-light">Approuver</button>
+        <button type="submit" name="outcome" value="request_changes" class="btn-flat">Demander des corrections</button>
+        <button type="submit" name="outcome" value="reject" class="btn-flat">
+          {% if node.refusal_policy.mode == 'return' %}Refuser et renvoyer vers « {{ node.refusal_destination }} »
+          {% elif node.refusal_policy.mode == 'block' %}Refuser et bloquer cette étape
+          {% else %}Refuser le dossier{% endif %}
+        </button>
+      {% endif %}
+    </form>
+  {% endif %}

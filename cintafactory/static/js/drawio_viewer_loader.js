@@ -903,11 +903,45 @@
         border: 1px dashed #cfd8dc;
         background: #f7f9fb;
       }
-      .dat-drawio-inline-preview__title {
-        margin: 0 0 0.5rem 0;
-        font-weight: 600;
+      .dat-drawio-inline-preview__layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1.7fr) minmax(14rem, 1fr);
+        align-items: start;
+        gap: 1rem;
+      }
+      .dat-drawio-inline-preview__details {
+        display: flex;
+        flex-direction: column;
+        gap: 0.85rem;
+        min-width: 0;
+        padding: 0.85rem;
+        border: 1px solid #e0e0e0;
+        border-radius: 6px;
+        background: #fff;
+      }
+      .dat-drawio-inline-preview__details-heading {
+        margin: 0 0 0.35rem;
         color: #37474f;
-        font-size: 0.95rem;
+        font-size: 0.82rem;
+        font-weight: 600;
+      }
+      .dat-drawio-inline-preview__name,
+      .dat-drawio-inline-preview__description-text {
+        margin: 0;
+        color: #546e7a;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .dat-drawio-inline-preview__pages {
+        display: grid;
+        gap: 0.25rem;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .dat-drawio-inline-preview__page {
+        color: #546e7a;
+        overflow-wrap: anywhere;
       }
       .dat-drawio-inline-preview__body {
         color: #546e7a;
@@ -926,14 +960,14 @@
       .dat-drawio-inline-preview__image-wrapper + .dat-drawio-inline-preview__image-wrapper {
         margin-top: 0.65rem;
       }
-      .dat-drawio-inline-preview__image-label {
-        margin: 0 0 0.35rem 0;
-        font-size: 0.82rem;
-        color: #607d8b;
-      }
       .dat-drawio-inline-preview__error {
         color: #c62828;
         margin: 0;
+      }
+      @media (max-width: 760px) {
+        .dat-drawio-inline-preview__layout {
+          grid-template-columns: minmax(0, 1fr);
+        }
       }
     `;
     document.head.appendChild(style);
@@ -1063,15 +1097,10 @@
     td.colSpan = Math.max(1, td.colSpan || siblingCells || 1);
     const wrapper = document.createElement("div");
     wrapper.className = "dat-drawio-inline-preview";
-    const title = document.createElement("p");
-    title.className = "dat-drawio-inline-preview__title";
-    title.textContent =
-      payload && payload.title
-        ? payload.title
-        : descriptor && descriptor.title
-          ? descriptor.title
-          : `Diagramme #${diagramId}`;
-    wrapper.appendChild(title);
+    const layout = document.createElement("div");
+    layout.className = "dat-drawio-inline-preview__layout";
+    const diagramPanel = document.createElement("div");
+    diagramPanel.className = "dat-drawio-inline-preview__diagram";
     const body = document.createElement("div");
     body.className = "dat-drawio-inline-preview__body";
     if (payload && payload.error) {
@@ -1090,12 +1119,6 @@
         }
         const wrapper = document.createElement("div");
         wrapper.className = "dat-drawio-inline-preview__image-wrapper";
-        if (image.label) {
-          const label = document.createElement("p");
-          label.className = "dat-drawio-inline-preview__image-label";
-          label.textContent = image.label;
-          wrapper.appendChild(label);
-        }
         const img = document.createElement("img");
         img.className = "dat-drawio-inline-preview__image";
         img.alt = payload.title || (descriptor && descriptor.title) || `Diagramme #${diagramId}`;
@@ -1120,7 +1143,76 @@
     } else {
       body.textContent = "Aucun aperçu disponible pour ce diagramme.";
     }
-    wrapper.appendChild(body);
+    diagramPanel.appendChild(body);
+    layout.appendChild(diagramPanel);
+
+    const sourceRow = previewRow.nextElementSibling;
+    const sourceCells = sourceRow ? Array.from(sourceRow.children) : [];
+    const schemaNameCell = sourceCells.find((cell) => cell.dataset.columnKey === "nom_schema");
+    const descriptionCell = sourceCells.find((cell) => cell.dataset.columnKey === "description");
+    const schemaName = schemaNameCell ? schemaNameCell.textContent.trim() : "";
+    const displayName =
+      schemaName && schemaName !== "—"
+        ? schemaName
+        : payload && payload.title
+          ? payload.title
+          : descriptor && descriptor.title
+            ? descriptor.title
+            : `Diagramme #${diagramId}`;
+    const pageLabels =
+      payload && Array.isArray(payload.images) && payload.images.length
+        ? payload.images
+            .filter((image) => image && image.src)
+            .map((image, index) => image.label || `Page ${index + 1}`)
+        : payload && payload.thumbnail
+          ? ["Page 1"]
+          : [];
+
+    const detailsPanel = document.createElement("aside");
+    detailsPanel.className = "dat-drawio-inline-preview__details";
+    const nameSection = document.createElement("section");
+    const nameHeading = document.createElement("p");
+    nameHeading.className = "dat-drawio-inline-preview__details-heading";
+    nameHeading.textContent = "Nom";
+    const nameText = document.createElement("p");
+    nameText.className = "dat-drawio-inline-preview__name";
+    nameText.textContent = displayName;
+    nameSection.append(nameHeading, nameText);
+    detailsPanel.appendChild(nameSection);
+
+    if (pageLabels.length) {
+      const pageSection = document.createElement("section");
+      const pageHeading = document.createElement("p");
+      pageHeading.className = "dat-drawio-inline-preview__details-heading";
+      pageHeading.textContent = pageLabels.length > 1 ? "Pages" : "Page";
+      const pagesList = document.createElement("ul");
+      pagesList.className = "dat-drawio-inline-preview__pages";
+      pageLabels.forEach((label) => {
+        const page = document.createElement("li");
+        page.className = "dat-drawio-inline-preview__page";
+        page.textContent = label;
+        pagesList.appendChild(page);
+      });
+      pageSection.append(pageHeading, pagesList);
+      detailsPanel.appendChild(pageSection);
+    }
+
+    if (descriptionCell) {
+      const descriptionSection = document.createElement("section");
+      const descriptionHeading = document.createElement("p");
+      descriptionHeading.className = "dat-drawio-inline-preview__details-heading";
+      descriptionHeading.textContent = "Description";
+      const descriptionText = document.createElement("p");
+      descriptionText.className = "dat-drawio-inline-preview__description-text";
+      const descriptionValue = descriptionCell.textContent.trim();
+      descriptionText.textContent =
+        !descriptionValue || descriptionValue === "—" ? "Aucune description renseignée." : descriptionValue;
+      descriptionSection.append(descriptionHeading, descriptionText);
+      detailsPanel.appendChild(descriptionSection);
+    }
+
+    layout.appendChild(detailsPanel);
+    wrapper.appendChild(layout);
     td.innerHTML = "";
     td.appendChild(wrapper);
   }

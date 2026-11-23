@@ -37,6 +37,10 @@ services:
       dockerfile: cintafactory/dockerfile
     environment:
       DJANGO_SETTINGS_MODULE: cintafactory.settings
+      DAT_WORKFLOW_CONFIG:
+      DAT_WORKFLOW_JSON:
+      DAT_WORKFLOW_REQUIRE_SECTION_REFERENTS: ${DAT_WORKFLOW_REQUIRE_SECTION_REFERENTS:-0}
+      WORKFLOW_SNAPSHOT_MAX_BYTES:
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in .env}
       DJANGO_DEBUG: 1
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-*}
@@ -122,6 +126,10 @@ services:
       dockerfile: cintafactory/dockerfile
     environment:
       DJANGO_SETTINGS_MODULE: cintafactory.settings
+      DAT_WORKFLOW_CONFIG:
+      DAT_WORKFLOW_JSON:
+      DAT_WORKFLOW_REQUIRE_SECTION_REFERENTS: ${DAT_WORKFLOW_REQUIRE_SECTION_REFERENTS:-0}
+      WORKFLOW_SNAPSHOT_MAX_BYTES:
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY in .env}
       DJANGO_DEBUG: 1
       DATABASE_HOST: pgbouncer

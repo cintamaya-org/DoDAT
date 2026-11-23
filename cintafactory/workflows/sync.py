@@ -40,7 +40,10 @@ def _iter_expected_permissions(
 def sync_workflow_definitions(definitions: Sequence[WorkflowDefinition] | None = None) -> None:
     """Synchronise declarative workflow definitions with the database."""
 
-    definitions = WORKFLOW_DEFINITIONS if definitions is None else definitions
+    if definitions is None:
+        from .graph_config import load_graph, publish_graph
+        publish_graph(load_graph())
+        return
 
     Workflow = apps.get_model("workflows", "Workflow")
     WorkflowStep = apps.get_model("workflows", "WorkflowStep")

@@ -36,6 +36,60 @@ Booléens Django acceptés comme vrais : `1`, `true`, `yes`, `on`, sans distinct
 | `RUN_MIGRATIONS` | Conteneur | Selon Compose | Lance migrations dans entrypoint. |
 | `COLLECT_STATIC` | Conteneur | Selon Compose | Lance collecte statique dans entrypoint. |
 
+## Workflows d’approbation DAT
+
+| Variable | Défaut | Usage |
+| --- | --- | --- |
+| `DAT_WORKFLOW_CONFIG` | Vide | Chemin du sélecteur JSON de la bibliothèque. |
+| `DAT_WORKFLOW_JSON` | Vide | Surcharge historique. Pointe directement vers un fichier de workflow et prend priorité sur le sélecteur. |
+| `DAT_WORKFLOW_REQUIRE_SECTION_REFERENTS` | `0` | Avec `1`, les étapes déclarant `"approvers": {"section_referent": true}` attendent un référent actif affecté à la section et son approbation. Avec `0`, ces étapes sont franchies dès que leurs dépendances sont satisfaites. |
+| `WORKFLOW_SNAPSHOT_MAX_BYTES` | `67108864` (64 Mio) | Taille cumulée maximale des fichiers conservés dans une copie de revue. |
+
+La priorité de chargement est `sync_workflows --json`, puis `DAT_WORKFLOW_JSON`, `DAT_WORKFLOW_CONFIG`, le sélecteur local `cintafactory/conf/workflows.json` et enfin le sélecteur livré `cintafactory/workflows/config/workflows.json`.
+
+### Sélectionner un circuit
+
+Depuis le répertoire qui contient `manage.py`, copier la bibliothèque livrée dans la configuration locale.
+
+```bash
+mkdir -p conf
+cp -n workflows/config/*.json conf/
+```
+
+Pour choisir le circuit parallèle livré, renseigner le sélecteur `conf/workflows.json` comme suit.
+
+```json
+{"active_workflow": "parallel-review.json"}
+```
+
+Le sélecteur et les définitions résident dans le même dossier. `active_workflow` contient uniquement un nom de fichier JSON. Pour ajouter un circuit, copier une définition, conserver `"code": "dat-validation"` et adapter ses étapes, cibles et rôles. Chaque approbation peut définir `on_reject` avec le mode `return` et une étape antérieure, `block` et des rôles autorisés à reprendre, ou `close` pour clore le DAT. Le mode par défaut est `close`.
+
+### Utiliser une bibliothèque avec Compose
+
+En développement, le répertoire du projet Django est déjà monté dans le service `web`. Le chemin local `cintafactory/conf/workflows.json` y est accessible sous `/app/conf/workflows.json`.
+
+Pour une image déployée, placer le sélecteur et les définitions dans un dossier de l’hôte et monter ce dossier en lecture seule via une surcharge Compose.
+
+```yaml
+services:
+  web:
+    volumes:
+      - /srv/dodat/workflows:/etc/dodat/workflows:ro
+```
+
+Ajouter la surcharge à la commande Compose habituelle avec `-f` et définir `DAT_WORKFLOW_CONFIG=/etc/dodat/workflows/workflows.json` dans le fichier d’environnement utilisé par Compose. Laisser `DAT_WORKFLOW_JSON` vide pour utiliser le sélecteur. Pour un profil avec service `worker`, ajouter le même montage à ce service si la bibliothèque se trouve hors du répertoire Django monté. Recréer les services Django après un changement d’environnement ou de montage.
+
+### Valider et publier
+
+Depuis le répertoire qui contient `manage.py`, vérifier le fichier sélectionné puis publier.
+
+```bash
+python manage.py sync_workflows --check
+python manage.py sync_workflows
+```
+
+La vérification contrôle notamment les dépendances, les rôles et les cibles. La publication active la version sélectionnée pour les nouveaux DAT. Les DAT existants suivent leur version épinglée. Le réglage global des référents s’applique aussi aux circuits actifs épinglés qui déclarent ces étapes. Pour le contrat JSON et la procédure de bascule, voir [Workflows DAT](Workflow.md).
+
 ## Base de données
 
 Le mode de connexion est explicite :
@@ -315,6 +369,8 @@ Créés automatiquement sous `cintafactory/conf/` si absents :
 | `theming/base/tokens.json` | Palette/typographie | Thème Cinta classique. |
 
 Ces fichiers sont runtime. Monter volume persistant si modifications doivent survivre aux conteneurs. URL admin masquée n'est pas une barrière de sécurité : authentification et permissions restent obligatoires.
+
+Le sélecteur optionnel `conf/workflows.json` et ses définitions sont ajoutés par l’exploitant. Voir [Workflows d’approbation DAT](#workflows-dapprobation-dat).
 
 ## Checklist production
 
