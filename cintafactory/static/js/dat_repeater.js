@@ -1073,36 +1073,9 @@ window.CintaDatRepeater = window.CintaDatRepeater || (function () {
     }
     const previewUrl = typeof payload === "string" ? payload : payload.previewUrl;
     const viewsUrl = typeof payload === "object" ? payload.viewsUrl : "";
-    if (viewsUrl) {
-      fetch(viewsUrl, { credentials: "same-origin", headers: { Accept: "application/json" } })
-        .then((response) => {
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-          }
-          return response.json();
-        })
-        .then((data) => {
-          const paths = Array.isArray(data.paths) ? data.paths : [];
-          const fallbackUrl = data.thumbnail_url || previewUrl;
-          const viewerTitle = title || "Diagramme LikeC4";
-          if (window.CintaDatViewer && typeof window.CintaDatViewer.openImages === "function" && paths.length) {
-            window.CintaDatViewer.openImages(paths, viewerTitle);
-            return;
-          }
-          if (fallbackUrl) {
-            window.CintaDatViewer && typeof window.CintaDatViewer.openImage === "function"
-              ? window.CintaDatViewer.openImage(fallbackUrl, viewerTitle)
-              : window.open(fallbackUrl, "_blank", "noopener");
-          }
-        })
-        .catch((error) => {
-          console.warn("LikeC4 preview failed:", error);
-          if (previewUrl) {
-            window.CintaDatViewer && typeof window.CintaDatViewer.openImage === "function"
-              ? window.CintaDatViewer.openImage(previewUrl, title || "Diagramme LikeC4")
-              : window.open(previewUrl, "_blank", "noopener");
-          }
-        });
+    const viewerTitle = title || "Diagramme LikeC4";
+    if (window.CintaDatViewer && typeof window.CintaDatViewer.openLikeC4 === "function") {
+      window.CintaDatViewer.openLikeC4(viewsUrl, previewUrl, viewerTitle);
       return;
     }
     if (previewUrl) {

@@ -142,7 +142,10 @@
                         data-search-url="{% url 'dat:topbar_search' %}"
                       >
                     </form>
-                    <div id="topbar-search-results" class="topbar-search__results" hidden></div>
+                    <div id="topbar-search-results" class="topbar-search__results" aria-busy="false" hidden>
+                      <p class="sr-only" data-topbar-search-status role="status" aria-live="polite"></p>
+                      <div data-topbar-search-content></div>
+                    </div>
                   </div>
                   {% block topbar_links %}
                     {% if user.is_authenticated %}

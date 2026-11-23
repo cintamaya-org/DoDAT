@@ -7,7 +7,11 @@
     resourcePromise: null,
     container: null,
     viewer: null,
+    loadingPanel: null,
+    loadingTimer: null,
+    openSequence: 0,
   };
+  const VIEWER_LOADING_DELAY_MS = 300;
   const VIEWERJS_CSS_URL = "https://cdnjs.cloudflare.com/ajax/libs/viewerjs/1.11.6/viewer.min.css";
   const VIEWERJS_CSS_INTEGRITY =
     "sha384-k+swX2i6jE7YLgIRI5Gs81wcyww8As59DuESi6wnY3SpqHyNAEIZ+AAcOW4RPLYA";
@@ -217,6 +221,58 @@
     return runtime.container;
   }
 
+  function ensureViewerLoadingPanel() {
+    if (runtime.loadingPanel) {
+      return runtime.loadingPanel;
+    }
+    const panel = document.createElement("div");
+    panel.className = "cinta-viewer-loading";
+    panel.hidden = true;
+    panel.setAttribute("role", "status");
+    panel.setAttribute("aria-live", "polite");
+    panel.setAttribute("aria-busy", "false");
+
+    const surface = document.createElement("div");
+    surface.className = "cinta-viewer-loading__surface";
+    const announcement = document.createElement("span");
+    announcement.className = "sr-only";
+    const shapes = document.createElement("div");
+    shapes.setAttribute("aria-hidden", "true");
+    const preview = document.createElement("span");
+    preview.className = "cinta-skeleton cinta-skeleton--block cinta-viewer-loading__preview";
+    const text = document.createElement("span");
+    text.className = "cinta-viewer-loading__text";
+    const title = document.createElement("span");
+    title.className = "cinta-skeleton cinta-skeleton--line cinta-viewer-loading__title";
+    const subtitle = document.createElement("span");
+    subtitle.className = "cinta-skeleton cinta-skeleton--line cinta-viewer-loading__subtitle";
+    shapes.append(preview, text);
+    text.append(title, subtitle);
+    surface.append(announcement, shapes);
+    panel.appendChild(surface);
+    document.body.appendChild(panel);
+    runtime.loadingPanel = {panel, announcement};
+    return runtime.loadingPanel;
+  }
+
+  function showViewerLoading(title) {
+    const loading = ensureViewerLoadingPanel();
+    loading.announcement.textContent = title
+      ? `Chargement de ${title}…`
+      : "Chargement du diagramme…";
+    loading.panel.setAttribute("aria-busy", "true");
+    loading.panel.hidden = false;
+  }
+
+  function hideViewerLoading() {
+    if (!runtime.loadingPanel) {
+      return;
+    }
+    runtime.loadingPanel.panel.hidden = true;
+    runtime.loadingPanel.panel.setAttribute("aria-busy", "false");
+    runtime.loadingPanel.announcement.textContent = "";
+  }
+
   function normalizeViewerImages(payload, fallbackTitle) {
     if (!Array.isArray(payload)) {
       return [];
@@ -261,93 +317,161 @@
     return `${url}${separator}_=${Date.now()}`;
   }
 
+  function showViewerImages(urls, title, requestVersion) {
+    const normalized = normalizeViewerImages(urls, title);
+    if (!normalized.length) {
+      const error = new Error("no-preview-images");
+      error.code = "NO_PREVIEW_IMAGES";
+      return Promise.reject(error);
+    }
+    return loadViewerResources().then(() => {
+      if (requestVersion !== runtime.openSequence) {
+        return;
+      }
+      const wrapper = renderViewerImages(normalized);
+      if (!runtime.viewer) {
+        runtime.viewer = new window.Viewer(wrapper, {
+          navbar: normalized.length > 1,
+          tooltip: false,
+          toolbar: {
+            zoomIn: 4,
+            zoomOut: 4,
+            oneToOne: 4,
+            reset: 4,
+            prev: normalized.length > 1 ? 4 : 0,
+            play: normalized.length > 1 ? 4 : 0,
+            next: normalized.length > 1 ? 4 : 0,
+            rotateLeft: 4,
+            rotateRight: 4,
+            flipHorizontal: 4,
+            flipVertical: 4,
+          },
+          title: (image) => image.dataset.title || "",
+        });
+        ensureViewerAccessibilityHooks(wrapper);
+        setViewerAccessibility(false);
+      } else {
+        runtime.viewer.update();
+      }
+      runtime.viewer.view(0);
+      handleViewerShown();
+    });
+  }
+
+  function openAsync(title, loadImages, failureMessage, emptyMessage) {
+    const requestVersion = ++runtime.openSequence;
+    if (runtime.loadingTimer !== null) {
+      window.clearTimeout(runtime.loadingTimer);
+      runtime.loadingTimer = null;
+    }
+    hideViewerLoading();
+    runtime.loadingTimer = window.setTimeout(() => {
+      if (requestVersion === runtime.openSequence) {
+        showViewerLoading(title);
+      }
+    }, VIEWER_LOADING_DELAY_MS);
+
+    return Promise.resolve()
+      .then(loadImages)
+      .then((result) => {
+        if (requestVersion !== runtime.openSequence) {
+          return;
+        }
+        const imageTitle = result && !Array.isArray(result) ? (result.title || title) : title;
+        const urls = result && !Array.isArray(result) ? result.images : result;
+        return showViewerImages(urls, imageTitle, requestVersion);
+      })
+      .catch((error) => {
+        if (requestVersion !== runtime.openSequence) {
+          return;
+        }
+        if (error && error.code === "NO_PREVIEW_IMAGES") {
+          alert(emptyMessage || "Aucun aperçu n'est disponible.");
+          return;
+        }
+        console.error("Impossible d'afficher l'aperçu:", error);
+        alert(failureMessage || "Affichage de l'aperçu impossible. Merci de réessayer.");
+      })
+      .finally(() => {
+        if (requestVersion === runtime.openSequence) {
+          if (runtime.loadingTimer !== null) {
+            window.clearTimeout(runtime.loadingTimer);
+            runtime.loadingTimer = null;
+          }
+          hideViewerLoading();
+        }
+      });
+  }
+
   function openViewer(diagramId) {
     if (!diagramId) {
-      return;
+      return Promise.resolve();
     }
-    loadViewerResources()
-      .then(() =>
-        fetch(`/diagrams/${diagramId}/viewer-context/`, {
-          method: "GET",
-          credentials: "same-origin",
-          headers: { Accept: "application/json" },
-        })
-      )
-      .then((response) => {
+    const fallbackTitle = `Diagramme #${diagramId}`;
+    return openAsync(fallbackTitle, () =>
+      fetch(`/diagrams/${diagramId}/viewer-context/`, {
+        method: "GET",
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      }).then((response) => {
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
         return response.json();
-      })
-      .then((data) => {
+      }).then((data) => {
         const thumbnailUrl = data.diagram?.thumbnail_url;
         const imageUrls = Array.isArray(data.diagram?.image_urls) ? data.diagram.image_urls : [];
-        const images = imageUrls.length ? imageUrls : (thumbnailUrl ? [thumbnailUrl] : []);
-        if (!images.length) {
-          alert("Aucun aperçu n'est disponible pour ce diagramme.");
-          return;
-        }
-        const title = data.diagram?.title || `Diagramme #${diagramId}`;
-        openImages(images, title);
-      })
-      .catch((error) => {
-        console.error("Impossible d'afficher le diagramme:", error);
-        alert("Affichage du diagramme impossible. Merci de réessayer.");
-      });
+        return {
+          images: imageUrls.length ? imageUrls : (thumbnailUrl ? [thumbnailUrl] : []),
+          title: data.diagram?.title || fallbackTitle,
+        };
+      }),
+      "Affichage du diagramme impossible. Merci de réessayer.",
+      "Aucun aperçu n'est disponible pour ce diagramme.");
   }
 
   function openImages(urls, title) {
-    const normalized = normalizeViewerImages(urls, title);
-    if (!normalized.length) {
-      return;
-    }
-    loadViewerResources()
-      .then(() => {
-        const wrapper = renderViewerImages(normalized);
-        if (!runtime.viewer) {
-          runtime.viewer = new window.Viewer(wrapper, {
-            navbar: normalized.length > 1,
-            tooltip: false,
-            toolbar: {
-              zoomIn: 4,
-              zoomOut: 4,
-              oneToOne: 4,
-              reset: 4,
-              prev: normalized.length > 1 ? 4 : 0,
-              play: normalized.length > 1 ? 4 : 0,
-              next: normalized.length > 1 ? 4 : 0,
-              rotateLeft: 4,
-              rotateRight: 4,
-              flipHorizontal: 4,
-              flipVertical: 4,
-            },
-            title: (image) => image.dataset.title || "",
-          });
-          ensureViewerAccessibilityHooks(wrapper);
-          setViewerAccessibility(false);
-        } else {
-          runtime.viewer.update();
-        }
-        runtime.viewer.view(0);
-        handleViewerShown();
-      })
-      .catch((error) => {
-        console.error("Impossible d'afficher l'aperçu:", error);
-        alert("Affichage du diagramme impossible. Merci de réessayer.");
-      });
+    return openAsync(title, () => urls, "Affichage de l'aperçu impossible. Merci de réessayer.");
   }
 
   function openImage(url, title) {
     if (!url) {
-      return;
+      return Promise.resolve();
     }
-    openImages([url], title);
+    return openImages([url], title);
+  }
+
+  function openLikeC4(viewsUrl, fallbackUrl, title) {
+    if (!viewsUrl) {
+      return openImage(fallbackUrl, title);
+    }
+    return openAsync(title || "Diagramme LikeC4", () =>
+      fetch(viewsUrl, {credentials: "same-origin", headers: {Accept: "application/json"}})
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+          return response.json();
+        })
+        .then((data) => {
+          const paths = Array.isArray(data.paths) ? data.paths : [];
+          const fallback = data.thumbnail_url || fallbackUrl;
+          return paths.length ? paths : (fallback ? [fallback] : []);
+        })
+        .catch((error) => {
+          if (fallbackUrl) {
+            return [fallbackUrl];
+          }
+          throw error;
+        }),
+      "Affichage de l'aperçu impossible. Merci de réessayer.");
   }
 
   window.CintaDatViewer = {
     open: openViewer,
     openImage: openImage,
     openImages: openImages,
+    openLikeC4: openLikeC4,
   };
 })();
 
