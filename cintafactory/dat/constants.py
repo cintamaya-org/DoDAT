@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Tuple
 
+DAT_OWNER_EDITABLE_SECTION_SLUGS = frozenset({"informations-generales", "besoins"})
+
 # Ordered list of required DAT participant roles (slug, fallback label)
 DAT_REQUIRED_PARTICIPANT_ROLES: Tuple[Tuple[str, str], ...] = (
     ("porteur-demande", "Porteur de la demande"),

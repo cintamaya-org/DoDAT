@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 from pathlib import Path
+import hashlib
 import uuid
 
 from django.conf import settings
@@ -11,6 +12,7 @@ from django.db import models
 from django.utils import timezone
 
 from cintafactory.storage.seaweedfs_storage import SeaweedFSStorage
+from workflows.tracking import WorkflowTrackedContent
 
 from .validation import sanitize_diagram_title
 
@@ -65,7 +67,8 @@ def likec4_views_prefix_for(diagram) -> str:
     return f"diagrams/likec4/{diagram.pk}/views/{diagram.revision}/"
 
 
-class Diagram(models.Model):
+class Diagram(WorkflowTrackedContent, models.Model):
+    _workflow_content_fields = {"title", "dat", "dat_id", "xml_file", "xml_size", "source_revision", "revision", "storage_path", "size"}
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=200, blank=True, default="")
     png_paths = models.JSONField(default=list, blank=True, null=True)
@@ -98,6 +101,7 @@ class Diagram(models.Model):
 
 
 class DrawIODiagram(Diagram):
+    source_revision = models.CharField(max_length=64, blank=True, default="")
     title = models.CharField(max_length=200)
     xml_file = models.FileField(
         upload_to=drawio_upload_to,
@@ -147,13 +151,19 @@ class DrawIODiagram(Diagram):
             return raw.decode("utf-8", errors="ignore")
 
     def write_xml(self, xml_payload: str, *, content_type: str = "application/xml") -> None:
+        from workflows.graph_engine import content_mutation
+        with content_mutation(self.dat_id):
+            self._write_xml(xml_payload, content_type=content_type)
+
+    def _write_xml(self, xml_payload: str, *, content_type: str) -> None:
         payload = xml_payload or ""
         raw = payload.encode("utf-8")
+        self.source_revision = hashlib.sha256(raw).hexdigest()
         self.xml_file.save("diagram.drawio", ContentFile(raw), save=False)
         self.xml_size = len(raw)
         self.xml_content_type = content_type
         self.updated_at = timezone.now()
-        self.save(update_fields=["xml_file", "xml_size", "xml_content_type", "updated_at"])
+        self.save(update_fields=["xml_file", "xml_size", "xml_content_type", "updated_at", "source_revision"])
 
 
 class LikeC4Diagram(Diagram):

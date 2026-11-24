@@ -1,0 +1,63 @@
+<section class="approval-workspace" id="section-validation" aria-labelledby="approval-title">
+  <header class="review-header">
+    <h2 id="approval-title">Approbations du dossier</h2>
+    <a href="{% url 'workflows:my_approvals' %}">Mes approbations</a>
+  </header>
+  {% if approval_graph %}<div class="review-summary" hidden>
+    <span>Étapes franchies <strong data-count="done"></strong></span>
+    <span>Disponibles <strong data-count="ready"></strong></span>
+    <span>Blocages <strong data-count="blocked"></strong></span>
+    <progress aria-label="Étapes franchies"></progress>
+  </div>
+  {% endif %}
+  <div class="review-workbench">
+    <div class="review-diagram">
+      <div class="review-toolbar">
+        <h3>{{ review_diagram.name }}</h3>
+        <div class="review-controls" role="group" aria-label="Vue du circuit">
+          <label class="review-choice"><input type="radio" name="review-layout" value="stepper" checked><span>Parcours</span></label>
+          <label class="review-choice"><input type="radio" name="review-layout" value="lanes"><span>Responsabilités</span></label>
+        </div>
+        <div class="review-controls review-interactive" role="group" aria-label="Affichage du circuit">
+          <button type="button" data-zoom="out" aria-label="Réduire le circuit">−</button>
+          <output aria-label="Zoom">100 %</output>
+          <button type="button" data-zoom="in" aria-label="Agrandir le circuit">+</button>
+          <button type="button" data-zoom="fit">Ajuster</button>
+          <button type="button" data-fullscreen>Plein écran</button>
+        </div>
+        <div class="review-search" hidden>
+          <input type="search" aria-label="Chercher une étape ou un rôle" placeholder="Chercher une étape ou un rôle">
+          <div class="review-results" hidden></div>
+        </div>
+      </div>
+      <div class="review-scroll" role="region" aria-label="Circuit de validation" tabindex="0">
+        {% for layout in review_diagram.layouts %}
+          {% include 'workflows/partials/review_canvas.html' %}
+        {% endfor %}
+      </div>
+      <div class="review-legend" aria-label="Légende des états">
+        {% if not approval_graph %}<span data-tone="unknown">État historique</span>{% endif %}
+        <span data-tone="completed">Terminé</span><span data-tone="ready">Disponible</span>
+        <span data-tone="waiting">En attente</span><span data-tone="blocked">Bloqué</span>
+        <span data-tone="skipped">Ignoré</span><span data-tone="rejected">Refusé</span>
+        <span class="review-connection-key-dotted"></span><span class="review-connection-key">Connexion directe</span>
+        {% if review_diagram.has_returns %}<span class="review-return-key">↶ Retour après refus</span>{% endif %}
+      </div>
+    </div>
+    <div class="review-details">
+      {% for step in review_diagram.steps %}
+        <article class="review-step" id="review-{{ step.id }}" aria-labelledby="approval-step-title-{{ step.id }}"
+                 data-step="{{ step.id }}" data-after="{{ step.after|join:' ' }}" data-tone="{{ step.tone }}"
+                 data-lane="{{ step.lane }}" data-role-label="{{ step.roles }}">
+          <span class="review-status" data-tone="{{ step.tone }}">{{ step.status }}</span>
+          <h3 id="approval-step-title-{{ step.id }}" tabindex="-1">{{ step.name }}</h3>
+          {% if approval_graph %}
+            {% include 'workflows/partials/review_step.html' with node=step.detail %}
+          {% elif step.description %}<p>{{ step.description }}</p>{% endif %}
+          <button type="button" class="review-back" hidden>Revenir au circuit</button>
+        </article>
+      {% endfor %}
+    </div>
+  </div>
+  <dialog class="review-fullscreen" aria-label="Circuit de validation en plein écran"></dialog>
+</section>

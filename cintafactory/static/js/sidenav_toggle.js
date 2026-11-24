@@ -22,6 +22,7 @@
     }
 
     var collapsed = sidenav.classList.contains(collapsedClass);
+    sidenav.dataset.toggleReady = "";
     document.body.classList.toggle(bodyCollapsedClass, collapsed);
     for (var i = 0; i < toggles.length; i += 1) {
       var toggle = toggles[i];

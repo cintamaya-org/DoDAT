@@ -17,6 +17,7 @@ from .permissions import (
     user_can_manage_dat,
 )
 from .models import Application, DAT
+from .versioning import DATReferenceError, validate_reference
 
 
 class ApplicationApiPermission(BasePermission):
@@ -79,8 +80,29 @@ class ApplicationSerializer(serializers.ModelSerializer):
 
 
 class DATSerializer(serializers.ModelSerializer):
+    def validate(self, attrs):
+        application = attrs.get("application")
+        application_id = application.pk if application else getattr(self.instance, "application_id", None)
+        if application_id is None:
+            raise serializers.ValidationError({"application": "L’application du DAT est obligatoire."})
+        reference = attrs.get("reference", self.instance.reference if self.instance else "")
+        try:
+            validate_reference(application_id, reference, original=self.instance)
+        except DATReferenceError as exc:
+            raise serializers.ValidationError({"reference": exc.messages}) from exc
+        return attrs
+
+    def save(self, **kwargs):
+        try:
+            return super().save(**kwargs)
+        except DATReferenceError as exc:
+            raise serializers.ValidationError({"reference": exc.messages}) from exc
+
     class Meta:
         model = DAT
+        # The domain validator also handles allocation and legacy numeric spellings.
+        validators = []
+        extra_kwargs = {"reference": {"required": False, "allow_blank": True, "trim_whitespace": False}}
         fields = [
             "id",
             "reference",

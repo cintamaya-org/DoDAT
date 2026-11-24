@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "engine_version": 1,
+  "code": "dat-validation",
+  "name": "Revue parallèle architecture et sécurité",
+  "policies": {
+    "missing_assignee": "block",
+    "on_content_change": "invalidate_affected",
+    "request_changes_requires_comment": true
+  },
+  "nodes": [
+    {"id": "need", "name": "Nouveau besoin", "type": "submission", "target": {"section": "besoins"}},
+    {"id": "architecture", "name": "Revue architecture", "type": "approval", "target": {"section": "architecture"}, "after": ["need"], "approvers": {"all_roles": ["architecte-technique"]}},
+    {"id": "security", "name": "Revue sécurité", "type": "approval", "target": {"section": "cybersecurite"}, "after": ["need"], "approvers": {"all_roles": ["rssi"]}},
+    {"id": "final", "name": "Validation du DAT complet", "type": "approval", "target": {"dat": true}, "after": ["architecture", "security"], "approvers": {"all_roles": ["comite-validation"]}, "on_request_changes": {"restart_at": "need"}, "on_reject": {"mode": "return", "restart_at": "need"}}
+  ],
+  "complete_when": {"all": ["final"]}
+}

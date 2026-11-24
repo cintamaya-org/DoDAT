@@ -1,16 +1,16 @@
 {% if is_paginated %}
-  <nav class="dat-list__pagination" aria-label="Pagination">
+  <div class="dat-list__pagination" role="navigation" aria-label="Pagination">
     <div>Page {{ page_obj.number }} sur {{ paginator.num_pages }} · {{ paginator.count }} élément{{ paginator.count|pluralize:"s" }}</div>
     <div class="dat-list__pagination-actions">
       {% if page_obj.has_previous %}
-        <a class="btn-flat waves-effect" href="?{% if base_querystring %}{{ base_querystring }}&{% endif %}page={{ page_obj.previous_page_number }}" rel="prev">Précédent</a>
+        <a class="btn waves-effect waves-light cinta-btn-primary" href="?{% if base_querystring %}{{ base_querystring }}&{% endif %}page={{ page_obj.previous_page_number }}" rel="prev">Précédent</a>
       {% else %}
-        <span class="btn-flat disabled" aria-disabled="true">Précédent</span>
+        <button type="button" class="btn waves-effect waves-light cinta-btn-primary" disabled>Précédent</button>
       {% endif %}
       {% if page_obj.has_next %}
-        <a class="btn-flat waves-effect" href="?{% if base_querystring %}{{ base_querystring }}&{% endif %}page={{ page_obj.next_page_number }}" rel="next">Suivant</a>
+        <a class="btn waves-effect waves-light cinta-btn-primary" href="?{% if base_querystring %}{{ base_querystring }}&{% endif %}page={{ page_obj.next_page_number }}" rel="next">Suivant</a>
       {% else %}
-        <span class="btn-flat disabled" aria-disabled="true">Suivant</span>
+        <button type="button" class="btn waves-effect waves-light cinta-btn-primary" disabled>Suivant</button>
       {% endif %}
     </div>
     <form method="get" action="{{ request.path }}" class="dat-list__pagination-jump">
@@ -28,7 +28,7 @@
         inputmode="numeric"
         required
       >
-      <button type="submit" class="btn-flat waves-effect">Aller</button>
+      <button type="submit" class="btn waves-effect waves-light cinta-btn-primary">Aller</button>
     </form>
-  </nav>
+  </div>
 {% endif %}

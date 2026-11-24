@@ -1,0 +1,22 @@
+{% extends 'material/frontend/base_module.html' %}
+{% block title %}Approbations · {{ dat.display_reference }}{% endblock %}
+{% block page_title %}{{ dat.display_reference }} · {{ dat.title }}{% endblock %}
+{% block extrahead %}
+  {{ block.super }}
+  {% if approval_graph %}{% include 'workflows/partials/review_assets.html' %}{% endif %}
+{% endblock %}
+{% block content %}
+  <a href="{% url 'dat:my_detail' dat.pk %}" class="btn-flat">Retour au dossier</a>
+  {% if approval_graph %}
+    {% include 'workflows/graph_nodes.html' %}
+    <article class="card cinta-card"><div class="card-content">
+      <h2 class="card-title">Historique des approbations</h2>
+      {% for decision in decision_history %}<p>{{ decision.created_at|date:'d/m/Y H:i' }} · {{ decision.actor_display }} · {% if decision.role_slug %}{{ decision.role_slug }} · {% endif %}{% if decision.outcome == 'approve' %}Approbation{% elif decision.outcome == 'submit' %}Soumission{% elif decision.outcome == 'request_changes' %}Corrections demandées{% elif decision.outcome == 'retry' %}Reprise de l’étape{% else %}Refus{% endif %}<br>{{ decision.comment }}<br><a href="{% url 'workflows:review_snapshot' dat.pk decision.snapshot_id %}">Contenu revu</a>{% if not decision.attempt.is_current %} · Décision remplacée par une nouvelle revue{% endif %}</p>{% endfor %}
+      {% if decision_history.has_previous %}<a href="?decisions_page={{ decision_history.previous_page_number }}">Décisions précédentes</a>{% endif %}
+      {% if decision_history.has_next %}<a href="?decisions_page={{ decision_history.next_page_number }}">Décisions suivantes</a>{% endif %}
+      <ul>{% for event in history %}<li>{{ event.occurred_at|date:'d/m/Y H:i' }} · {{ event.actor_display }} · {% if event.event == 'nodes-invalidated' %}Approbations à renouveler{% elif event.event == 'refusal-returned' %}Retour après refus{% elif event.event == 'summary-changed' %}État du dossier mis à jour{% elif event.event == 'milestone-completed' %}Version du dossier enregistrée{% elif event.event == 'workflow-restarted' %}Nouveau circuit d'approbation{% elif event.event == 'terminal-content-revised' %}Contenu du dossier clôturé modifié{% else %}Décision enregistrée{% endif %}</li>{% empty %}<li>Aucune décision enregistrée.</li>{% endfor %}</ul>
+      {% if history.has_previous %}<a href="?page={{ history.previous_page_number }}">Précédent</a>{% endif %}
+      {% if history.has_next %}<a href="?page={{ history.next_page_number }}">Suivant</a>{% endif %}
+    </div></article>
+  {% else %}<p>Ce circuit historique est archivé. Les décisions restent consultables dans l'historique du dossier.</p>{% endif %}
+{% endblock %}

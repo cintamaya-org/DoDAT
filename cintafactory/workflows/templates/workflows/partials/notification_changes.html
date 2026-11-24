@@ -1,0 +1,37 @@
+{% for change in changes %}
+  <section class="wf-notification__change">
+    {% if change.part %}<p class="wf-notification__change-part">{{ change.part }}</p>{% endif %}
+    <h3>{{ change.label }}</h3>
+    <div class="wf-notification__difference-list">
+      <h4>Changements détectés</h4>
+      {% if change.differences %}
+        <ul>
+          {% for difference in change.differences %}
+            <li class="wf-notification__difference--{{ difference.kind }}">
+              <strong>{{ difference.path }}</strong> :
+              {% if difference.kind == "added" %}
+                <span>Ajouté : {{ difference.after }}</span>
+              {% elif difference.kind == "removed" %}
+                <span>Supprimé : {{ difference.before }}</span>
+              {% else %}
+                <del>{{ difference.before }}</del> <span aria-hidden="true">→</span> <ins>{{ difference.after }}</ins>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p>Aucune différence détectée.</p>
+      {% endif %}
+    </div>
+    <div class="wf-notification__change-values" data-notification-before-after hidden>
+      <section>
+        <h4>Avant</h4>
+        {% include "workflows/partials/notification_detail_lines.html" with lines=change.before_lines only %}
+      </section>
+      <section>
+        <h4>Après</h4>
+        {% include "workflows/partials/notification_detail_lines.html" with lines=change.after_lines only %}
+      </section>
+    </div>
+  </section>
+{% endfor %}

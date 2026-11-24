@@ -33,9 +33,9 @@ def refresh_revision(diagram):
     raw = read_source(diagram)
     revision = source_revision(raw)
     if diagram.revision != revision:
-        type(diagram).objects.filter(pk=diagram.pk).update(revision=revision, size=len(raw))
         diagram.revision = revision
         diagram.size = len(raw)
+        diagram.save(update_fields=["revision", "size"])
     return revision
 
 

@@ -4,7 +4,7 @@
 
   function debounce(fn, wait) {
     var timeoutId = null;
-    return function () {
+    var debounced = function () {
       var args = arguments;
       var context = this;
       window.clearTimeout(timeoutId);
@@ -12,18 +12,49 @@
         fn.apply(context, args);
       }, wait);
     };
+    debounced.cancel = function () {
+      window.clearTimeout(timeoutId);
+      timeoutId = null;
+    };
+    return debounced;
   }
 
-  function renderMessage(container, message) {
-    container.innerHTML = '<p class="topbar-search__results-empty"></p>';
-    var messageNode = container.querySelector(".topbar-search__results-empty");
+  function renderMessage(content, status, message) {
+    content.innerHTML = '<p class="topbar-search__results-empty" aria-hidden="true"></p>';
+    var messageNode = content.querySelector(".topbar-search__results-empty");
     messageNode.textContent = message;
-    container.hidden = false;
+    status.textContent = message;
   }
 
-  function renderResults(container, results) {
+  function makeSkeleton(className) {
+    var node = document.createElement("span");
+    node.className = "cinta-skeleton " + className;
+    node.setAttribute("aria-hidden", "true");
+    return node;
+  }
+
+  function renderLoadingSkeleton(content, status) {
+    var list = document.createElement("ul");
+    list.className = "topbar-search__results-list";
+    list.setAttribute("aria-hidden", "true");
+    for (var index = 0; index < 3; index += 1) {
+      var item = document.createElement("li");
+      item.className = "topbar-search__skeleton-item";
+      var main = document.createElement("span");
+      main.className = "topbar-search__skeleton-main";
+      main.appendChild(makeSkeleton("cinta-skeleton--line topbar-search__skeleton-label"));
+      main.appendChild(makeSkeleton("cinta-skeleton--line topbar-search__skeleton-subtitle"));
+      item.appendChild(main);
+      item.appendChild(makeSkeleton("topbar-search__skeleton-badge"));
+      list.appendChild(item);
+    }
+    content.replaceChildren(list);
+    status.textContent = "Recherche en cours...";
+  }
+
+  function renderResults(content, status, results) {
     if (!results.length) {
-      renderMessage(container, "Aucun résultat.");
+      renderMessage(content, status, "Aucun résultat.");
       return;
     }
     var html = '<ul class="topbar-search__results-list">';
@@ -40,9 +71,9 @@
       html += "</li>";
     });
     html += "</ul>";
-    container.innerHTML = html;
-    var labelNodes = container.querySelectorAll(".topbar-search__result-label");
-    var subtitleNodes = container.querySelectorAll(".topbar-search__result-subtitle");
+    content.innerHTML = html;
+    var labelNodes = content.querySelectorAll(".topbar-search__result-label");
+    var subtitleNodes = content.querySelectorAll(".topbar-search__result-subtitle");
     results.forEach(function (result, index) {
       if (labelNodes[index]) {
         labelNodes[index].textContent = result.label || "";
@@ -51,7 +82,7 @@
         subtitleNodes[index].textContent = result.subtitle || "";
       }
     });
-    container.hidden = false;
+    status.textContent = results.length + (results.length > 1 ? " résultats." : " résultat.");
   }
 
   function initTopbarSearch() {
@@ -62,17 +93,54 @@
     if (!input || !resultContainer) {
       return;
     }
-    if (input.dataset.topbarSearchInitialized === "1") {
+    // Turbolinks snapshots clone DOM attributes, not element event listeners.
+    // Keep this guard on the live node so restored clones bind again.
+    if (input.__cintaTopbarSearchInitialized) {
       return;
     }
-    input.dataset.topbarSearchInitialized = "1";
+    input.__cintaTopbarSearchInitialized = true;
 
     var endpoint = input.dataset.searchUrl || "";
+    var resultContent = resultContainer.querySelector("[data-topbar-search-content]");
+    var statusNode = resultContainer.querySelector("[data-topbar-search-status]");
+    if (!resultContent) {
+      resultContent = document.createElement("div");
+      resultContent.setAttribute("data-topbar-search-content", "");
+      resultContainer.appendChild(resultContent);
+    }
+    if (!statusNode) {
+      statusNode = document.createElement("p");
+      statusNode.className = "sr-only";
+      statusNode.setAttribute("data-topbar-search-status", "");
+      statusNode.setAttribute("role", "status");
+      statusNode.setAttribute("aria-live", "polite");
+      resultContainer.insertBefore(statusNode, resultContent);
+    }
     var abortController = null;
+    var requestVersion = 0;
+    var debouncedFetch = null;
+
+    function setBusy(isBusy) {
+      resultContainer.setAttribute("aria-busy", String(isBusy));
+    }
+
+    function cancelPendingRequest() {
+      requestVersion += 1;
+      if (debouncedFetch && debouncedFetch.cancel) {
+        debouncedFetch.cancel();
+      }
+      if (abortController) {
+        abortController.abort();
+        abortController = null;
+      }
+      setBusy(false);
+    }
 
     function closeResults() {
+      cancelPendingRequest();
       resultContainer.hidden = true;
-      resultContainer.innerHTML = "";
+      resultContent.replaceChildren();
+      statusNode.textContent = "";
     }
 
     function currentFilters() {
@@ -93,11 +161,15 @@
         return;
       }
       if (!filters.applications && !filters.dats) {
-        renderMessage(resultContainer, "Sélectionnez au moins un filtre.");
+        setBusy(false);
+        resultContainer.hidden = false;
+        renderMessage(resultContent, statusNode, "Sélectionnez au moins un filtre.");
         return;
       }
       if (query.length < MIN_QUERY_LENGTH) {
-        renderMessage(resultContainer, "Saisissez au moins 3 caractères.");
+        setBusy(false);
+        resultContainer.hidden = false;
+        renderMessage(resultContent, statusNode, "Saisissez au moins 3 caractères.");
         return;
       }
       if (!endpoint) {
@@ -109,6 +181,9 @@
         abortController.abort();
       }
       abortController = new AbortController();
+      var controller = abortController;
+      var currentRequestVersion = ++requestVersion;
+      setBusy(true);
 
       var params = new URLSearchParams();
       params.set("q", query);
@@ -118,7 +193,7 @@
       fetch(endpoint + "?" + params.toString(), {
         credentials: "same-origin",
         headers: { Accept: "application/json" },
-        signal: abortController.signal,
+        signal: controller.signal,
       })
         .then(function (response) {
           if (!response.ok) {
@@ -127,18 +202,28 @@
           return response.json();
         })
         .then(function (payload) {
-          renderResults(resultContainer, payload.results || []);
+          if (currentRequestVersion !== requestVersion) {
+            return;
+          }
+          setBusy(false);
+          renderResults(resultContent, statusNode, payload.results || []);
         })
         .catch(function (error) {
+          if (currentRequestVersion !== requestVersion) {
+            return;
+          }
+          setBusy(false);
           if (error && error.name === "AbortError") {
             return;
           }
-          renderMessage(resultContainer, "Impossible de charger les résultats.");
+          resultContainer.hidden = false;
+          renderMessage(resultContent, statusNode, "Impossible de charger les résultats.");
         });
     }
 
-    var debouncedFetch = debounce(fetchResults, DEBOUNCE_MS);
+    debouncedFetch = debounce(fetchResults, DEBOUNCE_MS);
     function onInputChanged() {
+      cancelPendingRequest();
       var query = (input.value || "").trim();
       var filters = currentFilters();
       if (!query.length) {
@@ -146,14 +231,18 @@
         return;
       }
       if (!filters.applications && !filters.dats) {
-        renderMessage(resultContainer, "Sélectionnez au moins un filtre.");
+        resultContainer.hidden = false;
+        renderMessage(resultContent, statusNode, "Sélectionnez au moins un filtre.");
         return;
       }
       if (query.length < MIN_QUERY_LENGTH) {
-        renderMessage(resultContainer, "Saisissez au moins 3 caractères.");
+        resultContainer.hidden = false;
+        renderMessage(resultContent, statusNode, "Saisissez au moins 3 caractères.");
         return;
       }
-      renderMessage(resultContainer, "Recherche en cours...");
+      resultContainer.hidden = false;
+      setBusy(true);
+      renderLoadingSkeleton(resultContent, statusNode);
       debouncedFetch();
     }
 

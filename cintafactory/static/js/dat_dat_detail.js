@@ -147,38 +147,8 @@
     const likec4Url = viewerBtn.getAttribute('data-likec4-preview-url');
     if (likec4ViewsUrl || likec4Url) {
       const title = viewerBtn.getAttribute('data-likec4-title') || 'Diagramme LikeC4';
-      if (likec4ViewsUrl) {
-        fetch(likec4ViewsUrl, { credentials: 'same-origin', headers: { Accept: 'application/json' } })
-          .then((response) => {
-            if (!response.ok) {
-              throw new Error(`HTTP ${response.status}`);
-            }
-            return response.json();
-          })
-          .then((data) => {
-            const paths = Array.isArray(data.paths) ? data.paths : [];
-            if (window.CintaDatViewer && typeof window.CintaDatViewer.openImages === 'function' && paths.length) {
-              window.CintaDatViewer.openImages(paths, title);
-              return;
-            }
-            const fallbackUrl = data.thumbnail_url || likec4Url;
-            if (fallbackUrl) {
-              if (window.CintaDatViewer && typeof window.CintaDatViewer.openImage === 'function') {
-                window.CintaDatViewer.openImage(fallbackUrl, title);
-              } else {
-                window.open(fallbackUrl, '_blank', 'noopener');
-              }
-            }
-          })
-          .catch(() => {
-            if (likec4Url) {
-              if (window.CintaDatViewer && typeof window.CintaDatViewer.openImage === 'function') {
-                window.CintaDatViewer.openImage(likec4Url, title);
-              } else {
-                window.open(likec4Url, '_blank', 'noopener');
-              }
-            }
-          });
+      if (window.CintaDatViewer && typeof window.CintaDatViewer.openLikeC4 === 'function') {
+        window.CintaDatViewer.openLikeC4(likec4ViewsUrl, likec4Url, title);
       } else if (likec4Url) {
         if (window.CintaDatViewer && typeof window.CintaDatViewer.openImage === 'function') {
           window.CintaDatViewer.openImage(likec4Url, title);

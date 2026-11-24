@@ -33,6 +33,34 @@ def section_has_status(section_slug: str) -> bool:
     return section_slug not in SECTION_STATUS_DISABLED_SLUGS and section_slug != "validation"
 
 
+def index_section_status_rows(raw_rows):
+    by_slug: dict[str, dict] = {}
+    by_title: dict[str, dict] = {}
+    stale_rows = False
+    for row in raw_rows if isinstance(raw_rows, list) else ():
+        if isinstance(row, dict):
+            slug = row.get("section_slug")
+            if slug not in (None, ""):
+                by_slug[str(slug)] = row
+                continue
+            title = row.get("section")
+            if title not in (None, ""):
+                by_title[str(title)] = row
+                continue
+        stale_rows = True
+    return by_slug, by_title, stale_rows
+
+
+def section_value_is_filled(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, dict, set)):
+        return bool(value)
+    return True
+
+
 def section_has_attachments(section_slug: str) -> bool:
     if not section_slug:
         return False
@@ -154,22 +182,7 @@ def _initialise_validation_statuses(entry, section) -> None:
         existing_rows = entry.value or []
     except Exception:
         existing_rows = []
-    existing_by_slug = {}
-    existing_by_title = {}
-    stale_rows = False
-    for row in existing_rows:
-        if not isinstance(row, dict):
-            stale_rows = True
-            continue
-        slug = row.get("section_slug")
-        if slug not in (None, ""):
-            existing_by_slug[str(slug)] = row
-            continue
-        label = row.get("section")
-        if label not in (None, ""):
-            existing_by_title[str(label)] = row
-            continue
-        stale_rows = True
+    existing_by_slug, existing_by_title, stale_rows = index_section_status_rows(existing_rows)
     try:
         sections = (
             dat.sections.exclude(metadata__slug="validation")
@@ -243,6 +256,14 @@ def _initialise_validation_statuses(entry, section) -> None:
 
 
 def ensure_default_sections(dat, *, apps=None) -> None:
+    if apps is not None:
+        return _ensure_default_sections(dat, apps=apps)
+    from workflows.graph_engine import content_mutation
+    with content_mutation(dat.pk):
+        return _ensure_default_sections(dat)
+
+
+def _ensure_default_sections(dat, *, apps=None) -> None:
     """
     Ensure the default DAT sections structure exists for the given DAT instance.
     """
@@ -483,6 +504,9 @@ def sync_dat_sections_if_needed(dat) -> bool:
     if not getattr(dat, "pk", None):
         return False
     if not dat_sections_need_sync(dat):
+        return False
+    from workflows.services import workflow_has_capability
+    if workflow_has_capability(dat, "terminal"):
         return False
     ensure_default_sections(dat)
     cache = getattr(dat, "_prefetched_objects_cache", None)

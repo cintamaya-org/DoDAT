@@ -1,0 +1,27 @@
+{
+  "schema_version": 2,
+  "engine_version": 1,
+  "code": "dat-validation",
+  "name": "Validation des DAT",
+  "policies": {
+    "missing_assignee": "block",
+    "on_content_change": "invalidate_affected",
+    "request_changes_requires_comment": true
+  },
+  "nodes": [
+    {"id": "need", "name": "Nouveau besoin", "type": "submission", "target": {"section": "besoins"}},
+    {"id": "prerequisites", "name": "Contrôle des prérequis", "type": "approval", "after": ["need"], "target": {"section": "besoins"}, "approvers": {"all_roles": ["architecte-referent"]}, "on_request_changes": {"restart_at": "need"}},
+    {"id": "preparation", "name": "Préparation du dossier", "type": "approval", "after": ["prerequisites"], "target": {"section": "architecture"}, "approvers": {"all_roles": ["architecte-technique"]}},
+    {"id": "urbanisation", "name": "Urbanisation", "type": "approval", "after": ["preparation"], "target": {"section": "urbanisme"}, "approvers": {"all_roles": ["urbaniste"]}},
+    {"id": "cyber", "name": "Volet cybersécurité", "type": "approval", "after": ["preparation"], "target": {"section": "cybersecurite"}, "approvers": {"all_roles": ["analyste-secu"]}},
+    {"id": "first_version", "name": "Première version du DAT", "type": "milestone", "after": ["urbanisation", "cyber"], "target": {"dat": true}},
+    {"id": "ssi", "name": "Validation SSI", "type": "approval", "after": ["first_version"], "target": {"section": "cybersecurite"}, "approvers": {"all_roles": ["rssi"]}, "on_request_changes": {"restart_at": "preparation"}},
+    {"id": "hosting", "name": "Hébergement, exploitation et capacité", "type": "approval", "after": ["ssi"], "target": {"section": "exploitation"}, "approvers": {"all_roles": ["infra-exploitation"]}},
+    {"id": "final", "name": "Validation du DAT complet", "type": "approval", "after": ["hosting"], "target": {"dat": true}, "approvers": {"all_roles": ["comite-validation"]}}
+  ],
+  "complete_when": {
+    "all": [
+      "final"
+    ]
+  }
+}

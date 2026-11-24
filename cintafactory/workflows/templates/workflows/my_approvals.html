@@ -1,0 +1,52 @@
+{% extends 'material/frontend/base_module.html' %}
+{% load static %}
+{% block title %}Mes approbations{% endblock %}
+{% block page_title %}Mes approbations{% endblock %}
+{% block extrahead %}
+  {{ block.super }}
+  <link rel="stylesheet" href="{% static 'css/workflow_review.css' %}">
+{% endblock %}
+{% block content %}
+  <p>Les approbations sont indépendantes des sections que vous pouvez modifier.</p>
+  <div class="my-approvals__sections">
+    <section class="card cinta-card my-approvals__panel my-approvals__panel--pending" aria-labelledby="pending-approval-title">
+      <div class="card-content">
+        <h2 class="card-title" id="pending-approval-title">Approbation en attente</h2>
+        {% for task in pending_tasks %}
+          {% include 'workflows/partials/my_approval_entry.html' %}
+        {% empty %}
+          <p>Aucune approbation en attente.</p>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="card cinta-card my-approvals__panel" aria-labelledby="upcoming-approvals-title">
+      <div class="card-content">
+        <h2 class="card-title" id="upcoming-approvals-title">Approbations à venir</h2>
+        {% for task in tasks %}
+          {% include 'workflows/partials/my_approval_entry.html' %}
+        {% empty %}
+          <p>Aucune approbation à venir.</p>
+        {% endfor %}
+        {% if page_obj.has_previous %}<a href="?page={{ page_obj.previous_page_number }}">Précédent</a>{% endif %}
+        {% if page_obj.has_next %}<a href="?page={{ page_obj.next_page_number }}">Suivant</a>{% endif %}
+      </div>
+    </section>
+
+    <section class="card cinta-card my-approvals__panel" aria-labelledby="approval-history-title">
+      <div class="card-content">
+        <h2 class="card-title" id="approval-history-title">Historique des approbations</h2>
+        {% for item in approval_history %}
+          <article class="my-approvals__entry">
+            <h3><a href="{% url 'workflows:graph_detail' item.dat.pk %}#review-{{ item.decision.attempt.node_id }}">{{ item.dat.display_reference }} · {{ item.node_name }}</a></h3>
+            <p><time datetime="{{ item.decision.created_at|date:'c' }}">{{ item.decision.created_at|date:'d/m/Y H:i' }}</time> · {{ item.outcome_label }}</p>
+          </article>
+        {% empty %}
+          <p>Aucune approbation effectuée.</p>
+        {% endfor %}
+        {% if history_page.has_previous %}<a href="?history_page={{ history_page.previous_page_number }}">Précédent</a>{% endif %}
+        {% if history_page.has_next %}<a href="?history_page={{ history_page.next_page_number }}">Suivant</a>{% endif %}
+      </div>
+    </section>
+  </div>
+{% endblock %}

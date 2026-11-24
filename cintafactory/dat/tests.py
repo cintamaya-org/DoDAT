@@ -274,7 +274,7 @@ class ApplicationOptionsViewTest(TestCase):
         self.assertEqual(first_response.status_code, 200)
         self.assertIn("no-store", first_response["Cache-Control"])
         self.assertNotIn(
-            "New application",
+            "New application (new-application)",
             [option["label"] for option in first_response.json()["options"]],
         )
 
@@ -288,7 +288,7 @@ class ApplicationOptionsViewTest(TestCase):
         self.assertEqual(refreshed_response.status_code, 200)
         self.assertIn("no-store", refreshed_response["Cache-Control"])
         self.assertIn(
-            {"value": str(application.pk), "label": application.name},
+            {"value": str(application.pk), "label": "New application (new-application)"},
             refreshed_response.json()["options"],
         )
 
@@ -299,7 +299,7 @@ class ApplicationOptionsViewTest(TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         option_labels = [option["label"] for option in payload["options"]]
-        self.assertNotIn("Sans direction", option_labels)
+        self.assertNotIn("Sans direction (app-3)", option_labels)
 
 
 class MyApplicationOptionsViewTest(TestCase):
@@ -352,15 +352,15 @@ class MyApplicationOptionsViewTest(TestCase):
 
         self.assertEqual(response.status_code, 302)
 
-    def test_returns_at_most_thirty_visible_applications(self):
+    def test_returns_at_most_twenty_visible_applications(self):
         self.client.force_login(self.owner)
         response = self.client.get(self.url)
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(len(payload["options"]), 30)
+        self.assertEqual(len(payload["options"]), 20)
         self.assertTrue(payload["has_more"])
-        self.assertEqual(payload["max_results"], 30)
+        self.assertEqual(payload["max_results"], 20)
 
     def test_search_is_server_side_and_visibility_scoped(self):
         self.client.force_login(self.owner)
@@ -463,7 +463,7 @@ class TopbarSearchViewTest(TestCase):
         payload = response.json()
         self.assertTrue(payload["results"])
         self.assertTrue(all(item["type"] == "dat" for item in payload["results"]))
-        self.assertIn("DAT-INV-001", [item["label"] for item in payload["results"]])
+        self.assertIn("Inventory Platform (inventory-core) - DAT-INV-001", [item["label"] for item in payload["results"]])
 
     def test_returns_only_top_ten_results(self):
         for index in range(12):
@@ -667,11 +667,11 @@ class DatUpdatePermissionTest(TestCase):
                 self.assertEqual(self.dat.title, "Updated title")
                 self.assertEqual(self.dat.description, "Updated description")
                 self.assertEqual(self.dat.owner, self.owner)
-                self.assertEqual(self.dat.status, status)
+                self.assertEqual(self.dat.status, ensure_workflow_instance(self.dat).current_state)
 
-    def test_owner_cannot_edit_during_review_or_after_closure(self):
+    def test_owner_cannot_edit_after_closure(self):
         self.client.force_login(self.owner)
-        for status in (DATStatus.EN_ATTENTE_DE_REVUE, DATStatus.VALIDER, DATStatus.REFUSE):
+        for status in (DATStatus.VALIDER, DATStatus.REFUSE):
             with self.subTest(status=status):
                 self._set_status(status)
                 self.assertEqual(self.client.get(self.url).status_code, 403)
@@ -904,7 +904,7 @@ class DatImportViewTest(TestCase):
         notification_text = [str(message) for message in get_messages(response.wsgi_request)]
         self.assertEqual(
             notification_text[0],
-            "Le DAT « DAT-IMPORT-001 - DAT importé » a été importé avec succès.",
+            "Le DAT « Application Import (app-import) - DAT-IMPORT-001 - DAT importé » a été importé avec succès.",
         )
         imported = DAT.objects.get(reference=payload["dat"]["reference"])
         self.assertEqual(imported.title, payload["dat"]["title"])
@@ -987,7 +987,7 @@ class DatVisibilityRestrictionTest(TestCase):
         response = self.client.get(reverse("dat:dat_detail", args=[self.dat.pk]))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Visibility DAT")
-        self.assertContains(response, "Validation actuelle")
+        self.assertContains(response, "Approbations du dossier")
 
     def test_admin_can_view_any_dat_detail(self):
         self.client.force_login(self.admin)
@@ -1026,7 +1026,7 @@ class DatVisibilityRestrictionTest(TestCase):
         response = self.client.get(reverse("dat:my_detail", args=[self.dat.pk]))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Visibility DAT")
-        self.assertContains(response, "Validation actuelle")
+        self.assertContains(response, "Approbations du dossier")
         self.assertContains(response, self.other.username)
 
     def test_admin_can_view_my_detail_page(self):
@@ -1034,7 +1034,7 @@ class DatVisibilityRestrictionTest(TestCase):
         response = self.client.get(reverse("dat:my_detail", args=[self.dat.pk]))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Visibility DAT")
-        self.assertContains(response, "Validation actuelle")
+        self.assertContains(response, "Approbations du dossier")
 
     def _assign_role(self, user, slug):
         role = self.roles[slug]
@@ -1062,7 +1062,7 @@ class DatVisibilityRestrictionTest(TestCase):
         response_with_role = self.client.get(detail_url)
         self.assertNotContains(response_with_role, "Passer à l'étape suivante")
 
-    def test_reviewer_can_validate_from_validation_section(self):
+    def test_legacy_decision_cannot_bypass_node_approvals(self):
         referent = get_user_model().objects.create_user(username="referent-user", password="pwd")
         dat = DAT.objects.create(
             reference="DAT-VIS-REFERENT",
@@ -1081,7 +1081,7 @@ class DatVisibilityRestrictionTest(TestCase):
         )
         self.assertRedirects(response, reverse("dat:my_detail", args=[dat.pk]))
         dat.refresh_from_db()
-        self.assertEqual(dat.status, DATStatus.VALIDER)
+        self.assertNotEqual(dat.status, DATStatus.VALIDER)
 
     def test_list_only_shows_assigned_dats(self):
         DAT.objects.create(
@@ -1107,12 +1107,44 @@ class DatVisibilityRestrictionTest(TestCase):
         self.assertContains(response, "DAT-VIS-3")
         self.assertNotContains(response, "DAT-VIS-2")
 
+        with mock.patch.object(dat_views.DatList, "paginate_by", 1):
+            first_page = self.client.get(reverse("dat:my_list"))
+            second_page = self.client.get(reverse("dat:my_list"), {"page": 2})
+        self.assertContains(first_page, 'data-tooltip="BESOIN(S) · Non commencé · other-user"')
+        self.assertNotContains(first_page, 'data-tooltip="BESOIN(S) · Non commencé · owner-user"')
+        self.assertContains(second_page, 'data-tooltip="BESOIN(S) · Non commencé · owner-user"')
+        self.assertNotContains(second_page, 'data-tooltip="BESOIN(S) · Non commencé · other-user"')
+
         self.client.force_login(self.other)
         response_other = self.client.get(reverse("dat:my_list"))
         self.assertEqual(response_other.status_code, 200)
         self.assertContains(response_other, "DAT-VIS-2")
         self.assertNotContains(response_other, "DAT-VIS-1")
         self.assertContains(response_other, "DAT-VIS-3")
+
+    def test_my_list_uses_saved_legacy_section_statuses_without_writing(self):
+        from workflows.models import WorkflowInstance
+
+        status_part = DATPart.objects.get(sub_section__section__dat=self.dat, key="suivi_sections")
+        rows = [
+            {"section": "ARCHITECTURE", "statut": "valide"},
+            {"section_slug": "cybersecurite", "statut": "bloque"},
+            {"section_slug": "exploitation", "statut": "en_cours"},
+        ]
+        status_part.update_value(rows)
+        DATPart.objects.get(sub_section__section__dat=self.dat, key="nom_projet").update_value("Projet")
+
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("dat:my_list"))
+        self.assertContains(response, 'id="dat-list-section-tooltip" class="wf-tooltip" hidden')
+        self.assertContains(response, 'data-tooltip="ARCHITECTURE · Validé · Non affecté"')
+        self.assertContains(response, 'data-tooltip="CYBERSÉCURITÉ · Bloqué · Non affecté"')
+        self.assertContains(response, 'data-tooltip="EXPLOITATION · Non commencé · Non affecté"')
+        self.assertContains(response, 'data-tooltip="INFORMATIONS GÉNÉRALES · En cours · owner-user"')
+        self.assertNotContains(response, 'data-tooltip="VALIDATION ·')
+        self.assertEqual(DATPart.objects.get(pk=status_part.pk).value, rows)
+        self.assertFalse(WorkflowInstance.objects.filter(object_id=str(self.dat.pk)).exists())
+
 
 class DatParticipantAssignmentFormTest(TestCase):
     def setUp(self) -> None:
@@ -1188,6 +1220,68 @@ class DatParticipantAssignmentFormTest(TestCase):
             participant = dat.participants.get(role__slug=slug)
             expected_user = self.users[slug]
             self.assertEqual(participant.user, expected_user)
+
+    def test_create_form_allocates_only_when_reference_is_blank(self):
+        self.client.force_login(self.porteur)
+        url = "/dat/manage/dats/crud/add/"
+        form_page = self.client.get(url)
+        self.assertContains(form_page, "Laissez vide pour attribuer la prochaine version")
+        html = form_page.content.decode()
+        self.assertLess(html.index('id="id_application"'), html.index('id="id_reference"'))
+        response = self.client.post(url, self._build_form_data(reference=""))
+        self.assertEqual(response.status_code, 302)
+        dat = self.application.dats.get()
+        self.assertEqual(dat.reference, "001")
+        edit = DATForm(data=self._build_form_data(reference=""), instance=dat, user=self.porteur)
+        self.assertFalse(edit.is_valid())
+        self.assertIn("reference", edit.errors)
+        dat.refresh_from_db()
+        self.assertEqual(dat.reference, "001")
+
+    def test_creation_redirects_and_displays_one_success_notification(self):
+        self.client.force_login(self.porteur)
+
+        response = self.client.post(
+            "/dat/manage/dats/crud/add/",
+            self._build_form_data(),
+            follow=True,
+            HTTP_ACCEPT="text/vnd.turbo-stream.html, text/html, application/xhtml+xml",
+        )
+
+        self.assertEqual(response.redirect_chain, [(reverse("dat:my_list"), 302)])
+        self.assertContains(response, "DAT-FORM-1")
+        self.assertContains(response, "Le DAT a été créé avec succès.", count=1)
+        dat = DAT.objects.get(reference="DAT-FORM-1")
+        self.assertEqual(dat.owner, self.porteur)
+        self.assertEqual(dat.participants.count(), len(DAT_REQUIRED_PARTICIPANT_ROLE_SLUGS))
+
+    def test_invalid_creation_renders_errors_for_turbo_without_framework_header(self):
+        self.client.force_login(self.porteur)
+
+        response = self.client.post(
+            "/dat/manage/dats/crud/add/",
+            self._build_form_data(title=""),
+            HTTP_ACCEPT="text/vnd.turbo-stream.html, text/html, application/xhtml+xml",
+        )
+
+        self.assertContains(response, "Impossible d'enregistrer le DAT.", status_code=422)
+        self.assertIn("title", response.context["form"].errors)
+        self.assertFalse(DAT.objects.filter(reference="DAT-FORM-1").exists())
+
+    def test_creation_rolls_back_when_participant_save_fails(self):
+        from workflows.exceptions import WorkflowTransitionUnavailable
+
+        self.client.force_login(self.porteur)
+        with mock.patch.object(
+            DATForm,
+            "_save_participants",
+            side_effect=WorkflowTransitionUnavailable("Circuit indisponible."),
+        ):
+            response = self.client.post("/dat/manage/dats/crud/add/", self._build_form_data())
+
+        self.assertEqual(response.status_code, 409)
+        self.assertFalse(DAT.objects.filter(reference="DAT-FORM-1").exists())
+        self.assertEqual(list(get_messages(response.wsgi_request)), [])
 
     def test_form_updates_existing_participants(self):
         create_data = self._build_form_data()
@@ -1366,6 +1460,48 @@ class DatOverviewSectionResponsibleUpdateTest(TestCase):
                 payload[row["field_name"]] = row.get("current_user_id", "")
         return payload
 
+    def test_owner_can_edit_section_responsibles_from_general_information(self):
+        self.client.force_login(self.owner)
+        response = self.client.get(
+            reverse("dat:my_detail", args=[self.dat.pk]),
+            {"section": "informations-generales"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        editor = response.context["section_responsible_editor"]
+        self.assertTrue(editor["can_edit"])
+        self.assertTrue(editor["has_rows"])
+        for row in editor["rows"]:
+            if row["has_options"]:
+                with self.subTest(section=row["section_slug"]):
+                    self.assertContains(response, f'<select id="{row["field_name"]}"')
+
+    def test_section_participant_cannot_edit_responsibles_with_admin_candidates(self):
+        participant = get_user_model().objects.create_user(
+            username="overview-section-participant", password="pwd",
+        )
+        section = self.dat.sections.get(metadata__slug="architecture")
+        DATSectionParticipant.objects.create(dat=self.dat, section=section, user=participant)
+        for candidate in self.dat.participants.select_related("user"):
+            DATAdmin.objects.get_or_create(dat=self.dat, user=candidate.user)
+
+        self.client.force_login(participant)
+        response = self.client.get(
+            reverse("dat:my_detail", args=[self.dat.pk]),
+            {"section": "informations-generales"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        editor = response.context["section_responsible_editor"]
+        self.assertFalse(editor["can_edit"])
+        for row in editor["rows"]:
+            with self.subTest(section=row["section_slug"]):
+                self.assertNotContains(response, f'<select id="{row["field_name"]}"')
+
+        response = self.client.post(editor["update_url"], {"section_responsible__architecture": str(participant.pk)})
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(self.dat.section_responsibles.exists())
+
     def test_owner_can_update_section_responsible_assignments(self):
         self.client.force_login(self.owner)
         architecture_section = DATSection.objects.get(dat=self.dat, metadata__slug="architecture")
@@ -1379,6 +1515,86 @@ class DatOverviewSectionResponsibleUpdateTest(TestCase):
         self.assertEqual(architecture_assignment.user, self.referent_executant)
         cyber_assignment = DATSectionResponsible.objects.get(section=cyber_section)
         self.assertEqual(cyber_assignment.user, self.rssi_user)
+
+    def test_owner_can_assign_section_responsibles_without_dat_participants(self):
+        self.dat.participants.all().delete()
+        self.client.force_login(self.owner)
+        response = self.client.get(
+            reverse("dat:my_detail", args=[self.dat.pk]),
+            {"section": "informations-generales"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        editor = response.context["section_responsible_editor"]
+        self.assertTrue(editor["can_edit"])
+        self.assertTrue(editor["has_rows"])
+        payload = {}
+        expected_assignments = {}
+        self.assertTrue(all(row["has_options"] for row in editor["rows"]))
+        for row in editor["rows"]:
+            with self.subTest(section=row["section_slug"]):
+                self.assertEqual(row["current_user_id"], "")
+                self.assertContains(response, f'<select id="{row["field_name"]}"')
+                payload[row["field_name"]] = row["options"][0]["id"]
+                expected_assignments[row["section_slug"]] = row["options"][0]["id"]
+
+        response = self.client.post(editor["update_url"], payload, follow=True)
+
+        self.assertContains(response, "Responsables des sections mis à jour.")
+        assignments = {
+            assignment.section.slug: str(assignment.user_id)
+            for assignment in self.dat.section_responsibles.select_related("section__metadata")
+        }
+        self.assertEqual(assignments, expected_assignments)
+        refreshed_rows = response.context["section_responsible_editor"]["rows"]
+        for row in refreshed_rows:
+            with self.subTest(section=row["section_slug"]):
+                self.assertEqual(row["current_user_id"], expected_assignments[row["section_slug"]])
+
+    def test_owner_can_assign_responsible_when_section_has_no_dat_participant(self):
+        urbaniste = self.dat.participants.get(role__slug="urbaniste").user
+        self.dat.participants.filter(role__slug="urbaniste").delete()
+        payload = self._build_section_responsible_payload(
+            overrides={"urbanisme": str(urbaniste.pk)},
+        )
+
+        response = self.client.post(
+            reverse("dat:my_section_responsibles_update", args=[self.dat.pk]),
+            payload,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        assignment = self.dat.section_responsibles.get(section__metadata__slug="urbanisme")
+        self.assertEqual(assignment.user, urbaniste)
+
+    def test_directory_fallback_rejects_inactive_users_and_wrong_roles(self):
+        self.dat.participants.all().delete()
+        inactive_referent = get_user_model().objects.create_user(
+            username="overview-inactive-referent", password="pwd",
+            role=self.roles["architecte-referent"], is_active=False,
+        )
+        self.client.force_login(self.owner)
+        response = self.client.get(reverse("dat:my_detail", args=[self.dat.pk]))
+        self.assertEqual(response.status_code, 200)
+        rows = response.context["section_responsible_editor"]["rows"]
+        architecture_row = next(row for row in rows if row["section_slug"] == "architecture")
+        option_ids = {option["id"] for option in architecture_row["options"]}
+        self.assertIn(str(self.referent_executant.pk), option_ids)
+        self.assertNotIn(str(inactive_referent.pk), option_ids)
+        self.assertNotIn(str(self.architect_responsable.pk), option_ids)
+
+        for candidate in (inactive_referent, self.architect_responsable):
+            with self.subTest(candidate=candidate.username):
+                payload = self._build_section_responsible_payload(
+                    overrides={"architecture": str(candidate.pk)},
+                )
+                response = self.client.post(
+                    reverse("dat:my_section_responsibles_update", args=[self.dat.pk]),
+                    payload,
+                    follow=True,
+                )
+                self.assertContains(response, "Utilisateur invalide pour la section")
+                self.assertFalse(self.dat.section_responsibles.exists())
 
     def test_owner_is_dat_admin_for_own_dat(self):
         self.assertTrue(user_is_dat_admin_for_dat(self.dat, self.owner))
@@ -1496,6 +1712,85 @@ class DatOverviewSectionResponsibleUpdateTest(TestCase):
         self.assertFalse(
             DATSectionParticipant.objects.filter(section=cyber_section).exists()
         )
+
+    def test_section_responsible_can_assign_technical_architect_without_dat_participants(self):
+        self.dat.participants.all().delete()
+        section = self.dat.sections.get(metadata__slug="architecture")
+        DATSectionResponsible.objects.create(dat=self.dat, section=section, user=self.referent_executant)
+        self.client.force_login(self.referent_executant)
+
+        response = self.client.get(
+            reverse("dat:my_detail", args=[self.dat.pk]), {"section": "informations-generales"},
+        )
+        self.assertEqual(response.status_code, 200)
+        editor = response.context["section_participant_editor"]
+        row = next(row for row in editor["rows"] if row["section_slug"] == "architecture")
+        self.assertTrue(row["can_edit"])
+        self.assertTrue(row["has_options"])
+        option_ids = {option["id"] for option in row["options"]}
+        self.assertIn(str(self.architect_responsable.pk), option_ids)
+        self.assertNotIn(str(self.referent_executant.pk), option_ids)
+        self.assertContains(response, f'<select id="{row["field_name"]}"')
+
+        response = self.client.post(
+            editor["update_url"], {row["field_name"]: str(self.architect_responsable.pk)}, follow=True,
+        )
+        self.assertContains(response, "Participants des sections mis à jour.")
+        self.assertEqual(self.dat.section_participants.get(section=section).user, self.architect_responsable)
+        self.assertEqual(self.dat.section_responsibles.get(section=section).user, self.referent_executant)
+        refreshed_row = next(
+            row for row in response.context["section_participant_editor"]["rows"]
+            if row["section_slug"] == "architecture"
+        )
+        self.assertEqual(refreshed_row["current_user_id"], str(self.architect_responsable.pk))
+        self.assertTrue(section.can_user_edit(self.architect_responsable))
+
+        response = self.client.get(reverse("dat:my_list"))
+        self.assertEqual(response.status_code, 200)
+        listed_dat = next(dat for dat in response.context["object_list"] if dat.pk == self.dat.pk)
+        self.assertTrue(listed_dat.has_technical_architect)
+        self.assertContains(response, "Architecte technique affecté")
+
+    def test_participant_directory_rejects_inactive_users_and_wrong_roles(self):
+        self.dat.participants.filter(role__slug="architecte-technique").delete()
+        section = self.dat.sections.get(metadata__slug="architecture")
+        DATSectionResponsible.objects.create(dat=self.dat, section=section, user=self.referent_executant)
+        inactive_architect = get_user_model().objects.create_user(
+            username="overview-inactive-architect", password="pwd",
+            role=self.roles["architecte-technique"], is_active=False,
+        )
+        self.client.force_login(self.referent_executant)
+        response = self.client.get(reverse("dat:my_detail", args=[self.dat.pk]))
+        self.assertEqual(response.status_code, 200)
+        editor = response.context["section_participant_editor"]
+        row = next(row for row in editor["rows"] if row["section_slug"] == "architecture")
+        option_ids = {option["id"] for option in row["options"]}
+        self.assertIn(str(self.architect_responsable.pk), option_ids)
+        for candidate in (inactive_architect, self.referent_executant, self.rssi_user):
+            with self.subTest(candidate=candidate.username):
+                self.assertNotIn(str(candidate.pk), option_ids)
+                response = self.client.post(
+                    editor["update_url"], {row["field_name"]: str(candidate.pk)}, follow=True,
+                )
+                self.assertContains(response, "Utilisateur invalide pour la section")
+                self.assertFalse(self.dat.section_participants.filter(section=section).exists())
+
+    def test_unassigned_referent_cannot_assign_technical_architect(self):
+        other_referent = get_user_model().objects.create_user(
+            username="overview-other-referent", password="pwd", role=self.roles["architecte-referent"],
+        )
+        cyber_section = self.dat.sections.get(metadata__slug="cybersecurite")
+        DATSectionParticipant.objects.create(dat=self.dat, section=cyber_section, user=other_referent)
+        self.client.force_login(other_referent)
+        response = self.client.get(reverse("dat:my_detail", args=[self.dat.pk]))
+        self.assertEqual(response.status_code, 200)
+        editor = response.context["section_participant_editor"]
+        row = next(row for row in editor["rows"] if row["section_slug"] == "architecture")
+        self.assertFalse(row["can_edit"])
+        self.assertNotContains(response, f'<select id="{row["field_name"]}"')
+        response = self.client.post(editor["update_url"], {row["field_name"]: str(self.architect_responsable.pk)})
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(self.dat.section_participants.filter(section__metadata__slug="architecture").exists())
 
     def test_forced_section_roles_are_enforced_in_editor_options(self):
         self.client.force_login(self.owner)
@@ -1843,6 +2138,92 @@ class DatSectionIntegrationTest(TestCase):
         self.assertIn(entry.label, content)
         self.assertIn("Nouveau besoin prioritaire", content)
 
+    def test_owner_can_edit_general_information_and_needs_without_assignments(self):
+        self.dat.participants.all().delete()
+        self.dat.section_participants.all().delete()
+        self.client.force_login(self.porteur)
+
+        cases = (
+            ("informations-generales", "informations-administratives", "nom_projet", False),
+            ("besoins", "detail-besoin", "besoin_creation", True),
+        )
+        for section_slug, sub_section_slug, entry_key, ajax in cases:
+            with self.subTest(section=section_slug):
+                section = self.dat.sections.get(metadata__slug=section_slug)
+                response = self.client.get(
+                    reverse("dat:my_detail", args=[self.dat.pk]),
+                    {"section": section_slug},
+                )
+                self.assertEqual(response.status_code, 200)
+                for sub_section in section.sub_sections.all():
+                    edit_url = reverse(
+                        "dat:sub_section_edit", args=[self.dat.pk, section_slug, sub_section.slug],
+                    )
+                    self.assertContains(response, f'data-edit-url="{edit_url}"')
+
+                sub_section = section.sub_sections.get(slug=sub_section_slug)
+                entry = sub_section.parts.get(key=entry_key)
+                edit_url = reverse("dat:sub_section_edit", args=[self.dat.pk, section_slug, sub_section_slug])
+                self.assertEqual(self.client.get(edit_url).status_code, 200)
+                value = f"Contenu du porteur : {section_slug}"
+                headers = {"HTTP_X_REQUESTED_WITH": "XMLHttpRequest"} if ajax else {}
+                response = self.client.post(edit_url, {entry.form_field_name(): value}, **headers)
+                self.assertEqual(response.status_code, 200 if ajax else 302)
+                if ajax:
+                    self.assertTrue(response.json()["success"])
+                entry.refresh_from_db()
+                self.assertEqual(entry.value, value)
+
+    def test_other_porteur_cannot_edit_general_information_or_needs(self):
+        other_porteur = get_user_model().objects.create_user(
+            username="sections-other-porteur", password="pwd", role=self.roles["porteur-demande"],
+        )
+        DATAdmin.objects.create(dat=self.dat, user=other_porteur)
+        self.client.force_login(other_porteur)
+
+        for section_slug in ("informations-generales", "besoins"):
+            with self.subTest(section=section_slug):
+                section = self.dat.sections.get(metadata__slug=section_slug)
+                sub_section = section.sub_sections.order_by("order", "id").first()
+                entry = sub_section.parts.first()
+                original_value = entry.value
+                edit_url = reverse("dat:sub_section_edit", args=[self.dat.pk, section_slug, sub_section.slug])
+                response = self.client.get(
+                    reverse("dat:my_detail", args=[self.dat.pk]), {"section": section_slug},
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertNotContains(response, f'data-edit-url="{edit_url}"')
+                self.assertEqual(self.client.get(edit_url).status_code, 403)
+                self.assertEqual(
+                    self.client.post(edit_url, {entry.form_field_name(): "Modification interdite"}).status_code,
+                    403,
+                )
+                entry.refresh_from_db()
+                self.assertEqual(entry.value, original_value)
+
+    def test_owner_cannot_edit_other_sections_without_assignment(self):
+        self.client.force_login(self.porteur)
+        for section in self.dat.sections.exclude(metadata__slug__in=("informations-generales", "besoins")):
+            with self.subTest(section=section.slug):
+                self.assertFalse(section.can_user_edit(self.porteur))
+                sub_section = section.sub_sections.order_by("order", "id").first()
+                self.assertFalse(sub_section.can_user_edit(self.porteur))
+                edit_url = reverse("dat:sub_section_edit", args=[self.dat.pk, section.slug, sub_section.slug])
+                self.assertEqual(self.client.get(edit_url).status_code, 403)
+                self.assertEqual(self.client.post(edit_url, {}).status_code, 403)
+
+    def test_owner_cannot_edit_initial_sections_when_workflow_is_terminal(self):
+        self.dat.section_participants.all().delete()
+        self.client.force_login(self.porteur)
+        with mock.patch("dat.views.workflow_has_capability", return_value=True):
+            for section_slug in ("informations-generales", "besoins"):
+                with self.subTest(section=section_slug):
+                    section = self.dat.sections.get(metadata__slug=section_slug)
+                    sub_section = section.sub_sections.order_by("order", "id").first()
+                    edit_url = reverse("dat:sub_section_edit", args=[self.dat.pk, section_slug, sub_section.slug])
+                    self.assertEqual(self.client.get(edit_url).status_code, 403)
+                    self.assertEqual(self.client.post(edit_url, {}).status_code, 403)
+
     def _prepare_sub_section_with_entry(self):
         section = self.dat.sections.get(metadata__slug="besoins")
         sub_section = section.sub_sections.filter(slug="detail-besoin").first() or section.sub_sections.first()
@@ -1973,7 +2354,7 @@ class CreateSchemaDiagramViewTest(TestCase):
         diagram_payload = payload.get("diagram") or {}
         self.assertIn("DAT-DIAG-1", diagram_payload.get("title", ""))
         diagram = DrawIODiagram.objects.get(pk=diagram_payload.get("id"))
-        self.assertTrue(diagram.title.startswith("DAT-DIAG-1"))
+        self.assertEqual(diagram.title, f"{self.dat.display_reference()} - Schéma")
 
     def test_allows_when_schema_sub_section_is_editable_even_if_section_is_not(self):
         role_section = ensure_role("test-section-role", "Section Role")
@@ -2879,6 +3260,7 @@ class DatPartFieldCoverageTests(TestCase):
         part.update_value = mock.Mock(side_effect=lambda value: setattr(part, "value", value))
         sub_section = SimpleNamespace(
             title="Architecture",
+            section=SimpleNamespace(dat_id=None),
             parts=SimpleNamespace(order_by=lambda *_args: [part]),
         )
         form = DATSubSectionForm(sub_section, data={"part_title": " after "})
@@ -2923,24 +3305,13 @@ class DatImportFormCoverageTests(SimpleTestCase):
                 self.assertFalse(form.is_valid())
                 self.assertIn(message, str(form.errors["data_file"]))
 
-    @mock.patch("dat.forms.DAT.objects.filter")
-    def test_import_rejects_duplicate_reference_and_accepts_new_reference(self, filter_dat):
-        filter_dat.return_value.exists.return_value = True
-        duplicate = DATImportForm(
-            data={"reference_override": "  DAT-EXISTS  "},
-            files={"data_file": self._upload(b"{}")},
-        )
-        self.assertFalse(duplicate.is_valid())
-        self.assertIn("reference_override", duplicate.errors)
-        filter_dat.assert_called_with(reference="DAT-EXISTS")
-
-        filter_dat.return_value.exists.return_value = False
-        unique = DATImportForm(
+    def test_import_trims_optional_override_before_resolving_the_application(self):
+        form = DATImportForm(
             data={"reference_override": " DAT-NEW "},
             files={"data_file": self._upload(b"{}")},
         )
-        self.assertTrue(unique.is_valid(), unique.errors)
-        self.assertEqual(unique.cleaned_data["reference_override"], "DAT-NEW")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["reference_override"], "DAT-NEW")
 
 
 class DatViewHelperCoverageTests(SimpleTestCase):
@@ -3462,31 +3833,20 @@ class DrawioParserEdgeCoverageTests(SimpleTestCase):
 
 
 class DatImportServiceCoverageTests(SimpleTestCase):
-    def test_import_validates_required_sections_reference_duplicate_and_title(self):
+    def test_import_validates_required_sections_application_and_title(self):
         service = DATImportService()
         with self.assertRaisesMessage(DATImportError, 'section "dat" manquante'):
             service.import_from_payload({})
-        with self.assertRaisesMessage(DATImportError, "référence du DAT est absente"):
+        with self.assertRaisesMessage(DATImportError, "application associée"):
             service.import_from_payload({"dat": {"title": "Title"}})
-
-        with mock.patch("dat.importers.DAT.objects.filter") as filter_dat:
-            filter_dat.return_value.exists.side_effect = [True, False, False]
-            with self.assertRaisesMessage(DATImportError, "existe déjà"):
-                service.import_from_payload({"dat": {"reference": "DAT-EXISTS", "title": "Title"}})
-            with self.assertRaisesMessage(DATImportError, "titre du DAT est absent"):
-                service.import_from_payload({"dat": {"reference": "DAT-NO-TITLE", "title": "  "}})
-            with self.assertRaisesMessage(DATImportError, "application associée"):
-                service.import_from_payload(
-                    {"dat": {"reference": "DAT-NO-APP", "title": "Title"}, "application": None}
-                )
-        self.assertEqual(filter_dat.call_count, 3)
+        with self.assertRaisesMessage(DATImportError, "titre du DAT est absent"):
+            service.import_from_payload({"dat": {"reference": "DAT-NO-TITLE", "title": "  "}})
 
     def test_import_creates_dat_sets_actor_and_returns_warnings_without_live_database(self):
         actor = SimpleNamespace(pk=17)
         application = Application(code="import-app", name="Imported application")
         service = DATImportService(actor=actor)
         with (
-            mock.patch("dat.importers.DAT.objects.filter") as filter_dat,
             mock.patch("dat.importers.transaction.atomic"),
             mock.patch.object(DAT, "save") as save_dat,
             mock.patch.object(service, "_resolve_application", return_value=application),
@@ -3494,7 +3854,6 @@ class DatImportServiceCoverageTests(SimpleTestCase):
             mock.patch.object(service, "_normalise_status", return_value=DATStatus.EN_COURS),
             mock.patch.object(service, "_synchronise_owner"),
         ):
-            filter_dat.return_value.exists.return_value = False
             result = service.import_from_payload(
                 {
                     "dat": {

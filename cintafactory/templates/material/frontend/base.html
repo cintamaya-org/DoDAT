@@ -41,10 +41,10 @@
             <dmc-sidenav id="app-sidebar" class="app-sidebar" aria-label="{% trans 'Navigation principale' %}">
               <div class="app-brand">
                 <a class="app-brand__link" href="{% url 'dat:my_list' %}">
-                  <span class="app-brand__mark" aria-hidden="true">C</span>
+                  <img class="app-brand__mark" src="{% static 'imgs/app-brand-mark.svg' %}" width="36" height="36" alt="" aria-hidden="true">
                   <span class="app-brand__copy">
                     <strong>DoDat</strong>
-                    <small>by Cintamaya · Open Source</small>
+                    <small>Cintamaya</small>
                   </span>
                 </a>
                 <button
@@ -142,7 +142,10 @@
                         data-search-url="{% url 'dat:topbar_search' %}"
                       >
                     </form>
-                    <div id="topbar-search-results" class="topbar-search__results" hidden></div>
+                    <div id="topbar-search-results" class="topbar-search__results" aria-busy="false" hidden>
+                      <p class="sr-only" data-topbar-search-status role="status" aria-live="polite"></p>
+                      <div data-topbar-search-content></div>
+                    </div>
                   </div>
                   {% block topbar_links %}
                     {% if user.is_authenticated %}

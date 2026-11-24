@@ -12,7 +12,8 @@ from django.db.models.functions import Abs, Least, Length
 from django.urls import reverse
 
 from .models import Application, DAT
-from .permissions import filter_dat_queryset_for_user, user_is_dat_admin
+from .permissions import filter_dat_queryset_for_user
+from .search_filters import SearchPageFilters, visible_search_applications
 
 
 TOPBAR_SEARCH_MIN_QUERY_LENGTH = 3
@@ -74,21 +75,15 @@ class BaseTopbarSearchProvider:
 class ApplicationTopbarSearchProvider(BaseTopbarSearchProvider):
     key = "applications"
 
-    def __init__(self, user):
+    def __init__(self, user, page_filters: SearchPageFilters | None = None):
         self.user = user
+        self.page_filters = page_filters
 
     def _queryset(self) -> QuerySet[Application]:
-        if user_is_dat_admin(self.user):
-            return Application.objects.select_related("business_direction")
-        visible_dat_queryset = filter_dat_queryset_for_user(
-            DAT.objects.select_related("application"),
-            self.user,
-        )
-        return (
-            Application.objects.filter(dats__in=visible_dat_queryset)
-            .distinct()
-            .select_related("business_direction")
-        )
+        queryset = visible_search_applications(self.user).select_related("business_direction")
+        if self.page_filters:
+            queryset = self.page_filters.apply(queryset, self.user, dats=False)
+        return queryset
 
     def _matching_queryset(self, query: str) -> QuerySet[Application]:
         return self._queryset().filter(Q(code__icontains=query) | Q(name__icontains=query))
@@ -136,12 +131,16 @@ class ApplicationTopbarSearchProvider(BaseTopbarSearchProvider):
 class DATTopbarSearchProvider(BaseTopbarSearchProvider):
     key = "dats"
 
-    def __init__(self, user):
+    def __init__(self, user, page_filters: SearchPageFilters | None = None):
         self.user = user
+        self.page_filters = page_filters
 
     def _queryset(self) -> QuerySet[DAT]:
         base_queryset = DAT.objects.select_related("application")
-        return filter_dat_queryset_for_user(base_queryset, self.user)
+        queryset = filter_dat_queryset_for_user(base_queryset, self.user)
+        if self.page_filters:
+            queryset = self.page_filters.apply(queryset, self.user, dats=True)
+        return queryset
 
     def _matching_queryset(self, query: str) -> QuerySet[DAT]:
         return self._queryset().filter(reference__icontains=query)
@@ -163,7 +162,7 @@ class DATTopbarSearchProvider(BaseTopbarSearchProvider):
                 ),
                 length_delta=Abs(Length("reference") - Value(query_length)),
             )
-            .order_by("-match_score", "length_delta", "reference")[:limit]
+            .order_by("-match_score", "length_delta", "application__name", "application__code", "reference", "pk")[:limit]
         )
         results = []
         for dat in queryset:
@@ -171,7 +170,7 @@ class DATTopbarSearchProvider(BaseTopbarSearchProvider):
                 TopbarSearchResult(
                     kind="dat",
                     identifier=str(dat.pk),
-                    label=dat.reference,
+                    label=dat.display_reference(),
                     subtitle=f"DAT - {dat.title}",
                     url=reverse("dat:my_detail", args=[dat.pk]),
                     score=getattr(dat, "match_score", 0) or 0,
@@ -182,11 +181,13 @@ class DATTopbarSearchProvider(BaseTopbarSearchProvider):
 
 
 class TopbarSearchService:
-    def __init__(self, user, providers: Iterable[BaseTopbarSearchProvider] | None = None):
+    def __init__(self, user, providers: Iterable[BaseTopbarSearchProvider] | None = None,
+                 page_filters: SearchPageFilters | None = None):
         self.user = user
+        self.page_filters = page_filters
         self.providers = list(providers) if providers is not None else [
-            ApplicationTopbarSearchProvider(user),
-            DATTopbarSearchProvider(user),
+            ApplicationTopbarSearchProvider(user, page_filters),
+            DATTopbarSearchProvider(user, page_filters),
         ]
 
     def search(self, options: TopbarSearchOptions) -> dict:
@@ -252,7 +253,9 @@ class TopbarSearchService:
             "results": [],
         }
 
-        if len(query) < min_length:
+        if (query and len(query) < min_length) or (
+            not query and not (self.page_filters and self.page_filters.has_filters())
+        ):
             payload["too_short"] = bool(query)
             return payload
 
@@ -265,13 +268,13 @@ class TopbarSearchService:
         if not enabled_provider_keys:
             return payload
 
+        providers = [provider for provider in self.providers if provider.key in enabled_provider_keys]
+        total_count = sum(provider.count(query=query) for provider in providers)
+        page = min(page, max((total_count + per_page - 1) // per_page, 1))
+        payload["page"] = page
         end_index = page * per_page
         candidates: list[TopbarSearchResult] = []
-        total_count = 0
-        for provider in self.providers:
-            if provider.key not in enabled_provider_keys:
-                continue
-            total_count += provider.count(query=query)
+        for provider in providers:
             candidates.extend(provider.search(query=query, limit=end_index))
 
         ranked = sorted(

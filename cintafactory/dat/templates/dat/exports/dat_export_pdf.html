@@ -164,7 +164,7 @@
 <body>
   {% with meta=export.dat application=export.application owner=export.owner %}
   <header class="pdf-header">
-    <h1>DAT {{ meta.reference }} &mdash; {{ meta.title }}</h1>
+    <h1>DAT {{ dat.display_reference|default:meta.reference }} &mdash; {{ meta.title }}</h1>
     <p class="muted pdf-header__meta">
       Exporté le {{ export.exported_at_display }} &
       statut : {{ meta.status_label|default:meta.status }}
@@ -177,7 +177,7 @@
       <tbody>
         <tr>
           <th>Référence</th>
-          <td>{{ meta.reference }}</td>
+          <td>{{ dat.display_reference|default:meta.reference }}</td>
           <th>Application</th>
           <td>
             {% if application %}

@@ -1,7 +1,13 @@
 {% extends "material/frontend/base_module.html" %}
+{% load static %}
 
 {% block title %}Notifications{% endblock %}
 {% block page_title %}Notifications{% endblock %}
+
+{% block extrahead %}
+  {{ block.super }}
+  <script src="{% static 'js/workflows_notifications.js' %}" defer></script>
+{% endblock %}
 
 {% block content %}
 <div class="card wf-notifications-card">
@@ -98,69 +104,63 @@
                   {% endif %}
                 </div>
                 <div class="wf-notification__details">
-                  {% if notification.source == "history" %}
-                    {% with entry=notification.history %}
-                      {% if entry.action == history_actions.STATUS_CHANGED %}
-                        Passage de <strong>{{ entry.details.from|default:"-" }}</strong> à <strong>{{ entry.details.to|default:"-" }}</strong>.
-                      {% elif entry.action == history_actions.OWNER_CHANGED %}
-                        Responsable : <strong>{{ entry.details.from_username|default:"-" }}</strong> -> <strong>{{ entry.details.to_username|default:"-" }}</strong>.
-                      {% elif entry.action == history_actions.UPDATED %}
-                        {% if entry.details.changes %}
-                          <ul>
-                            {% for field, data in entry.details.changes.items %}
-                              <li>
-                                <strong>{{ field|capfirst }}</strong> : <span>{{ data.from|default:"-" }}</span> -> <span>{{ data.to|default:"-" }}</span>
-                              </li>
-                            {% endfor %}
-                          </ul>
-                        {% else %}
-                          Aucune précision supplémentaire.
-                        {% endif %}
-                      {% elif entry.action == history_actions.SECTION_UPDATED %}
-                        {% with details=entry.details %}
-                          {% if details.section %}
-                            Section <strong>{{ details.section.title|default:details.section.slug }}</strong>
-                            {% if details.section.slug %}
-                              (<code>{{ details.section.slug }}</code>)
-                            {% endif %}
-                            :
-                          {% endif %}
-                          {% if details.changes %}
-                            <ul>
-                              {% for key, change in details.changes.items %}
-                                <li>
-                                  {% if change.part %}<strong>{{ change.part }}</strong> · {% endif %}
-                                  <span>{{ change.label|default:key }}</span> :
-                                  <span>{{ change.from|default:"-" }}</span> -> <span>{{ change.to|default:"-" }}</span>
-                                </li>
-                              {% endfor %}
-                            </ul>
+                  <div id="wf-notification-details-{{ forloop.counter }}" class="wf-notification__details-content" data-notification-details>
+                    {% if notification.source == "history" %}
+                      {% with entry=notification.history %}
+                        {% if entry.action == history_actions.STATUS_CHANGED %}
+                          Passage de <strong>{{ entry.details.from|default:"-" }}</strong> à <strong>{{ entry.details.to|default:"-" }}</strong>.
+                        {% elif entry.action == history_actions.OWNER_CHANGED %}
+                          Responsable : <strong>{{ entry.details.from_username|default:"-" }}</strong> -> <strong>{{ entry.details.to_username|default:"-" }}</strong>.
+                        {% elif entry.action == history_actions.UPDATED %}
+                          {% if notification.change_views %}
+                            {% include "workflows/partials/notification_changes.html" with changes=notification.change_views only %}
+                          {% elif notification.detail_lines %}
+                            {% include "workflows/partials/notification_detail_lines.html" with lines=notification.detail_lines only %}
                           {% else %}
-                            Mise à jour effectuée.
+                            Aucune précision supplémentaire.
                           {% endif %}
-                        {% endwith %}
-                      {% else %}
-                        {% if entry.details %}
-                          <code>{{ entry.details }}</code>
+                        {% elif entry.action == history_actions.SECTION_UPDATED %}
+                          {% with details=entry.details %}
+                            {% if details.section %}
+                              <p class="wf-notification__section-label">
+                                Section <strong>{{ details.section.title|default:details.section.slug }}</strong>
+                                {% if details.section.slug %}(<code>{{ details.section.slug }}</code>){% endif %}
+                                {% if details.sub_section %} · {{ details.sub_section.title|default:details.sub_section.slug }}{% endif %} :
+                              </p>
+                            {% endif %}
+                            {% if notification.change_views %}
+                              {% include "workflows/partials/notification_changes.html" with changes=notification.change_views only %}
+                            {% else %}
+                              Mise à jour effectuée.
+                            {% endif %}
+                          {% endwith %}
+                        {% elif notification.detail_lines %}
+                          {% include "workflows/partials/notification_detail_lines.html" with lines=notification.detail_lines only %}
                         {% else %}
                           Un nouvel événement a été enregistré.
                         {% endif %}
+                      {% endwith %}
+                    {% else %}
+                      {% if notification.message %}
+                        <p>{{ notification.message|linebreaksbr }}</p>
                       {% endif %}
-                    {% endwith %}
-                  {% else %}
-                    {% if notification.message %}
-                      <p>{{ notification.message|linebreaksbr }}</p>
+                      {% if notification.detail_lines %}
+                        {% include "workflows/partials/notification_detail_lines.html" with lines=notification.detail_lines only %}
+                      {% endif %}
+                      {% if notification.target_url %}
+                        <p>
+                          <a href="{{ notification.target_url }}" class="btn-flat">Consulter</a>
+                        </p>
+                      {% elif notification.dat_link %}
+                        <p>
+                          <a href="{{ notification.dat_link }}" class="btn-flat">Voir le DAT</a>
+                        </p>
+                      {% endif %}
                     {% endif %}
-                    {% if notification.target_url %}
-                      <p>
-                        <a href="{{ notification.target_url }}" class="btn-flat">Consulter</a>
-                      </p>
-                    {% elif notification.dat_link %}
-                      <p>
-                        <a href="{{ notification.dat_link }}" class="btn-flat">Voir le DAT</a>
-                      </p>
-                    {% endif %}
-                  {% endif %}
+                  </div>
+                  <button type="button" class="wf-notification__details-toggle" data-notification-expand aria-expanded="false" aria-controls="wf-notification-details-{{ forloop.counter }}" hidden>
+                    Afficher plus
+                  </button>
                 </div>
                 <div class="wf-notification__actions">
                   <form method="post" action="{% url 'workflows:notifications' %}">
@@ -174,6 +174,19 @@
                     </button>
                   </form>
                 </div>
+                {% if notification.raw_details_json %}
+                  <div class="wf-notification__raw-details">
+                    <button
+                      type="button"
+                      class="wf-notification__raw-toggle btn-flat"
+                      data-notification-raw-toggle
+                      aria-label="Afficher le JSON brut"
+                      aria-expanded="false"
+                      aria-controls="wf-notification-raw-{{ forloop.counter }}"
+                    >&lt;&gt;</button>
+                    <pre id="wf-notification-raw-{{ forloop.counter }}" class="wf-notification__raw-code" hidden><code>{{ notification.raw_details_json }}</code></pre>
+                  </div>
+                {% endif %}
               </div>
             </li>
           {% endfor %}

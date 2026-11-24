@@ -9,8 +9,11 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
-from django.db import models
+from django.db import models, router, transaction
 from django.utils import timezone
+from django.utils.text import Truncator
+
+from workflows.tracking import WorkflowTrackedContent
 
 from .resources import RESOURCE_ENTRY_KEY, RESOURCE_SECTION_SLUG, RESOURCE_SUB_SECTION_SLUG, RESOURCE_TYPE_KEY
 
@@ -51,6 +54,11 @@ class Application(models.Model):
     def __str__(self) -> str:
         return self.name
 
+    def name_with_code(self, *, max_length=None) -> str:
+        suffix = f" ({self.code})"
+        name = self.name if max_length is None else Truncator(self.name).chars(max_length - len(suffix))
+        return name + suffix
+
     def formatted_created_at(self) -> str:
         if not self.created_at:
             return ""
@@ -70,9 +78,20 @@ class Application(models.Model):
     formatted_updated_at.admin_order_field = "updated_at"
 
 
-class DAT(models.Model):
+class DATReferenceSequence(models.Model):
+    application = models.OneToOneField(Application, primary_key=True, on_delete=models.CASCADE, related_name="+")
+    last_value = models.DecimalField(max_digits=64, decimal_places=0, default=0)
+
+    class Meta:
+        db_table = "dat_reference_sequence"
+
+
+class DAT(WorkflowTrackedContent, models.Model):
+    _workflow_dat_path = "pk"
+    _workflow_allow_terminal_metadata = True
+    _workflow_content_fields = {"reference", "title", "description", "application", "application_id", "business_direction", "business_direction_id", "status"}
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    reference = models.CharField(max_length=64, unique=True)
+    reference = models.CharField(max_length=64, blank=True)
     title = models.CharField(max_length=200)
     description = models.TextField(blank=True)
     application = models.ForeignKey(
@@ -118,6 +137,9 @@ class DAT(models.Model):
     class Meta:
         db_table = "dat_dat"
         ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["application", "reference"], name="dat_reference_per_application"),
+        ]
         indexes = [
             models.Index(
                 fields=["-updated_at", "-id"],
@@ -126,7 +148,18 @@ class DAT(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f"{self.reference} - {self.title}"
+        return f"{self.display_reference()} - {self.title}"
+
+    def display_reference(self, *, max_length=None) -> str:
+        if not self.application_id:
+            return self.reference
+        suffix = f" - {self.reference}"
+        app_length = None if max_length is None else max_length - len(suffix)
+        return self.application.name_with_code(max_length=app_length) + suffix
+
+    display_reference.short_description = "Référence"
+    display_reference.admin_order_field = "reference"
+    display_reference.order_field = "reference"
 
     def sync_business_direction(self):
         if not self.application_id:
@@ -139,11 +172,33 @@ class DAT(models.Model):
             self.business_direction_id = application.business_direction_id
 
     def save(self, *args, **kwargs):
+        from workflows.graph_engine import _executing
+        from workflows.models import WorkflowInstance
+
+        external_write = not _executing.get()
+        if external_write and self.pk and (kwargs.get("update_fields") is None or "status" in kwargs["update_fields"]):
+            workflow = WorkflowInstance.objects.filter(workflow__code="dat-validation", object_id=str(self.pk)).select_related("definition_version").first()
+            if workflow and workflow.definition_version.specification.get("schema_version") == 2:
+                self.status = workflow.current_state
         self.sync_business_direction()
-        super().save(*args, **kwargs)
+        fields = kwargs.get("update_fields")
+        if fields is not None and {"application", "application_id"}.intersection(fields):
+            kwargs["update_fields"] = set(fields) | {"business_direction"}
+        using = kwargs.get("using") or router.db_for_write(type(self), instance=self)
+        with transaction.atomic(using=using):
+            super().save(*args, **kwargs)
+        if external_write:
+            self.refresh_from_db(fields=["status"])
+            self._workflow_instance_cache = {}
+
+    def refresh_from_db(self, *args, **kwargs):
+        result = super().refresh_from_db(*args, **kwargs)
+        self._workflow_instance_cache = {}
+        return result
 
 
-class DATParticipant(models.Model):
+class DATParticipant(WorkflowTrackedContent, models.Model):
+    _workflow_allow_terminal_metadata = True
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     dat = models.ForeignKey(
         DAT,
@@ -188,7 +243,7 @@ class DATParticipant(models.Model):
         verbose_name_plural = "Participants du DAT"
 
     def __str__(self) -> str:
-        return f"{self.dat.reference} - {self.role.name} - {self.user.get_username()}"
+        return f"{self.dat.display_reference()} - {self.role.name} - {self.user.get_username()}"
 
 
 class DATHistoryAction(models.TextChoices):
@@ -328,7 +383,7 @@ class DATReserveHistory(models.Model):
         return f"{self.get_action_display()} par {username} le {timestamp.strftime('%d/%m/%Y %H:%M:%S')}"
 
 
-class DATSection(models.Model):
+class DATSection(WorkflowTrackedContent, models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     dat = models.ForeignKey(
         DAT,
@@ -360,7 +415,7 @@ class DATSection(models.Model):
 
     def __str__(self) -> str:
         title = self.title or self.slug or "Section"
-        return f"{self.dat.reference} - {title}"
+        return f"{self.dat.display_reference()} - {title}"
 
     @property
     def title(self) -> str:
@@ -380,12 +435,14 @@ class DATSection(models.Model):
     def can_user_edit(self, user) -> bool:
         if user is None or not getattr(user, "is_authenticated", False):
             return False
-        from .permissions import user_is_assigned_to_section
+        from .permissions import user_can_edit_section
 
-        return user_is_assigned_to_section(self, user)
+        return user_can_edit_section(self, user)
 
 
-class DATSectionResponsible(models.Model):
+class DATSectionResponsible(WorkflowTrackedContent, models.Model):
+    _workflow_require_referent_gate = True
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     dat = models.ForeignKey(
         DAT,
@@ -416,7 +473,7 @@ class DATSectionResponsible(models.Model):
 
     def __str__(self) -> str:
         section_title = getattr(self.section, "title", None) or getattr(self.section, "slug", None) or "Section"
-        return f"{self.dat.reference} - {section_title} - {self.user.get_username()}"
+        return f"{self.dat.display_reference()} - {section_title} - {self.user.get_username()}"
 
 
 class DATSectionParticipant(models.Model):
@@ -450,7 +507,7 @@ class DATSectionParticipant(models.Model):
 
     def __str__(self) -> str:
         section_title = getattr(self.section, "title", None) or getattr(self.section, "slug", None) or "Section"
-        return f"{self.dat.reference} - {section_title} - {self.user.get_username()}"
+        return f"{self.dat.display_reference()} - {section_title} - {self.user.get_username()}"
 
 
 class DATAdmin(models.Model):
@@ -482,7 +539,7 @@ class DATAdmin(models.Model):
         verbose_name_plural = "Administrateurs DAT"
 
     def __str__(self) -> str:
-        return f"{self.dat.reference} - {self.user.get_username()}"
+        return f"{self.dat.display_reference()} - {self.user.get_username()}"
 
 
 class DATExportAccessRequestStatus(models.TextChoices):
@@ -531,7 +588,7 @@ class DATExportAccessRequest(models.Model):
         ordering = ["-requested_at", "-id"]
 
     def __str__(self) -> str:
-        return f"{self.dat.reference} - {self.get_status_display()}"
+        return f"{self.dat.display_reference()} - {self.get_status_display()}"
 
 
 class DATExportAccessApproval(models.Model):
@@ -599,7 +656,8 @@ class DATExportAccessHistory(models.Model):
         ordering = ["-created_at", "-id"]
 
 
-class DATSectionMetadata(models.Model):
+class DATSectionMetadata(WorkflowTrackedContent, models.Model):
+    _workflow_dat_path = "section.dat_id"
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=200, verbose_name="Titre")
     slug = models.SlugField(max_length=100, verbose_name="Identifiant")
@@ -614,7 +672,8 @@ class DATSectionMetadata(models.Model):
         return self.title or self.slug or f"Metadata #{self.pk}"
 
 
-class DATSubSection(models.Model):
+class DATSubSection(WorkflowTrackedContent, models.Model):
+    _workflow_dat_path = "section.dat_id"
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     section = models.ForeignKey(
         DATSection,
@@ -643,7 +702,7 @@ class DATSubSection(models.Model):
         verbose_name_plural = "Sous-sections de DAT"
 
     def __str__(self) -> str:
-        return f"{self.section.dat.reference} - {self.section.title} - {self.title}"
+        return f"{self.section.dat.display_reference()} - {self.section.title} - {self.title}"
 
     def can_user_edit(self, user) -> bool:
         if getattr(self, "section", None) and getattr(self.section, "slug", None) == "validation":
@@ -652,12 +711,11 @@ class DATSubSection(models.Model):
             return False
         if not getattr(user, "is_authenticated", False):
             return False
-        from .permissions import user_is_assigned_to_section
-
-        return user_is_assigned_to_section(self.section, user)
+        return self.section.can_user_edit(user)
 
 
-class DATSectionAttachment(models.Model):
+class DATSectionAttachment(WorkflowTrackedContent, models.Model):
+    _workflow_dat_path = "section.dat_id"
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     section = models.ForeignKey(
         DATSection,
@@ -689,7 +747,7 @@ class DATSectionAttachment(models.Model):
         verbose_name_plural = "Pièces jointes de section"
 
     def __str__(self) -> str:
-        return f"{self.section.dat.reference} - {self.display_name}"
+        return f"{self.section.dat.display_reference()} - {self.display_name}"
 
     def uploader_name(self) -> str:
         if self.uploaded_by_display:
@@ -714,7 +772,8 @@ class DATPartEntryType(models.TextChoices):
     REPEATER = "repeater", "Tableau dynamique"
 
 
-class DATPart(models.Model):
+class DATPart(WorkflowTrackedContent, models.Model):
+    _workflow_dat_path = "sub_section.section.dat_id"
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     sub_section = models.ForeignKey(
         DATSubSection,
@@ -745,7 +804,7 @@ class DATPart(models.Model):
 
     def __str__(self) -> str:
         return (
-            f"{self.sub_section.section.dat.reference} - {self.sub_section.section.title} - "
+            f"{self.sub_section.section.dat.display_reference()} - {self.sub_section.section.title} - "
             f"{self.sub_section.title} - {self.label}"
         )
 
@@ -923,7 +982,8 @@ class DATPart(models.Model):
         return self.render_value(self.value)
 
 
-class DATPartEntry(models.Model):
+class DATPartEntry(WorkflowTrackedContent, models.Model):
+    _workflow_dat_path = "part.sub_section.section.dat_id"
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     payload = models.ForeignKey(
         "DATPartPayload",

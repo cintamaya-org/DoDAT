@@ -59,7 +59,7 @@ class TeamsWebhookBackend(ExternalNotificationBackend):
 
     def _build_payload(self, event: ExternalNotificationEvent) -> Mapping[str, Any]:
         occurred_at = event.resolved_occurred_at().astimezone(timezone.get_current_timezone())
-        dat_label = " · ".join(item for item in [event.dat_reference, event.dat_title] if item)
+        dat_label = " · ".join(item for item in [event.dat_display_reference or event.dat_reference, event.dat_title] if item)
         facts = []
         if dat_label:
             facts.append({"title": "DAT", "value": dat_label})

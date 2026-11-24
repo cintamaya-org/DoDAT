@@ -1,1 +1,1 @@
-Custom {{ dat_reference|default:"DAT" }} - {{ title|default:"Notification" }}
+Custom {{ dat_display_reference|default:"DAT" }} - {{ title|default:"Notification" }}

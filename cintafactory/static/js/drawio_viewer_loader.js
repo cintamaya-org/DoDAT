@@ -7,7 +7,11 @@
     resourcePromise: null,
     container: null,
     viewer: null,
+    loadingPanel: null,
+    loadingTimer: null,
+    openSequence: 0,
   };
+  const VIEWER_LOADING_DELAY_MS = 300;
   const VIEWERJS_CSS_URL = "https://cdnjs.cloudflare.com/ajax/libs/viewerjs/1.11.6/viewer.min.css";
   const VIEWERJS_CSS_INTEGRITY =
     "sha384-k+swX2i6jE7YLgIRI5Gs81wcyww8As59DuESi6wnY3SpqHyNAEIZ+AAcOW4RPLYA";
@@ -217,6 +221,58 @@
     return runtime.container;
   }
 
+  function ensureViewerLoadingPanel() {
+    if (runtime.loadingPanel) {
+      return runtime.loadingPanel;
+    }
+    const panel = document.createElement("div");
+    panel.className = "cinta-viewer-loading";
+    panel.hidden = true;
+    panel.setAttribute("role", "status");
+    panel.setAttribute("aria-live", "polite");
+    panel.setAttribute("aria-busy", "false");
+
+    const surface = document.createElement("div");
+    surface.className = "cinta-viewer-loading__surface";
+    const announcement = document.createElement("span");
+    announcement.className = "sr-only";
+    const shapes = document.createElement("div");
+    shapes.setAttribute("aria-hidden", "true");
+    const preview = document.createElement("span");
+    preview.className = "cinta-skeleton cinta-skeleton--block cinta-viewer-loading__preview";
+    const text = document.createElement("span");
+    text.className = "cinta-viewer-loading__text";
+    const title = document.createElement("span");
+    title.className = "cinta-skeleton cinta-skeleton--line cinta-viewer-loading__title";
+    const subtitle = document.createElement("span");
+    subtitle.className = "cinta-skeleton cinta-skeleton--line cinta-viewer-loading__subtitle";
+    shapes.append(preview, text);
+    text.append(title, subtitle);
+    surface.append(announcement, shapes);
+    panel.appendChild(surface);
+    document.body.appendChild(panel);
+    runtime.loadingPanel = {panel, announcement};
+    return runtime.loadingPanel;
+  }
+
+  function showViewerLoading(title) {
+    const loading = ensureViewerLoadingPanel();
+    loading.announcement.textContent = title
+      ? `Chargement de ${title}…`
+      : "Chargement du diagramme…";
+    loading.panel.setAttribute("aria-busy", "true");
+    loading.panel.hidden = false;
+  }
+
+  function hideViewerLoading() {
+    if (!runtime.loadingPanel) {
+      return;
+    }
+    runtime.loadingPanel.panel.hidden = true;
+    runtime.loadingPanel.panel.setAttribute("aria-busy", "false");
+    runtime.loadingPanel.announcement.textContent = "";
+  }
+
   function normalizeViewerImages(payload, fallbackTitle) {
     if (!Array.isArray(payload)) {
       return [];
@@ -261,93 +317,161 @@
     return `${url}${separator}_=${Date.now()}`;
   }
 
+  function showViewerImages(urls, title, requestVersion) {
+    const normalized = normalizeViewerImages(urls, title);
+    if (!normalized.length) {
+      const error = new Error("no-preview-images");
+      error.code = "NO_PREVIEW_IMAGES";
+      return Promise.reject(error);
+    }
+    return loadViewerResources().then(() => {
+      if (requestVersion !== runtime.openSequence) {
+        return;
+      }
+      const wrapper = renderViewerImages(normalized);
+      if (!runtime.viewer) {
+        runtime.viewer = new window.Viewer(wrapper, {
+          navbar: normalized.length > 1,
+          tooltip: false,
+          toolbar: {
+            zoomIn: 4,
+            zoomOut: 4,
+            oneToOne: 4,
+            reset: 4,
+            prev: normalized.length > 1 ? 4 : 0,
+            play: normalized.length > 1 ? 4 : 0,
+            next: normalized.length > 1 ? 4 : 0,
+            rotateLeft: 4,
+            rotateRight: 4,
+            flipHorizontal: 4,
+            flipVertical: 4,
+          },
+          title: (image) => image.dataset.title || "",
+        });
+        ensureViewerAccessibilityHooks(wrapper);
+        setViewerAccessibility(false);
+      } else {
+        runtime.viewer.update();
+      }
+      runtime.viewer.view(0);
+      handleViewerShown();
+    });
+  }
+
+  function openAsync(title, loadImages, failureMessage, emptyMessage) {
+    const requestVersion = ++runtime.openSequence;
+    if (runtime.loadingTimer !== null) {
+      window.clearTimeout(runtime.loadingTimer);
+      runtime.loadingTimer = null;
+    }
+    hideViewerLoading();
+    runtime.loadingTimer = window.setTimeout(() => {
+      if (requestVersion === runtime.openSequence) {
+        showViewerLoading(title);
+      }
+    }, VIEWER_LOADING_DELAY_MS);
+
+    return Promise.resolve()
+      .then(loadImages)
+      .then((result) => {
+        if (requestVersion !== runtime.openSequence) {
+          return;
+        }
+        const imageTitle = result && !Array.isArray(result) ? (result.title || title) : title;
+        const urls = result && !Array.isArray(result) ? result.images : result;
+        return showViewerImages(urls, imageTitle, requestVersion);
+      })
+      .catch((error) => {
+        if (requestVersion !== runtime.openSequence) {
+          return;
+        }
+        if (error && error.code === "NO_PREVIEW_IMAGES") {
+          alert(emptyMessage || "Aucun aperçu n'est disponible.");
+          return;
+        }
+        console.error("Impossible d'afficher l'aperçu:", error);
+        alert(failureMessage || "Affichage de l'aperçu impossible. Merci de réessayer.");
+      })
+      .finally(() => {
+        if (requestVersion === runtime.openSequence) {
+          if (runtime.loadingTimer !== null) {
+            window.clearTimeout(runtime.loadingTimer);
+            runtime.loadingTimer = null;
+          }
+          hideViewerLoading();
+        }
+      });
+  }
+
   function openViewer(diagramId) {
     if (!diagramId) {
-      return;
+      return Promise.resolve();
     }
-    loadViewerResources()
-      .then(() =>
-        fetch(`/diagrams/${diagramId}/viewer-context/`, {
-          method: "GET",
-          credentials: "same-origin",
-          headers: { Accept: "application/json" },
-        })
-      )
-      .then((response) => {
+    const fallbackTitle = `Diagramme #${diagramId}`;
+    return openAsync(fallbackTitle, () =>
+      fetch(`/diagrams/${diagramId}/viewer-context/`, {
+        method: "GET",
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      }).then((response) => {
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
         return response.json();
-      })
-      .then((data) => {
+      }).then((data) => {
         const thumbnailUrl = data.diagram?.thumbnail_url;
         const imageUrls = Array.isArray(data.diagram?.image_urls) ? data.diagram.image_urls : [];
-        const images = imageUrls.length ? imageUrls : (thumbnailUrl ? [thumbnailUrl] : []);
-        if (!images.length) {
-          alert("Aucun aperçu n'est disponible pour ce diagramme.");
-          return;
-        }
-        const title = data.diagram?.title || `Diagramme #${diagramId}`;
-        openImages(images, title);
-      })
-      .catch((error) => {
-        console.error("Impossible d'afficher le diagramme:", error);
-        alert("Affichage du diagramme impossible. Merci de réessayer.");
-      });
+        return {
+          images: imageUrls.length ? imageUrls : (thumbnailUrl ? [thumbnailUrl] : []),
+          title: data.diagram?.title || fallbackTitle,
+        };
+      }),
+      "Affichage du diagramme impossible. Merci de réessayer.",
+      "Aucun aperçu n'est disponible pour ce diagramme.");
   }
 
   function openImages(urls, title) {
-    const normalized = normalizeViewerImages(urls, title);
-    if (!normalized.length) {
-      return;
-    }
-    loadViewerResources()
-      .then(() => {
-        const wrapper = renderViewerImages(normalized);
-        if (!runtime.viewer) {
-          runtime.viewer = new window.Viewer(wrapper, {
-            navbar: normalized.length > 1,
-            tooltip: false,
-            toolbar: {
-              zoomIn: 4,
-              zoomOut: 4,
-              oneToOne: 4,
-              reset: 4,
-              prev: normalized.length > 1 ? 4 : 0,
-              play: normalized.length > 1 ? 4 : 0,
-              next: normalized.length > 1 ? 4 : 0,
-              rotateLeft: 4,
-              rotateRight: 4,
-              flipHorizontal: 4,
-              flipVertical: 4,
-            },
-            title: (image) => image.dataset.title || "",
-          });
-          ensureViewerAccessibilityHooks(wrapper);
-          setViewerAccessibility(false);
-        } else {
-          runtime.viewer.update();
-        }
-        runtime.viewer.view(0);
-        handleViewerShown();
-      })
-      .catch((error) => {
-        console.error("Impossible d'afficher l'aperçu:", error);
-        alert("Affichage du diagramme impossible. Merci de réessayer.");
-      });
+    return openAsync(title, () => urls, "Affichage de l'aperçu impossible. Merci de réessayer.");
   }
 
   function openImage(url, title) {
     if (!url) {
-      return;
+      return Promise.resolve();
     }
-    openImages([url], title);
+    return openImages([url], title);
+  }
+
+  function openLikeC4(viewsUrl, fallbackUrl, title) {
+    if (!viewsUrl) {
+      return openImage(fallbackUrl, title);
+    }
+    return openAsync(title || "Diagramme LikeC4", () =>
+      fetch(viewsUrl, {credentials: "same-origin", headers: {Accept: "application/json"}})
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+          return response.json();
+        })
+        .then((data) => {
+          const paths = Array.isArray(data.paths) ? data.paths : [];
+          const fallback = data.thumbnail_url || fallbackUrl;
+          return paths.length ? paths : (fallback ? [fallback] : []);
+        })
+        .catch((error) => {
+          if (fallbackUrl) {
+            return [fallbackUrl];
+          }
+          throw error;
+        }),
+      "Affichage de l'aperçu impossible. Merci de réessayer.");
   }
 
   window.CintaDatViewer = {
     open: openViewer,
     openImage: openImage,
     openImages: openImages,
+    openLikeC4: openLikeC4,
   };
 })();
 
@@ -903,11 +1027,45 @@
         border: 1px dashed #cfd8dc;
         background: #f7f9fb;
       }
-      .dat-drawio-inline-preview__title {
-        margin: 0 0 0.5rem 0;
-        font-weight: 600;
+      .dat-drawio-inline-preview__layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1.7fr) minmax(14rem, 1fr);
+        align-items: start;
+        gap: 1rem;
+      }
+      .dat-drawio-inline-preview__details {
+        display: flex;
+        flex-direction: column;
+        gap: 0.85rem;
+        min-width: 0;
+        padding: 0.85rem;
+        border: 1px solid #e0e0e0;
+        border-radius: 6px;
+        background: #fff;
+      }
+      .dat-drawio-inline-preview__details-heading {
+        margin: 0 0 0.35rem;
         color: #37474f;
-        font-size: 0.95rem;
+        font-size: 0.82rem;
+        font-weight: 600;
+      }
+      .dat-drawio-inline-preview__name,
+      .dat-drawio-inline-preview__description-text {
+        margin: 0;
+        color: #546e7a;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .dat-drawio-inline-preview__pages {
+        display: grid;
+        gap: 0.25rem;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .dat-drawio-inline-preview__page {
+        color: #546e7a;
+        overflow-wrap: anywhere;
       }
       .dat-drawio-inline-preview__body {
         color: #546e7a;
@@ -926,14 +1084,14 @@
       .dat-drawio-inline-preview__image-wrapper + .dat-drawio-inline-preview__image-wrapper {
         margin-top: 0.65rem;
       }
-      .dat-drawio-inline-preview__image-label {
-        margin: 0 0 0.35rem 0;
-        font-size: 0.82rem;
-        color: #607d8b;
-      }
       .dat-drawio-inline-preview__error {
         color: #c62828;
         margin: 0;
+      }
+      @media (max-width: 760px) {
+        .dat-drawio-inline-preview__layout {
+          grid-template-columns: minmax(0, 1fr);
+        }
       }
     `;
     document.head.appendChild(style);
@@ -1063,15 +1221,10 @@
     td.colSpan = Math.max(1, td.colSpan || siblingCells || 1);
     const wrapper = document.createElement("div");
     wrapper.className = "dat-drawio-inline-preview";
-    const title = document.createElement("p");
-    title.className = "dat-drawio-inline-preview__title";
-    title.textContent =
-      payload && payload.title
-        ? payload.title
-        : descriptor && descriptor.title
-          ? descriptor.title
-          : `Diagramme #${diagramId}`;
-    wrapper.appendChild(title);
+    const layout = document.createElement("div");
+    layout.className = "dat-drawio-inline-preview__layout";
+    const diagramPanel = document.createElement("div");
+    diagramPanel.className = "dat-drawio-inline-preview__diagram";
     const body = document.createElement("div");
     body.className = "dat-drawio-inline-preview__body";
     if (payload && payload.error) {
@@ -1090,12 +1243,6 @@
         }
         const wrapper = document.createElement("div");
         wrapper.className = "dat-drawio-inline-preview__image-wrapper";
-        if (image.label) {
-          const label = document.createElement("p");
-          label.className = "dat-drawio-inline-preview__image-label";
-          label.textContent = image.label;
-          wrapper.appendChild(label);
-        }
         const img = document.createElement("img");
         img.className = "dat-drawio-inline-preview__image";
         img.alt = payload.title || (descriptor && descriptor.title) || `Diagramme #${diagramId}`;
@@ -1120,7 +1267,76 @@
     } else {
       body.textContent = "Aucun aperçu disponible pour ce diagramme.";
     }
-    wrapper.appendChild(body);
+    diagramPanel.appendChild(body);
+    layout.appendChild(diagramPanel);
+
+    const sourceRow = previewRow.nextElementSibling;
+    const sourceCells = sourceRow ? Array.from(sourceRow.children) : [];
+    const schemaNameCell = sourceCells.find((cell) => cell.dataset.columnKey === "nom_schema");
+    const descriptionCell = sourceCells.find((cell) => cell.dataset.columnKey === "description");
+    const schemaName = schemaNameCell ? schemaNameCell.textContent.trim() : "";
+    const displayName =
+      schemaName && schemaName !== "—"
+        ? schemaName
+        : payload && payload.title
+          ? payload.title
+          : descriptor && descriptor.title
+            ? descriptor.title
+            : `Diagramme #${diagramId}`;
+    const pageLabels =
+      payload && Array.isArray(payload.images) && payload.images.length
+        ? payload.images
+            .filter((image) => image && image.src)
+            .map((image, index) => image.label || `Page ${index + 1}`)
+        : payload && payload.thumbnail
+          ? ["Page 1"]
+          : [];
+
+    const detailsPanel = document.createElement("aside");
+    detailsPanel.className = "dat-drawio-inline-preview__details";
+    const nameSection = document.createElement("section");
+    const nameHeading = document.createElement("p");
+    nameHeading.className = "dat-drawio-inline-preview__details-heading";
+    nameHeading.textContent = "Nom";
+    const nameText = document.createElement("p");
+    nameText.className = "dat-drawio-inline-preview__name";
+    nameText.textContent = displayName;
+    nameSection.append(nameHeading, nameText);
+    detailsPanel.appendChild(nameSection);
+
+    if (pageLabels.length) {
+      const pageSection = document.createElement("section");
+      const pageHeading = document.createElement("p");
+      pageHeading.className = "dat-drawio-inline-preview__details-heading";
+      pageHeading.textContent = pageLabels.length > 1 ? "Pages" : "Page";
+      const pagesList = document.createElement("ul");
+      pagesList.className = "dat-drawio-inline-preview__pages";
+      pageLabels.forEach((label) => {
+        const page = document.createElement("li");
+        page.className = "dat-drawio-inline-preview__page";
+        page.textContent = label;
+        pagesList.appendChild(page);
+      });
+      pageSection.append(pageHeading, pagesList);
+      detailsPanel.appendChild(pageSection);
+    }
+
+    if (descriptionCell) {
+      const descriptionSection = document.createElement("section");
+      const descriptionHeading = document.createElement("p");
+      descriptionHeading.className = "dat-drawio-inline-preview__details-heading";
+      descriptionHeading.textContent = "Description";
+      const descriptionText = document.createElement("p");
+      descriptionText.className = "dat-drawio-inline-preview__description-text";
+      const descriptionValue = descriptionCell.textContent.trim();
+      descriptionText.textContent =
+        !descriptionValue || descriptionValue === "—" ? "Aucune description renseignée." : descriptionValue;
+      descriptionSection.append(descriptionHeading, descriptionText);
+      detailsPanel.appendChild(descriptionSection);
+    }
+
+    layout.appendChild(detailsPanel);
+    wrapper.appendChild(layout);
     td.innerHTML = "";
     td.appendChild(wrapper);
   }

@@ -63,7 +63,7 @@ git checkout -b fix/issue-123-bug-name
 ---
 # How to Report a Bug
 ### Security Vulnerabilities (Confidential)
-> ⚠️ **CRITICAL: If you find a security vulnerability, do NOT open a public GitHub issue. Email us directly instead to security@cintamaya.com.**
+> ⚠️ **CRITICAL: If you find a security vulnerability, do NOT open a public GitHub issue. Email us directly instead to dodat-contact@cintamaya.fr**
 
 In your report, please include:
 - A description of the vulnerability and its potential impact.

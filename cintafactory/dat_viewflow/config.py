@@ -62,7 +62,12 @@ def load_dat_viewflow_template() -> dict[str, Any]:
 def build_dat_viewflow_template(dat, workflow_process=None) -> dict[str, Any]:
     try:
         workflow_instance = ensure_workflow_instance(dat)
-        raw_template = workflow_instance.definition_version.specification.get("visualization") or {}
+        spec = workflow_instance.definition_version.specification
+        if spec.get("schema_version") == 2:
+            from workflows.graph_schema import visualization
+            raw_template = visualization(spec)
+        else:
+            raw_template = spec.get("visualization") or {}
         template = _normalize_template(raw_template)
     except WorkflowError:
         # Compatibility fallback for deployments before workflow sync has run.
@@ -240,7 +245,7 @@ def _build_dat_context(dat) -> dict[str, Any]:
     owner = getattr(dat, "owner", None)
     return {
         "id": str(getattr(dat, "pk", "")),
-        "reference": getattr(dat, "reference", "") or "",
+        "reference": dat.display_reference(),
         "title": getattr(dat, "title", "") or "",
         "status": getattr(dat, "status", "") or "",
         "status_label": getattr(dat, "get_status_display", lambda: "")() or "",

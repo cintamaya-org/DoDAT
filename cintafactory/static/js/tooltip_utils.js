@@ -34,6 +34,7 @@
     var delayMs = typeof opts.delayMs === "number" ? opts.delayMs : 2000;
     var offsetX = typeof opts.offsetX === "number" ? opts.offsetX : 24;
     var offsetY = typeof opts.offsetY === "number" ? opts.offsetY : 24;
+    var placeAbove = opts.placement === "top";
     var nodeSelector = opts.nodeSelector || ".wf-node";
     var chipSelector = opts.chipSelector || ".wf-chip";
     var textBuilder = typeof opts.textBuilder === "function" ? opts.textBuilder : buildDefaultText;
@@ -66,11 +67,27 @@
       var padding = 8;
       var viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
       var viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
-      var nextLeft = point.x + offsetX;
-      var nextTop = point.y - offsetY;
-      var rect = tooltip.getBoundingClientRect();
-      var width = rect.width || tooltip.offsetWidth || 0;
-      var height = rect.height || tooltip.offsetHeight || 0;
+      var width;
+      var height;
+      var nextLeft;
+      var nextTop;
+      if (placeAbove) {
+        var anchor = state.activeTarget.getBoundingClientRect();
+        tooltip.style.left = "0px";
+        width = tooltip.offsetWidth;
+        height = tooltip.offsetHeight;
+        nextLeft = anchor.left + (anchor.width - width) / 2;
+        nextTop = anchor.top - height - offsetY;
+        if (nextTop < padding) {
+          nextTop = anchor.bottom + offsetY;
+        }
+      } else {
+        var rect = tooltip.getBoundingClientRect();
+        width = rect.width || tooltip.offsetWidth || 0;
+        height = rect.height || tooltip.offsetHeight || 0;
+        nextLeft = point.x + offsetX;
+        nextTop = point.y - offsetY;
+      }
       if (nextLeft + width + padding > viewportWidth) {
         nextLeft = viewportWidth - width - padding;
       }
@@ -111,6 +128,9 @@
       textNode.textContent = content;
       textNode.hidden = false;
       tooltip.classList.add("wf-tooltip--text");
+      if (placeAbove) {
+        setPosition();
+      }
     }
 
     function showSpinner() {
@@ -189,9 +209,14 @@
         state.insideTrigger = true;
         showTooltip(owner, getPoint(evt));
       });
-      element.addEventListener("mousemove", function (evt) {
-        setPosition(getPoint(evt));
-      });
+      if (!placeAbove) {
+        element.addEventListener("mousemove", function (evt) {
+          setPosition(getPoint(evt));
+        });
+        element.addEventListener("touchmove", function (evt) {
+          setPosition(getPoint(evt));
+        });
+      }
       element.addEventListener("mouseleave", function () {
         state.insideTrigger = false;
         hideTooltip(owner);
@@ -199,9 +224,6 @@
       element.addEventListener("touchstart", function (evt) {
         state.insideTrigger = true;
         showTooltip(owner, getPoint(evt));
-      });
-      element.addEventListener("touchmove", function (evt) {
-        setPosition(getPoint(evt));
       });
       element.addEventListener("touchend", function () {
         state.insideTrigger = false;

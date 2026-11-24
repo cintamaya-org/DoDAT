@@ -45,6 +45,8 @@ class DiagramTitleValidationTest(SimpleTestCase):
 class DiagramImportViewTest(TestCase):
     def setUp(self) -> None:
         super().setUp()
+        cache.clear()
+        self.addCleanup(cache.clear)
         self._media_dir = tempfile.mkdtemp()
         self.addCleanup(lambda: shutil.rmtree(self._media_dir, ignore_errors=True))
         self._media_override = self.settings(MEDIA_ROOT=self._media_dir)
@@ -128,6 +130,8 @@ class DiagramViewerContextTest(TestCase):
 class DiagramSaveXmlAsyncTest(TestCase):
     def setUp(self) -> None:
         super().setUp()
+        cache.clear()
+        self.addCleanup(cache.clear)
         self.user = get_user_model().objects.create_user(username="save-xml-user", password="pwd")
         self.diagram = DrawIODiagram.objects.create(title="Save xml diagram", owner=self.user)
         self.url = reverse("diagrams:save_xml", args=[self.diagram.pk])
@@ -159,6 +163,8 @@ class DiagramSaveXmlAsyncTest(TestCase):
 class LikeC4MetadataAuthTest(TestCase):
     def setUp(self) -> None:
         super().setUp()
+        cache.clear()
+        self.addCleanup(cache.clear)
         self.url = reverse("diagrams:likec4_metadata")
         self.user = get_user_model().objects.create_user(username="meta-auth", password="pwd")
         self.diagram_id = uuid.uuid4()

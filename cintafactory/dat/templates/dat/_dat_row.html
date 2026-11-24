@@ -1,5 +1,5 @@
 <tr>
-  <td><a href="{% url 'dat:my_detail' obj.pk %}">{{ obj.reference }}</a></td>
+  <td><a href="{% url 'dat:my_detail' obj.pk %}">{{ obj.display_reference }}</a></td>
   <td>
     {{ obj.title }}
     {% if show_technical_architect_assignment %}
@@ -20,7 +20,18 @@
   </td>
   <td>{{ obj.application|default:"—" }}</td>
   <td>{{ obj.business_direction|default:"—" }}</td>
-  <td>{{ obj.workflow_state_display }}</td>
+  <td>
+    {% if obj.section_statuses %}
+      <div class="dat-list__section-statuses">
+        {% for section_status in obj.section_statuses %}
+          <span class="dat-list__section-dot dat-list__section-dot--{{ section_status.tone }} wf-tooltip-trigger"
+                role="img" aria-label="{{ section_status.text }}" data-tooltip="{{ section_status.text }}"></span>
+        {% endfor %}
+      </div>
+    {% else %}
+      —
+    {% endif %}
+  </td>
   <td>{{ obj.owner|default:"—" }}</td>
   <td>{{ obj.created_at|date:"Y-m-d H:i" }}</td>
   <td>

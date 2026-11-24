@@ -2,7 +2,9 @@
 {% load static %}
 
 {% block title %}{% if request.resolver_match.url_name == "my_tasks" %}Mes tâches{% else %}Tableau des workflows{% endif %}{% endblock %}
+{% block bodyclass %}{{ block.super }} wf-board-page{% endblock %}
 {% block page_title %}{% if request.resolver_match.url_name == "my_tasks" %}Mes tâches{% else %}Tableau des workflows{% endif %}{% endblock %}
+{% block module_container_class %}wf-board-container{% endblock %}
 
 {% comment %} {% block title %}{{ workflow.name }}{% endblock %} {% endcomment %}
 
@@ -93,9 +95,8 @@
                     <div class="card cinta-card workflow-card">
                       <div class="workflow-card__body">
                         <div>
-                          {{ dat }}
                           <h2 class="mdc-typography mdc-typography--headline6 workflow-card__title">
-                            {{ dat.reference|default:dat.pk }}
+                            {{ dat.display_reference|default:dat.pk }}
                           </h2>
                           {% if dat.title %}
                             <h3 class="mdc-typography mdc-typography--subtitle2 workflow-card__subtitle">

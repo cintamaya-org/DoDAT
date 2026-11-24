@@ -1,13 +1,20 @@
 {% load static tz %}
 <div id="dat-details">
+  {% if approval_graph %}
+  <div class="card cinta-card"><div class="card-content">
+    <h2 class="card-title">Approbations du dossier</h2>
+    <p>Consultez les étapes ouvertes, les approbateurs attendus et les corrections demandées.</p>
+    <a href="{% url 'workflows:graph_detail' dat.pk %}" class="btn-flat">Voir le circuit d'approbation</a>
+  </div></div>
+  {% endif %}
   <div class="dat-overview-header">
     <div class="dat-overview-header__details">
-      <a href="{% url 'dat:my_list' %}" class="btn-flat waves-effect btn-flat--no-pad-left">
-        <i class="material-icons left" aria-hidden="true">arrow_back</i>
+      <a href="{% url 'dat:my_list' %}" class="btn-flat waves-effect btn-flat--no-pad-left u-inline-flex u-items-center u-gap-0-5">
+        <i class="material-icons" aria-hidden="true">arrow_back</i>
         Retour à la liste
       </a>
       <h5 class="dat-overview-title">
-        <span>{{ dat.reference }}</span>
+        <span>{{ dat.display_reference }}</span>
         <span class="dat-overview-title__divider">·</span>
         <span>{{ dat.title }}</span>
       </h5>
@@ -260,7 +267,7 @@
         <div>
           <span class="card-title dat-overview-card__title">Responsables des sections</span>
           <p class="u-m-0 text-muted">
-            Un seul responsable par section. Seuls les utilisateurs affectés en type Responsable sont proposés.
+            Un seul responsable par section, choisi parmi les utilisateurs éligibles.
           </p>
         </div>
         {% if section_responsible_editor.has_rows %}

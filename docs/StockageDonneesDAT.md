@@ -135,7 +135,7 @@ Champs principaux :
 | Champ | Rôle |
 | --- | --- |
 | `id` | UUID primaire du DAT. |
-| `reference` | Référence métier unique. C'est l'identifiant le plus pratique pour les recherches humaines. |
+| `reference` | Version du DAT, unique au sein de son application. La numérotation automatique commence à `001`. |
 | `title` | Titre du DAT. |
 | `description` | Description générale du DAT. |
 | `application_id` | Application concernée, relation protégée vers `dat_application`. |
@@ -376,7 +376,7 @@ Le système ne conserve pas une photographie complète du DAT à chaque modifica
 
 ## 10. Requêtes SQL d'inspection
 
-Les requêtes suivantes sont en lecture seule. Utiliser un paramètre lié pour la référence du DAT ; ne pas concaténer une valeur fournie par un utilisateur.
+Les requêtes suivantes sont en lecture seule. Passer l’UUID de l’application en `$1` et la référence du DAT en `$2` comme paramètres liés.
 
 ### 10.1 Lire tous les champs et leurs valeurs courantes
 
@@ -411,7 +411,7 @@ LEFT JOIN LATERAL (
 ) AS e ON TRUE
 LEFT JOIN dat_part_payload AS pp
   ON pp.id = e.payload_id
-WHERE d.reference = $1
+WHERE d.application_id = $1 AND d.reference = $2
 ORDER BY s."order", ss."order", p."order";
 ```
 
@@ -444,7 +444,7 @@ JOIN LATERAL (
 ) AS e ON TRUE
 JOIN dat_part_payload AS pp
   ON pp.id = e.payload_id
-WHERE d.reference = $1
+WHERE d.application_id = $1 AND d.reference = $2
   AND p.key IN ('schemas', 'briques', 'flux');
 ```
 
@@ -469,7 +469,7 @@ JOIN dat_section_metada AS sm
   ON sm.id = s.metadata_id
 JOIN dat_section_attachment AS a
   ON a.section_id = s.id
-WHERE d.reference = $1
+WHERE d.application_id = $1 AND d.reference = $2
 ORDER BY a.created_at DESC;
 ```
 

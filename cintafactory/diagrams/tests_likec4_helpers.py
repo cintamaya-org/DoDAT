@@ -48,18 +48,17 @@ class LikeC4ScopeTests(SimpleTestCase):
 
     def test_refresh_reconciles_changed_storage_without_rewriting_unchanged_metadata(self):
         class Diagram:
-            objects = mock.Mock()
+            save = mock.Mock()
 
         diagram = Diagram()
         diagram.pk, diagram.storage_path, diagram.revision, diagram.size = DIAGRAM_ID, SOURCE_PATH, "a" * 64, 0
         with mock.patch("diagrams.likec4_scope.read_source", return_value=SOURCE):
             self.assertEqual(refresh_revision(diagram), REVISION)
             self.assertEqual((diagram.revision, diagram.size), (REVISION, len(SOURCE)))
-            Diagram.objects.filter.assert_called_once_with(pk=DIAGRAM_ID)
-            Diagram.objects.filter.return_value.update.assert_called_once_with(revision=REVISION, size=len(SOURCE))
-            Diagram.objects.reset_mock()
+            diagram.save.assert_called_once_with(update_fields=["revision", "size"])
+            diagram.save.reset_mock()
             self.assertEqual(refresh_revision(diagram), REVISION)
-            Diagram.objects.filter.assert_not_called()
+            diagram.save.assert_not_called()
 
     @override_settings(LIKEC4_API_TOKEN="internal-test-token")
     def test_scope_headers_bind_explicit_revision_without_changing_diagram(self):

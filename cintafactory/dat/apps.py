@@ -9,6 +9,7 @@ class DatConfig(ModuleMixin, AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "dat"  # or "cintafactory.dat" if inside project package
     verbose_name = "Gestion des DAT"
+    menu_group_title = True
 
     icon = "<i class='material-icons'>topic</i>"
     order = 30

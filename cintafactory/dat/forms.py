@@ -24,7 +24,8 @@ from .constants import (
     DAT_REQUIRED_PARTICIPANT_ROLE_LABELS,
     DAT_REQUIRED_PARTICIPANT_ROLE_SLUGS,
 )
-from .models import DAT, DATParticipant, DATPart, DATPartEntryType, DATSubSection
+from .models import Application, DAT, DATParticipant, DATPart, DATPartEntryType, DATSubSection
+from .versioning import DATReferenceError, validate_reference
 from workflows.services import workflow_initial_state, workflow_permission_roles_for_state
 
 
@@ -136,7 +137,46 @@ def _attach_drawio_support(entry: DATPart, widget: RepeatableTableWidget) -> Non
     widget.attrs = attrs
 
 
-class DATForm(forms.ModelForm):
+class DATReferenceForm(forms.ModelForm):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if "application" in self.fields:
+            self.fields["application"].label_from_instance = Application.name_with_code
+        field = self.fields.get("reference")
+        if field is not None:
+            field.strip = False  # Keep the exact spelling of an unchanged legacy reference.
+            field.required = not self.instance._state.adding and bool(self.instance.reference)
+            field.help_text = (
+                "Laissez vide pour attribuer la prochaine version de cette application (001, 002…)."
+                if self.instance._state.adding else "Cette référence change uniquement sur saisie manuelle."
+            )
+
+    def clean(self):
+        cleaned = super().clean()
+        application = cleaned.get("application")
+        if application is None or "reference" not in cleaned:
+            return cleaned
+        value = cleaned["reference"]
+        original = None if self.instance._state.adding else self.instance
+        try:
+            cleaned["reference"] = validate_reference(application.pk, value, original=original)
+        except DATReferenceError as exc:
+            self.add_error("reference", exc)
+        return cleaned
+
+    def _get_validation_exclusions(self):
+        excluded = super()._get_validation_exclusions()
+        if self.instance._state.adding and not self.cleaned_data.get("reference"):
+            # The final reference only exists once the application counter is locked.
+            excluded.add("reference")
+        return excluded
+
+    class Meta:
+        model = DAT
+        fields = "__all__"
+
+
+class DATForm(DATReferenceForm):
     participant_field_prefix = "participant_"
 
     def __init__(self, *args, **kwargs):
@@ -149,6 +189,7 @@ class DATForm(forms.ModelForm):
         self._participant_field_order: List[str] = []
         self._pending_participant_assignments: Optional[Dict[str, object]] = None
         self._roles_without_users: List[str] = []
+        self._approval_role_slugs = None
         self._required_roles: Set[str] = self._determine_required_roles()
 
         if "application" in self.fields:
@@ -200,6 +241,10 @@ class DATForm(forms.ModelForm):
         return f"{cls.participant_field_prefix}{safe_slug}"
 
     def _determine_required_roles(self) -> Set[str]:
+        from workflows.graph_config import participant_role_slugs
+        self._approval_role_slugs = participant_role_slugs(self.instance)
+        if self._approval_role_slugs is not None:
+            return {DAT_PORTEUR_ROLE_SLUG}
         current_status = getattr(self.instance, "status", None)
         if not current_status:
             current_status = workflow_initial_state()
@@ -209,17 +254,18 @@ class DATForm(forms.ModelForm):
 
     def _initialise_participant_fields(self) -> None:
         UserModel = get_user_model()
-        roles = Role.objects.filter(slug__in=DAT_REQUIRED_PARTICIPANT_ROLE_SLUGS)
+        role_slugs = tuple(dict.fromkeys((*DAT_REQUIRED_PARTICIPANT_ROLE_SLUGS, *(self._approval_role_slugs or ()))))
+        roles = Role.objects.filter(slug__in=role_slugs)
         role_map = {role.slug: role for role in roles}
 
         existing_participants: Dict[str, DATParticipant] = {}
         if self.instance.pk:
             for participant in self.instance.participants.select_related("role", "user"):
                 role = participant.role
-                if role and role.slug in DAT_REQUIRED_PARTICIPANT_ROLE_SLUGS:
+                if role and role.slug in role_slugs:
                     existing_participants.setdefault(role.slug, participant)
 
-        for slug in DAT_REQUIRED_PARTICIPANT_ROLE_SLUGS:
+        for slug in role_slugs:
             field_name = self.participant_field_name(slug)
             role = role_map.get(slug)
             label = role.name if role else DAT_REQUIRED_PARTICIPANT_ROLE_LABELS.get(slug, slug)
@@ -338,6 +384,7 @@ class DATForm(forms.ModelForm):
                 assignments[slug] = user
         return assignments
 
+    @transaction.atomic
     def save(self, commit=True):
         instance = super().save(commit=False)
         assignments = self._collect_participant_assignments()
@@ -373,6 +420,11 @@ class DATForm(forms.ModelForm):
             self._pending_participant_assignments = None
 
     def _save_participants(self, instance: DAT, assignments: Dict[str, object]) -> None:
+        from workflows.graph_engine import content_mutation
+        with content_mutation(instance.pk, allow_terminal_metadata=True):
+            self._save_dat_roles(instance, assignments)
+
+    def _save_dat_roles(self, instance: DAT, assignments: Dict[str, object]) -> None:
         if not assignments:
             return
 
@@ -397,14 +449,15 @@ class DATForm(forms.ModelForm):
 
         removable_slugs = set(existing_participants) - set(assignments)
         if removable_slugs:
-            instance.participants.filter(role__slug__in=removable_slugs).delete()
+            for participant in instance.participants.filter(role__slug__in=removable_slugs):
+                participant.delete()
 
     class Meta:
         model = DAT
         fields = [
+            "application",
             "reference",
             "title",
-            "application",
             "description",
             "status",
             "owner",
@@ -556,8 +609,13 @@ class DATSubSectionForm(forms.Form):
                 self.add_error(name, exc)
         return cleaned
 
-    @transaction.atomic
     def save(self):
+        from workflows.graph_engine import content_mutation
+        with content_mutation(self.sub_section.section.dat_id):
+            return self._save_entries()
+
+    @transaction.atomic
+    def _save_entries(self):
         if not self.is_valid():
             raise ValueError("Cannot save an invalid form.")
         changes: dict[str, dict[str, str]] = {}
@@ -594,7 +652,8 @@ class DATImportForm(forms.Form):
     data_file = forms.FileField(label="Fichier JSON du DAT")
     reference_override = forms.CharField(
         label="Référence du DAT",
-        help_text="Inséré la référence du nouveau DAT",
+        help_text="Laissez vide pour utiliser la référence du fichier. Si elle est absente, la version est attribuée automatiquement.",
+        max_length=DAT._meta.get_field("reference").max_length,
         required=False,
         widget=forms.TextInput(attrs={"class": "validate"}),
     )
@@ -616,16 +675,6 @@ class DATImportForm(forms.Form):
         self.cleaned_data["payload"] = payload
         uploaded.seek(0)
         return uploaded
-
-    def clean_reference_override(self):
-        reference = (self.cleaned_data.get("reference_override") or "").strip()
-        if not reference:
-            return ""
-        if DAT.objects.filter(reference=reference).exists():
-            raise forms.ValidationError(
-                f"Un DAT avec la référence « {reference} » existe déjà. Merci d'en saisir une autre."
-            )
-        return reference
 
     @property
     def payload(self):

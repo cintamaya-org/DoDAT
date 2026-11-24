@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from django.db.models import Q, QuerySet
 
-from .constants import DAT_PORTEUR_ROLE_SLUG
+from .constants import DAT_OWNER_EDITABLE_SECTION_SLUGS, DAT_PORTEUR_ROLE_SLUG
 
 
 def user_can_create_dat_entities(user) -> bool:
@@ -151,6 +151,20 @@ def user_is_assigned_to_section(section, user) -> bool:
     return False
 
 
+def user_can_edit_section(section, user) -> bool:
+    """Allow owners to edit request sections and assignees to edit their sections."""
+    if section is None or user is None or not getattr(user, "is_authenticated", False):
+        return False
+    user_id = getattr(user, "pk", None)
+    if (
+        user_id is not None
+        and getattr(section, "slug", None) in DAT_OWNER_EDITABLE_SECTION_SLUGS
+        and getattr(getattr(section, "dat", None), "owner_id", None) == user_id
+    ):
+        return True
+    return user_is_assigned_to_section(section, user)
+
+
 def user_can_update_section_status(dat, section, user, *, participants=None) -> bool:
     """
     Determine whether the user can update the status of a section.
@@ -190,4 +204,6 @@ def filter_dat_queryset_for_user(queryset: QuerySet, user) -> QuerySet:
         | Q(participants__user=user)
         | Q(participants__user__business_group__responsible=user)
         | Q(dat_admins__user=user)
+        | Q(section_responsibles__user=user)
+        | Q(section_participants__user=user)
     ).distinct()

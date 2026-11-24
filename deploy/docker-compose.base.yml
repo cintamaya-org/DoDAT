@@ -9,9 +9,20 @@ services:
     build:
       context: ..
       dockerfile: cintafactory/dockerfile
+    volumes:
+      - type: bind
+        source: ../cintafactory/workflows/config
+        target: /app/cintafactory/workflows/config
+        read_only: true
+        bind:
+          create_host_path: false
     restart: unless-stopped
     environment:
       DJANGO_SETTINGS_MODULE: cintafactory.cintafactory.settings
+      DAT_WORKFLOW_CONFIG:
+      DAT_WORKFLOW_JSON:
+      DAT_WORKFLOW_REQUIRE_SECTION_REFERENTS: ${DAT_WORKFLOW_REQUIRE_SECTION_REFERENTS:-0}
+      WORKFLOW_SNAPSHOT_MAX_BYTES:
       LIKEC4_METADATA_TOKEN: ${LIKEC4_METADATA_TOKEN:-}
       LIKEC4_API_TOKEN: ${LIKEC4_API_TOKEN:-}
       LIKEC4_EXPORT_URL: ${LIKEC4_EXPORT_URL:-http://likec4-exporter:9000/export}

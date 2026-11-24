@@ -4,12 +4,13 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 
 from django.contrib.messages import get_messages
 from django.contrib.auth import get_user_model
 from django.db import connection
-from django.test import Client, RequestFactory, TestCase
+from django.test import Client, RequestFactory, SimpleTestCase, TestCase
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
@@ -36,7 +37,7 @@ from .services import (
     workflow_has_capability,
 )
 from .sync import sync_workflow_definitions
-from .views import WorkflowBoardView
+from .views import WorkflowBoardView, _notification_change_views, _notification_detail_lines
 
 
 ROLE_FIXTURES = {
@@ -55,28 +56,13 @@ class WorkflowSyncTests(TestCase):
     def setUp(self):
         self.roles = {slug: create_role(slug, name) for slug, name in ROLE_FIXTURES.items()}
 
-    def test_sync_creates_workflow_steps_and_permissions(self):
+    def test_sync_publishes_graph_and_summary_columns_without_approval_permissions(self):
         sync_workflow_definitions()
-
         workflow = Workflow.objects.get(code="dat-validation")
-        steps = list(workflow.steps.order_by("order"))
-
-        self.assertEqual(len(steps), 6)
-        draft = next(step for step in steps if step.key == "nouvelle-demande")
-        self.assertTrue(draft.is_initial)
-        self.assertEqual(draft.write_permissions.count(), 1)
-        self.assertEqual(draft.write_permissions.first().role, self.roles["porteur-demande"])
-
-        review_step = next(step for step in steps if step.key == "en-attente-revue")
-        self.assertEqual(
-            {perm.role for perm in review_step.write_permissions},
-            {
-                self.roles["architecte-referent"],
-                self.roles["comite-validation"],
-            },
-        )
-        review_read_roles = {perm.role for perm in review_step.read_permissions}
-        self.assertIn(self.roles["porteur-demande"], review_read_roles)
+        self.assertEqual(workflow.active_version.specification["schema_version"], 2)
+        self.assertEqual(workflow.steps.count(), 5)
+        self.assertTrue(workflow.steps.get(key="nouvelle_demande").is_initial)
+        self.assertFalse(workflow.steps.filter(permissions__isnull=False).exists())
 
     def test_sync_publishes_immutable_version_and_reuses_same_checksum(self):
         sync_workflow_definitions()
@@ -256,46 +242,16 @@ class WorkflowEngineTests(TestCase):
             user=self.reviewer,
         )
 
-    @staticmethod
-    def _status_map(*, validated: bool, responsible_validated: bool = False):
-        return {
-            "architecture": {
-                "has_status": True,
-                "value": "valide" if validated else "en_cours",
-                "responsable_value": "valide" if responsible_validated else "en_cours",
-            }
-        }
-
-    def test_automatic_and_human_transitions_use_engine_and_project_legacy_status(self):
-        draft = ensure_workflow_instance(self.dat)
-        self.assertEqual(draft.current_state, "nouvelle_demande")
-
-        progress = transition_workflow(
-            self.dat,
-            "sections_changed",
-            self.owner,
-            context={"status_map": self._status_map(validated=False), "force_in_progress": True},
-            strict=False,
-        )
-        self.assertTrue(progress.changed)
-        self.assertEqual(progress.to_state, "en_cours")
-
-        review = transition_workflow(
-            self.dat,
-            "sections_changed",
-            self.owner,
-            context={"status_map": self._status_map(validated=True)},
-            strict=False,
-        )
-        self.assertEqual(review.to_state, "en_attente_de_revue")
-        self.assertTrue(workflow_can(self.dat, "approve", self.reviewer))
-
-        approved = transition_workflow(self.dat, "approve", self.reviewer)
-        self.dat.refresh_from_db()
-        self.assertEqual(approved.to_state, "valider")
-        self.assertEqual(self.dat.status, "valider")
-        self.assertTrue(workflow_has_capability(self.dat, "terminal"))
-        self.assertEqual(WorkflowTransitionEvent.objects.filter(instance=approved.instance).count(), 3)
+    def test_legacy_event_api_cannot_approve_graph_or_use_status_flags(self):
+        from .exceptions import WorkflowTransitionUnavailable
+        instance = ensure_workflow_instance(self.dat)
+        for event in ("sections_changed", "approve"):
+            with self.subTest(event=event), self.assertRaises(WorkflowTransitionUnavailable):
+                transition_workflow(self.dat, event, self.reviewer, context={"status_map": {"architecture": {"value": "valide", "responsable_value": "valide"}}})
+        instance.refresh_from_db()
+        self.assertEqual(instance.current_state, "nouvelle_demande")
+        self.assertFalse(workflow_can(self.dat, "approve", self.reviewer))
+        self.assertFalse(WorkflowTransitionEvent.objects.filter(instance=instance).exists())
 
 
 class WorkflowBoardViewTests(TestCase):
@@ -344,14 +300,14 @@ class WorkflowBoardViewTests(TestCase):
 
         initial_column = columns[0]
         self.assertEqual(initial_column["status_codes"], [DATStatus.NOUVELLE_DEMANDE])
-        self.assertEqual(len(initial_column["items"]), 1)
+        self.assertEqual(len(initial_column["items"]), 3)
         self.assertContains(response, "DAT-001")
         self.assertContains(response, "Projets en cours")
 
         in_progress_column = columns[1]
         in_progress_statuses = set(in_progress_column["status_codes"])
         self.assertIn(DATStatus.EN_COURS, in_progress_statuses)
-        self.assertIn(DATStatus.EN_ATTENTE_DE_REVUE, columns[1]["status_codes"])
+        self.assertIn(DATStatus.RESERVE, columns[1]["status_codes"])
 
     def test_board_alias_works(self):
         response = self.client.get(reverse("workflows:board"))
@@ -552,6 +508,87 @@ class WorkflowBoardViewTests(TestCase):
         self.assertFalse(second_page.context["has_next"])
 
 
+class NotificationDetailPresentationTests(SimpleTestCase):
+    def test_serialized_repeater_values_show_full_sides_and_detect_nested_changes(self):
+        before = json.dumps(
+            [
+                {"flux_id": "1", "source": "API", "cible": "Ancienne cible"},
+                {"flux_id": "2", "source": "Batch", "cible": "Archive"},
+                {"flux_id": "4", "source": "Legacy", "cible": "Retrait"},
+            ],
+            ensure_ascii=False,
+        )
+        after = json.dumps(
+            [
+                {"flux_id": "2", "source": "Batch", "cible": "Archive"},
+                {"flux_id": "1", "source": "API", "cible": "Nouvelle cible"},
+                {"flux_id": "3", "source": "Service", "cible": "Catalogue"},
+            ],
+            ensure_ascii=False,
+        )
+
+        [change] = _notification_change_views({
+            "changes": {
+                "flux": {
+                    "label": "Flux applicatifs",
+                    "part": "Flux",
+                    "from": before,
+                    "to": after,
+                }
+            }
+        })
+
+        self.assertEqual(change["label"], "Flux applicatifs")
+        self.assertEqual(change["part"], "Flux")
+        self.assertIn("Ancienne cible", {line["value"] for line in change["before_lines"]})
+        self.assertIn("Nouvelle cible", {line["value"] for line in change["after_lines"]})
+        self.assertIn("Catalogue", {line["value"] for line in change["after_lines"]})
+        self.assertEqual(
+            {difference["kind"] for difference in change["differences"]},
+            {"changed", "added", "removed"},
+        )
+        difference_paths = {difference["path"] for difference in change["differences"]}
+        self.assertIn("Flux ID 1 · Cible", difference_paths)
+        self.assertFalse(any("Flux ID 2" in path for path in difference_paths))
+
+    def test_duplicate_row_ids_fall_back_to_position_and_malformed_json_stays_text(self):
+        [fallback_change] = _notification_change_views({
+            "changes": {
+                "rows": {
+                    "from": json.dumps([{"id": "duplicate", "source": "A"}, {"id": "duplicate", "source": "B"}]),
+                    "to": json.dumps([{"id": "duplicate", "source": "A"}, {"id": "duplicate", "source": "C"}]),
+                }
+            }
+        })
+        [malformed_change] = _notification_change_views({
+            "changes": {"value": {"from": "[invalid JSON", "to": "plain text"}}
+        })
+
+        self.assertEqual(len(fallback_change["differences"]), 1)
+        self.assertEqual(fallback_change["differences"][0]["path"], "Élément 2 · Source")
+        self.assertEqual(malformed_change["before_lines"][0]["value"], "[invalid JSON")
+        self.assertEqual(malformed_change["after_lines"][0]["value"], "plain text")
+        self.assertEqual(malformed_change["differences"][0]["kind"], "changed")
+
+    def test_nested_detail_lines_humanize_labels_and_json_scalars(self):
+        lines = _notification_detail_lines({
+            "node_id": "approval-1",
+            "context": {
+                "retry_count": 2,
+                "active": True,
+                "optional": None,
+                "payload": '{"source":"API"}',
+            },
+        })
+
+        displayed = {(line["label"], line["value"]) for line in lines}
+        self.assertIn(("Node ID", "approval-1"), displayed)
+        self.assertIn(("Retry Count", "2"), displayed)
+        self.assertIn(("Active", "Oui"), displayed)
+        self.assertIn(("Optional", "—"), displayed)
+        self.assertIn(("Source", "API"), displayed)
+
+
 class WorkflowNotificationsViewTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user(username="notif-user", password="pwd")
@@ -607,6 +644,81 @@ class WorkflowNotificationsViewTests(TestCase):
 
         self.user_notification.refresh_from_db()
         self.assertIsNone(self.user_notification.viewed_at)
+
+    def test_section_updates_render_structured_values_differences_and_escaped_raw_json(self):
+        unsafe_value = "<script>alert(1)</script>"
+        DATHistory.objects.create(
+            dat=self.dat,
+            action=DATHistoryAction.SECTION_UPDATED,
+            performed_by=self.user,
+            performed_by_display="Notif User",
+            details={
+                "section": {"slug": "architecture", "title": "ARCHITECTURE"},
+                "sub_section": {"slug": "flux", "title": "Flux"},
+                "changes": {
+                    "flux": {
+                        "part": "Flux",
+                        "label": "Flux applicatifs",
+                        "from": json.dumps(
+                            [{"flux_id": "1", "cible": "Ancienne cible"}],
+                            ensure_ascii=False,
+                        ),
+                        "to": json.dumps(
+                            [{"flux_id": "1", "cible": unsafe_value}],
+                            ensure_ascii=False,
+                        ),
+                    }
+                },
+            },
+        )
+
+        response = self.client.get(reverse("workflows:notifications"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Avant")
+        self.assertContains(response, "Après")
+        self.assertContains(response, "Changements détectés")
+        self.assertContains(response, "data-notification-before-after hidden")
+        self.assertContains(response, "Ancienne cible")
+        self.assertContains(response, "Cible")
+        self.assertContains(response, "&lt;script&gt;alert(1)&lt;/script&gt;")
+        self.assertNotContains(response, unsafe_value)
+        self.assertContains(response, "aria-label=\"Afficher le JSON brut\"")
+        self.assertContains(response, "class=\"wf-notification__raw-code\" hidden")
+        self.assertIn("data-notification-raw-toggle", response.content.decode())
+
+    def test_user_notification_extra_data_is_humanized_and_empty_data_has_no_raw_json(self):
+        self.user_notification.extra_data = {
+            "node_id": "approval-1",
+            "context": {"retry_count": 2, "active": True},
+        }
+        self.user_notification.save(update_fields=["extra_data"])
+
+        response = self.client.get(reverse("workflows:notifications"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Node ID")
+        self.assertContains(response, "Retry Count")
+        self.assertContains(response, "Oui")
+        self.assertContains(response, "approval-1")
+        self.assertContains(response, "&quot;node_id&quot;")
+        self.assertEqual(response.content.decode().count("data-notification-raw-toggle"), 2)
+        user_item = next(
+            item for item in response.context["notifications"] if item["source"] == "user"
+        )
+        self.assertTrue(user_item["raw_details_json"])
+
+        self.user_notification.extra_data = None
+        self.user_notification.save(update_fields=["extra_data"])
+        empty_response = self.client.get(reverse("workflows:notifications"))
+        empty_user_item = next(
+            item for item in empty_response.context["notifications"] if item["source"] == "user"
+        )
+        self.assertEqual(empty_user_item["raw_details_json"], "")
+        self.assertEqual(
+            empty_response.content.decode().count("data-notification-raw-toggle"),
+            1,
+        )
 
     def test_notification_levels_are_displayed_in_french(self):
         expected_labels = {

@@ -1,7 +1,12 @@
 {% extends current_module.base_template %}
-{% load material_frontend %}
+{% load material_frontend static %}
 {% block title %}Mes DAT{% endblock %}
 {% block page_title %}Mes DAT{% endblock %}
+{% block extrahead %}
+  {{ block.super }}
+  <script src="{% static 'js/tooltip_utils.js' %}" defer></script>
+  <script src="{% static 'js/dat_list.js' %}" defer></script>
+{% endblock %}
 {% comment %} {% block breadcrumbs_items %}
   <a class="active">Mes DAT</a>
 {% endblock %} {% endcomment %}
@@ -15,19 +20,19 @@
         <a href="/dat/manage/dats/crud/add/" class="btn waves-effect waves-light cinta-btn-primary">Ajouter un DAT</a>
       {% endif %}
     </div>
-    <form method="get" class="u-mt-1 u-flex u-gap-0-5 u-items-center u-flex-wrap">
-      <div class="input-field dat-list__search-field u-m-0">
+    <form method="get" class="dat-list__filters u-mt-1 u-flex u-gap-0-5 u-flex-wrap">
+      <div class="dat-list__field dat-list__search-field u-m-0">
+        <label for="dat-search">Recherche</label>
         <input id="dat-search" type="search" name="q" placeholder="Rechercher par référence, titre, application..." value="{{ search_query|default_if_none:'' }}">
-        <label class="active" for="dat-search">Recherche</label>
       </div>
-      <div class="dat-list__filter-field u-m-0">
-        <label for="dat-application-filter" class="active">Application</label>
+      <div class="dat-list__field dat-list__filter-field u-m-0">
+        <label for="dat-application-filter">Application</label>
         <select
           id="dat-application-filter"
           name="application"
           class="browser-default"
           data-remote-select-url="{% url 'dat:my_application_options' %}"
-          data-remote-select-limit="30"
+          data-remote-select-limit="{{ application_options_limit }}"
           data-remote-select-placeholder="Rechercher une application par code ou nom"
         >
           <option value="">Toutes</option>
@@ -38,10 +43,12 @@
           {% endfor %}
         </select>
       </div>
-      <button type="submit" class="btn waves-effect waves-light cinta-btn-primary">Rechercher</button>
-      {% if search_query or application_filter %}
-        <a href="." class="btn-flat waves-effect">Réinitialiser</a>
-      {% endif %}
+      <div class="dat-list__filter-actions u-flex u-gap-0-5 u-items-center">
+        <button type="submit" class="btn waves-effect waves-light cinta-btn-primary">Rechercher</button>
+        {% if search_query or application_filter %}
+          <a href="." class="btn-flat waves-effect">Réinitialiser</a>
+        {% endif %}
+      </div>
     </form>
     {% if search_too_short %}
       <p class="dat-list__error">La recherche nécessite au moins 3 caractères.</p>
@@ -72,5 +79,6 @@
   {% include "components/pagination.html" %}
   </div>
 </div>
+  {% include "components/_workflow_tooltip.html" with tooltip_id="dat-list-section-tooltip" only %}
   {% comment %} <p><a class="btn" href="/dat/manage/dats/crud/add/">Ajouter un DAT</a></p> {% endcomment %}
 {% endblock %}

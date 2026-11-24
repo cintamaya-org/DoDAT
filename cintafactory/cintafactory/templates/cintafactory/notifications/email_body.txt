@@ -3,7 +3,7 @@
 Type: {{ kind }}
 Niveau: {{ level }}
 Date: {{ occurred_at|date:"Y-m-d H:i:s" }}
-{% if dat_reference %}DAT: {{ dat_reference }}{% if dat_title %} - {{ dat_title }}{% endif %}
+{% if dat_display_reference %}DAT: {{ dat_display_reference }}{% if dat_title %} - {{ dat_title }}{% endif %}
 {% endif %}{% if target_url %}
 URL: {{ target_url }}
 {% endif %}
