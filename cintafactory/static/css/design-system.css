@@ -466,8 +466,11 @@ dmc-sidenav.app-sidebar .module-menu__items > li > a {
 }
 .topbar__title-meta {
   display: inline-flex;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   align-items: center;
+  gap: 0.35em;
+  min-width: 0;
+  overflow: hidden;
   min-height: 18px;
   padding: 2px 7px;
   border: 1px solid #fcd34d;
@@ -479,6 +482,7 @@ dmc-sidenav.app-sidebar .module-menu__items > li > a {
   line-height: 1;
   white-space: nowrap;
 }
+.topbar__version-reference { overflow: hidden; text-overflow: ellipsis; }
 .topbar__title-meta--valider { border-color: #a7f3d0; background: var(--cinta-color-success-bg); color: var(--cinta-color-success-text); }
 .topbar__title-meta--refuse { border-color: #fecaca; background: var(--cinta-color-danger-bg); color: var(--cinta-color-danger-text); }
 .topbar__title-meta--en_attente_de_revue { border-color: #bae6fd; background: var(--cinta-color-info-bg); color: var(--cinta-color-info-text); }
@@ -788,6 +792,31 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--cinta-color-br
   padding-top: calc(24px + var(--dat-list-control-height) + var(--dat-list-control-gap));
 }
 .dat-list__filter-actions .btn { height: var(--dat-list-control-height); }
+
+.dat-list__section-statuses {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 6rem;
+}
+.dat-list__section-dot {
+  display: inline-grid;
+  width: 16px;
+  height: 20px;
+  place-items: center;
+  cursor: help;
+}
+.dat-list__section-dot::before {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--section-dot-color, var(--cinta-color-neutral-500));
+  content: "";
+}
+.dat-list__section-dot--validated { --section-dot-color: var(--cinta-color-success); }
+.dat-list__section-dot--in-progress { --section-dot-color: var(--cinta-color-warning-strong); }
+.dat-list__section-dot--refused,
+.dat-list__section-dot--blocked { --section-dot-color: var(--cinta-color-danger-strong); }
+
 @media (max-width: 600px) {
   .dat-list__filters .dat-list__field { flex: 1 1 100%; }
   .dat-list__filters:has(.remote-select__search) .dat-list__search-field,

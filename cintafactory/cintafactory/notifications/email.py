@@ -62,6 +62,7 @@ class EmailNotificationBackend(ExternalNotificationBackend):
             "user_display": event.user_display,
             "dat_id": event.dat_id,
             "dat_reference": event.dat_reference,
+            "dat_display_reference": event.dat_display_reference or event.dat_reference,
             "dat_title": event.dat_title,
             "dat_status": event.dat_status,
             "target_url": event.target_url,

@@ -36,9 +36,9 @@
     <form method="post" novalidate>
       {% csrf_token %}
       {% form form=form %}
+        {% part form application %}{% endpart %}
         {% part form reference %}{% endpart %}
         {% part form title %}{% endpart %}
-        {% part form application %}{% endpart %}
         {% part form description %}{% endpart %}
         {% part form status %}{% endpart %}
         {% part form owner %}{% endpart %}

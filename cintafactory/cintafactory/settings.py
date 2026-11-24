@@ -36,6 +36,7 @@ DAT_WORKFLOW_CONFIG = os.getenv("DAT_WORKFLOW_CONFIG", "")
 DAT_WORKFLOW_JSON = os.getenv("DAT_WORKFLOW_JSON", "")
 DAT_WORKFLOW_REQUIRE_SECTION_REFERENTS = os.getenv("DAT_WORKFLOW_REQUIRE_SECTION_REFERENTS", "0").strip().lower() in {"1", "true", "yes", "on"}
 WORKFLOW_SNAPSHOT_MAX_BYTES = int(os.getenv("WORKFLOW_SNAPSHOT_MAX_BYTES", str(64 * 1024 * 1024)))
+ASYNC_JOBS_RUNNER_MODE = os.getenv("ASYNC_JOBS_RUNNER_MODE", "thread").strip().lower()
 
 
 # Quick-start development settings - unsuitable for production

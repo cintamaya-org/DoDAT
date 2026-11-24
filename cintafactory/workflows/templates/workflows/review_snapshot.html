@@ -1,9 +1,9 @@
 {% extends 'material/frontend/base_module.html' %}
-{% block title %}Version revue · {{ dat.reference }}{% endblock %}
+{% block title %}Version revue · {{ dat.display_reference }}{% endblock %}
 {% block page_title %}Version présentée à la revue{% endblock %}
 {% block content %}
   <a href="{% url 'workflows:graph_detail' dat.pk %}" class="btn-flat">Retour aux approbations</a>
-  <p>{{ dat.reference }} · Version conservée le {{ snapshot.created_at|date:'d/m/Y H:i' }}</p>
+  <p>{{ dat.display_reference }} · Version conservée le {{ snapshot.created_at|date:'d/m/Y H:i' }}</p>
   {% if snapshot.content.dat %}<article class="card cinta-card"><div class="card-content"><h2 class="card-title">{{ snapshot.content.dat.title }}</h2><p>{{ snapshot.content.dat.description }}</p></div></article>{% endif %}
   {% for part in parts %}
     <article class="card cinta-card"><div class="card-content"><h2 class="card-title">{{ part.label }}</h2><pre>{{ part.display }}</pre></div></article>

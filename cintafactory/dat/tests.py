@@ -274,7 +274,7 @@ class ApplicationOptionsViewTest(TestCase):
         self.assertEqual(first_response.status_code, 200)
         self.assertIn("no-store", first_response["Cache-Control"])
         self.assertNotIn(
-            "New application",
+            "New application (new-application)",
             [option["label"] for option in first_response.json()["options"]],
         )
 
@@ -288,7 +288,7 @@ class ApplicationOptionsViewTest(TestCase):
         self.assertEqual(refreshed_response.status_code, 200)
         self.assertIn("no-store", refreshed_response["Cache-Control"])
         self.assertIn(
-            {"value": str(application.pk), "label": application.name},
+            {"value": str(application.pk), "label": "New application (new-application)"},
             refreshed_response.json()["options"],
         )
 
@@ -299,7 +299,7 @@ class ApplicationOptionsViewTest(TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         option_labels = [option["label"] for option in payload["options"]]
-        self.assertNotIn("Sans direction", option_labels)
+        self.assertNotIn("Sans direction (app-3)", option_labels)
 
 
 class MyApplicationOptionsViewTest(TestCase):
@@ -463,7 +463,7 @@ class TopbarSearchViewTest(TestCase):
         payload = response.json()
         self.assertTrue(payload["results"])
         self.assertTrue(all(item["type"] == "dat" for item in payload["results"]))
-        self.assertIn("DAT-INV-001", [item["label"] for item in payload["results"]])
+        self.assertIn("Inventory Platform (inventory-core) - DAT-INV-001", [item["label"] for item in payload["results"]])
 
     def test_returns_only_top_ten_results(self):
         for index in range(12):
@@ -904,7 +904,7 @@ class DatImportViewTest(TestCase):
         notification_text = [str(message) for message in get_messages(response.wsgi_request)]
         self.assertEqual(
             notification_text[0],
-            "Le DAT « DAT-IMPORT-001 - DAT importé » a été importé avec succès.",
+            "Le DAT « Application Import (app-import) - DAT-IMPORT-001 - DAT importé » a été importé avec succès.",
         )
         imported = DAT.objects.get(reference=payload["dat"]["reference"])
         self.assertEqual(imported.title, payload["dat"]["title"])
@@ -1107,12 +1107,44 @@ class DatVisibilityRestrictionTest(TestCase):
         self.assertContains(response, "DAT-VIS-3")
         self.assertNotContains(response, "DAT-VIS-2")
 
+        with mock.patch.object(dat_views.DatList, "paginate_by", 1):
+            first_page = self.client.get(reverse("dat:my_list"))
+            second_page = self.client.get(reverse("dat:my_list"), {"page": 2})
+        self.assertContains(first_page, 'data-tooltip="BESOIN(S) · Non commencé · other-user"')
+        self.assertNotContains(first_page, 'data-tooltip="BESOIN(S) · Non commencé · owner-user"')
+        self.assertContains(second_page, 'data-tooltip="BESOIN(S) · Non commencé · owner-user"')
+        self.assertNotContains(second_page, 'data-tooltip="BESOIN(S) · Non commencé · other-user"')
+
         self.client.force_login(self.other)
         response_other = self.client.get(reverse("dat:my_list"))
         self.assertEqual(response_other.status_code, 200)
         self.assertContains(response_other, "DAT-VIS-2")
         self.assertNotContains(response_other, "DAT-VIS-1")
         self.assertContains(response_other, "DAT-VIS-3")
+
+    def test_my_list_uses_saved_legacy_section_statuses_without_writing(self):
+        from workflows.models import WorkflowInstance
+
+        status_part = DATPart.objects.get(sub_section__section__dat=self.dat, key="suivi_sections")
+        rows = [
+            {"section": "ARCHITECTURE", "statut": "valide"},
+            {"section_slug": "cybersecurite", "statut": "bloque"},
+            {"section_slug": "exploitation", "statut": "en_cours"},
+        ]
+        status_part.update_value(rows)
+        DATPart.objects.get(sub_section__section__dat=self.dat, key="nom_projet").update_value("Projet")
+
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("dat:my_list"))
+        self.assertContains(response, 'id="dat-list-section-tooltip" class="wf-tooltip" hidden')
+        self.assertContains(response, 'data-tooltip="ARCHITECTURE · Validé · Non affecté"')
+        self.assertContains(response, 'data-tooltip="CYBERSÉCURITÉ · Bloqué · Non affecté"')
+        self.assertContains(response, 'data-tooltip="EXPLOITATION · Non commencé · Non affecté"')
+        self.assertContains(response, 'data-tooltip="INFORMATIONS GÉNÉRALES · En cours · owner-user"')
+        self.assertNotContains(response, 'data-tooltip="VALIDATION ·')
+        self.assertEqual(DATPart.objects.get(pk=status_part.pk).value, rows)
+        self.assertFalse(WorkflowInstance.objects.filter(object_id=str(self.dat.pk)).exists())
+
 
 class DatParticipantAssignmentFormTest(TestCase):
     def setUp(self) -> None:
@@ -1188,6 +1220,23 @@ class DatParticipantAssignmentFormTest(TestCase):
             participant = dat.participants.get(role__slug=slug)
             expected_user = self.users[slug]
             self.assertEqual(participant.user, expected_user)
+
+    def test_create_form_allocates_only_when_reference_is_blank(self):
+        self.client.force_login(self.porteur)
+        url = "/dat/manage/dats/crud/add/"
+        form_page = self.client.get(url)
+        self.assertContains(form_page, "Laissez vide pour attribuer la prochaine version")
+        html = form_page.content.decode()
+        self.assertLess(html.index('id="id_application"'), html.index('id="id_reference"'))
+        response = self.client.post(url, self._build_form_data(reference=""))
+        self.assertEqual(response.status_code, 302)
+        dat = self.application.dats.get()
+        self.assertEqual(dat.reference, "001")
+        edit = DATForm(data=self._build_form_data(reference=""), instance=dat, user=self.porteur)
+        self.assertFalse(edit.is_valid())
+        self.assertIn("reference", edit.errors)
+        dat.refresh_from_db()
+        self.assertEqual(dat.reference, "001")
 
     def test_creation_redirects_and_displays_one_success_notification(self):
         self.client.force_login(self.porteur)
@@ -2305,7 +2354,7 @@ class CreateSchemaDiagramViewTest(TestCase):
         diagram_payload = payload.get("diagram") or {}
         self.assertIn("DAT-DIAG-1", diagram_payload.get("title", ""))
         diagram = DrawIODiagram.objects.get(pk=diagram_payload.get("id"))
-        self.assertTrue(diagram.title.startswith("DAT-DIAG-1"))
+        self.assertEqual(diagram.title, f"{self.dat.display_reference()} - Schéma")
 
     def test_allows_when_schema_sub_section_is_editable_even_if_section_is_not(self):
         role_section = ensure_role("test-section-role", "Section Role")
@@ -3256,24 +3305,13 @@ class DatImportFormCoverageTests(SimpleTestCase):
                 self.assertFalse(form.is_valid())
                 self.assertIn(message, str(form.errors["data_file"]))
 
-    @mock.patch("dat.forms.DAT.objects.filter")
-    def test_import_rejects_duplicate_reference_and_accepts_new_reference(self, filter_dat):
-        filter_dat.return_value.exists.return_value = True
-        duplicate = DATImportForm(
-            data={"reference_override": "  DAT-EXISTS  "},
-            files={"data_file": self._upload(b"{}")},
-        )
-        self.assertFalse(duplicate.is_valid())
-        self.assertIn("reference_override", duplicate.errors)
-        filter_dat.assert_called_with(reference="DAT-EXISTS")
-
-        filter_dat.return_value.exists.return_value = False
-        unique = DATImportForm(
+    def test_import_trims_optional_override_before_resolving_the_application(self):
+        form = DATImportForm(
             data={"reference_override": " DAT-NEW "},
             files={"data_file": self._upload(b"{}")},
         )
-        self.assertTrue(unique.is_valid(), unique.errors)
-        self.assertEqual(unique.cleaned_data["reference_override"], "DAT-NEW")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["reference_override"], "DAT-NEW")
 
 
 class DatViewHelperCoverageTests(SimpleTestCase):
@@ -3795,31 +3833,20 @@ class DrawioParserEdgeCoverageTests(SimpleTestCase):
 
 
 class DatImportServiceCoverageTests(SimpleTestCase):
-    def test_import_validates_required_sections_reference_duplicate_and_title(self):
+    def test_import_validates_required_sections_application_and_title(self):
         service = DATImportService()
         with self.assertRaisesMessage(DATImportError, 'section "dat" manquante'):
             service.import_from_payload({})
-        with self.assertRaisesMessage(DATImportError, "référence du DAT est absente"):
+        with self.assertRaisesMessage(DATImportError, "application associée"):
             service.import_from_payload({"dat": {"title": "Title"}})
-
-        with mock.patch("dat.importers.DAT.objects.filter") as filter_dat:
-            filter_dat.return_value.exists.side_effect = [True, False, False]
-            with self.assertRaisesMessage(DATImportError, "existe déjà"):
-                service.import_from_payload({"dat": {"reference": "DAT-EXISTS", "title": "Title"}})
-            with self.assertRaisesMessage(DATImportError, "titre du DAT est absent"):
-                service.import_from_payload({"dat": {"reference": "DAT-NO-TITLE", "title": "  "}})
-            with self.assertRaisesMessage(DATImportError, "application associée"):
-                service.import_from_payload(
-                    {"dat": {"reference": "DAT-NO-APP", "title": "Title"}, "application": None}
-                )
-        self.assertEqual(filter_dat.call_count, 3)
+        with self.assertRaisesMessage(DATImportError, "titre du DAT est absent"):
+            service.import_from_payload({"dat": {"reference": "DAT-NO-TITLE", "title": "  "}})
 
     def test_import_creates_dat_sets_actor_and_returns_warnings_without_live_database(self):
         actor = SimpleNamespace(pk=17)
         application = Application(code="import-app", name="Imported application")
         service = DATImportService(actor=actor)
         with (
-            mock.patch("dat.importers.DAT.objects.filter") as filter_dat,
             mock.patch("dat.importers.transaction.atomic"),
             mock.patch.object(DAT, "save") as save_dat,
             mock.patch.object(service, "_resolve_application", return_value=application),
@@ -3827,7 +3854,6 @@ class DatImportServiceCoverageTests(SimpleTestCase):
             mock.patch.object(service, "_normalise_status", return_value=DATStatus.EN_COURS),
             mock.patch.object(service, "_synchronise_owner"),
         ):
-            filter_dat.return_value.exists.return_value = False
             result = service.import_from_payload(
                 {
                     "dat": {

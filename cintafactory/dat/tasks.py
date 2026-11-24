@@ -118,11 +118,10 @@ def _notify_pdf_export_ready(dat: DAT) -> None:
     requester = getattr(dat, "pdf_export_requested_by", None)
     if requester is None:
         return
-    reference = dat.reference or dat.title or f"DAT #{dat.pk}"
     display = dat.pdf_export_requested_by_display or format_user_display(requester)
     target_url = reverse("dat:my_detail", args=[dat.pk])
     message = (
-        f"Le document PDF pour {reference} est prêt. "
+        f"Le document PDF pour {dat.display_reference()} est prêt. "
         "Rendez-vous sur la page du DAT pour le récupérer."
     )
     create_user_notification(

@@ -1,7 +1,12 @@
 {% extends current_module.base_template %}
-{% load material_frontend %}
+{% load material_frontend static %}
 {% block title %}Mes DAT{% endblock %}
 {% block page_title %}Mes DAT{% endblock %}
+{% block extrahead %}
+  {{ block.super }}
+  <script src="{% static 'js/tooltip_utils.js' %}" defer></script>
+  <script src="{% static 'js/dat_list.js' %}" defer></script>
+{% endblock %}
 {% comment %} {% block breadcrumbs_items %}
   <a class="active">Mes DAT</a>
 {% endblock %} {% endcomment %}
@@ -74,5 +79,6 @@
   {% include "components/pagination.html" %}
   </div>
 </div>
+  {% include "components/_workflow_tooltip.html" with tooltip_id="dat-list-section-tooltip" only %}
   {% comment %} <p><a class="btn" href="/dat/manage/dats/crud/add/">Ajouter un DAT</a></p> {% endcomment %}
 {% endblock %}

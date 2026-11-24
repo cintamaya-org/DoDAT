@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from django.db.models import Q, QuerySet
 
-from .constants import DAT_PORTEUR_ROLE_SLUG
+from .constants import DAT_OWNER_EDITABLE_SECTION_SLUGS, DAT_PORTEUR_ROLE_SLUG
 
 
 def user_can_create_dat_entities(user) -> bool:
@@ -158,7 +158,7 @@ def user_can_edit_section(section, user) -> bool:
     user_id = getattr(user, "pk", None)
     if (
         user_id is not None
-        and getattr(section, "slug", None) in ("informations-generales", "besoins")
+        and getattr(section, "slug", None) in DAT_OWNER_EDITABLE_SECTION_SLUGS
         and getattr(getattr(section, "dat", None), "owner_id", None) == user_id
     ):
         return True

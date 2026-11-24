@@ -83,3 +83,6 @@ Temp_workflow/**
 Temp_workflow/*
 /Temp_workflow/**
 /Temp_workflow/*
+
+end2end_tests
+end2end_tests/**

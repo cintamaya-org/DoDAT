@@ -95,9 +95,8 @@
                     <div class="card cinta-card workflow-card">
                       <div class="workflow-card__body">
                         <div>
-                          {{ dat }}
                           <h2 class="mdc-typography mdc-typography--headline6 workflow-card__title">
-                            {{ dat.reference|default:dat.pk }}
+                            {{ dat.display_reference|default:dat.pk }}
                           </h2>
                           {% if dat.title %}
                             <h3 class="mdc-typography mdc-typography--subtitle2 workflow-card__subtitle">

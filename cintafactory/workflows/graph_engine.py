@@ -122,7 +122,7 @@ def _notify_ready(instance, dat, node, attempt):
 
         for user in get_user_model().objects.filter(pk__in=user_ids, is_active=True):
             create_user_notification(
-                user, title="Approbation attendue", message=f"{dat.reference} : {title}", dat=dat,
+                user, title="Approbation attendue", message=f"{dat.display_reference()} : {title}", dat=dat,
                 target_url=reverse("workflows:graph_detail", args=[dat.pk]),
                 extra_data={"node_id": node["id"], "attempt_id": str(attempt.pk)},
             )

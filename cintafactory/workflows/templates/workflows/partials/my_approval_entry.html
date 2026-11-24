@@ -1,4 +1,4 @@
 <article class="my-approvals__entry">
-  <h3><a href="{% url 'workflows:graph_detail' task.dat.pk %}#review-{{ task.node.id }}">{{ task.dat.reference }} · {{ task.node.name }}</a></h3>
+  <h3><a href="{% url 'workflows:graph_detail' task.dat.pk %}#review-{{ task.node.id }}">{{ task.dat.display_reference }} · {{ task.node.name }}</a></h3>
   <p>{% if task.node.can_retry %}Vous pouvez reprendre cette étape refusée.{% elif task.node.can_approve %}Votre approbation est attendue.{% elif task.node.attempt.status == 'refusal_blocked' %}Étape refusée, en attente de reprise.{% else %}En attente des étapes précédentes ou des autres approbateurs.{% endif %}</p>
 </article>

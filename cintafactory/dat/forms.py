@@ -24,7 +24,8 @@ from .constants import (
     DAT_REQUIRED_PARTICIPANT_ROLE_LABELS,
     DAT_REQUIRED_PARTICIPANT_ROLE_SLUGS,
 )
-from .models import DAT, DATParticipant, DATPart, DATPartEntryType, DATSubSection
+from .models import Application, DAT, DATParticipant, DATPart, DATPartEntryType, DATSubSection
+from .versioning import DATReferenceError, validate_reference
 from workflows.services import workflow_initial_state, workflow_permission_roles_for_state
 
 
@@ -136,7 +137,46 @@ def _attach_drawio_support(entry: DATPart, widget: RepeatableTableWidget) -> Non
     widget.attrs = attrs
 
 
-class DATForm(forms.ModelForm):
+class DATReferenceForm(forms.ModelForm):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if "application" in self.fields:
+            self.fields["application"].label_from_instance = Application.name_with_code
+        field = self.fields.get("reference")
+        if field is not None:
+            field.strip = False  # Keep the exact spelling of an unchanged legacy reference.
+            field.required = not self.instance._state.adding and bool(self.instance.reference)
+            field.help_text = (
+                "Laissez vide pour attribuer la prochaine version de cette application (001, 002…)."
+                if self.instance._state.adding else "Cette référence change uniquement sur saisie manuelle."
+            )
+
+    def clean(self):
+        cleaned = super().clean()
+        application = cleaned.get("application")
+        if application is None or "reference" not in cleaned:
+            return cleaned
+        value = cleaned["reference"]
+        original = None if self.instance._state.adding else self.instance
+        try:
+            cleaned["reference"] = validate_reference(application.pk, value, original=original)
+        except DATReferenceError as exc:
+            self.add_error("reference", exc)
+        return cleaned
+
+    def _get_validation_exclusions(self):
+        excluded = super()._get_validation_exclusions()
+        if self.instance._state.adding and not self.cleaned_data.get("reference"):
+            # The final reference only exists once the application counter is locked.
+            excluded.add("reference")
+        return excluded
+
+    class Meta:
+        model = DAT
+        fields = "__all__"
+
+
+class DATForm(DATReferenceForm):
     participant_field_prefix = "participant_"
 
     def __init__(self, *args, **kwargs):
@@ -415,9 +455,9 @@ class DATForm(forms.ModelForm):
     class Meta:
         model = DAT
         fields = [
+            "application",
             "reference",
             "title",
-            "application",
             "description",
             "status",
             "owner",
@@ -612,7 +652,8 @@ class DATImportForm(forms.Form):
     data_file = forms.FileField(label="Fichier JSON du DAT")
     reference_override = forms.CharField(
         label="Référence du DAT",
-        help_text="Inséré la référence du nouveau DAT",
+        help_text="Laissez vide pour utiliser la référence du fichier. Si elle est absente, la version est attribuée automatiquement.",
+        max_length=DAT._meta.get_field("reference").max_length,
         required=False,
         widget=forms.TextInput(attrs={"class": "validate"}),
     )
@@ -634,16 +675,6 @@ class DATImportForm(forms.Form):
         self.cleaned_data["payload"] = payload
         uploaded.seek(0)
         return uploaded
-
-    def clean_reference_override(self):
-        reference = (self.cleaned_data.get("reference_override") or "").strip()
-        if not reference:
-            return ""
-        if DAT.objects.filter(reference=reference).exists():
-            raise forms.ValidationError(
-                f"Un DAT avec la référence « {reference} » existe déjà. Merci d'en saisir une autre."
-            )
-        return reference
 
     @property
     def payload(self):

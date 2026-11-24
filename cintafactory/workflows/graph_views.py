@@ -133,7 +133,7 @@ def review_asset(request, dat_pk, snapshot_pk, checksum):
 @login_required
 @require_GET
 def my_approvals(request):
-    visible_dats = filter_dat_queryset_for_user(DAT.objects.all(), request.user)
+    visible_dats = filter_dat_queryset_for_user(DAT.objects.select_related("application"), request.user)
     queryset = visible_dats.exclude(status__in=["valider", "refuse"]).filter(
         Q(participants__user=request.user) | Q(section_responsibles__user=request.user),
     ).distinct().order_by("-updated_at", "-pk")

@@ -108,6 +108,28 @@ class ApprovalGraphTests(GraphFixture, TestCase):
         self.act("ssi", "rssi")
         self.assertFalse(section.can_user_edit(self.actors["rssi"]))
 
+    def test_my_dat_list_shows_section_progress_and_the_assigned_editor(self):
+        section = self.dat.sections.get(metadata__slug="cybersecurite")
+        DATSectionParticipant.objects.create(dat=self.dat, section=section, user=self.actors["analyste-secu"])
+        DATSectionResponsible.objects.create(dat=self.dat, section=section, user=self.actors["rssi"])
+        self.client.force_login(self.actors["porteur-demande"])
+        url = reverse("dat:my_list")
+
+        self.assertContains(self.client.get(url), 'data-tooltip="CYBERSÉCURITÉ · Non commencé · graph-analyste-secu"')
+        self.reach_ssi()
+        response = self.client.get(url)
+        self.assertContains(response, 'data-tooltip="CYBERSÉCURITÉ · En cours · graph-analyste-secu"')
+        self.assertContains(response, 'aria-label="CYBERSÉCURITÉ · En cours · graph-analyste-secu"')
+
+        self.act("ssi", "rssi")
+        self.assertContains(self.client.get(url), 'data-tooltip="CYBERSÉCURITÉ · Validé · graph-analyste-secu"')
+
+        self.act("hosting", "infra-exploitation", "reject", comment="Exploitation à corriger")
+        response = self.client.get(url)
+        self.assertContains(response, 'data-tooltip="EXPLOITATION · Refusé · Non affecté"')
+        self.assertContains(response, 'dat-list__section-dot--refused')
+        self.assertContains(response, 'data-tooltip="CYBERSÉCURITÉ · En cours · graph-analyste-secu"')
+
     def test_editor_and_admin_cannot_replace_required_dat_role(self):
         self.prepare()
         actor = self.actors["porteur-demande"]

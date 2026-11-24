@@ -82,8 +82,9 @@ def bind_workflow_instances(
     objects: list[Any] | tuple[Any, ...],
     *,
     workflow_code: str = "dat-validation",
+    create_missing: bool = True,
 ) -> dict[str, WorkflowInstance]:
-    """Batch-load instances and pin missing objects without N+1 reads."""
+    """Batch-load instances, optionally pinning objects with no instance."""
 
     if not objects:
         return {}
@@ -108,7 +109,7 @@ def bind_workflow_instances(
     ).select_related("definition_version")
     found = {instance.object_id: instance for instance in instances}
     missing_ids = object_by_id.keys() - found.keys()
-    if missing_ids:
+    if missing_ids and create_missing:
         # Wait for concurrent publication before reading the version used for new pins.
         with transaction.atomic():
             workflow = Workflow.objects.select_for_update().get(pk=workflow.pk)

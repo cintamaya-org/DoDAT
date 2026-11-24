@@ -39,6 +39,7 @@ class ExternalNotificationEvent:
     created_by_id: str | None = None
     created_by_display: str | None = None
     extra_data: dict[str, Any] = field(default_factory=dict)
+    dat_display_reference: str | None = None
 
     def resolved_occurred_at(self) -> datetime:
         return self.occurred_at or timezone.now()
@@ -165,6 +166,7 @@ def build_event_from_user_notification(notification) -> ExternalNotificationEven
     """Best-effort conversion from a UserNotification instance to a portable payload."""
 
     dat = getattr(notification, "dat", None)
+    display_reference = getattr(dat, "display_reference", None)
     user = getattr(notification, "user", None)
     created_by = getattr(notification, "created_by", None)
     user_display = None
@@ -186,6 +188,7 @@ def build_event_from_user_notification(notification) -> ExternalNotificationEven
         user_display=user_display,
         dat_id=str(getattr(dat, "pk", "")) if dat is not None else None,
         dat_reference=getattr(dat, "reference", None),
+        dat_display_reference=display_reference() if callable(display_reference) else None,
         dat_title=getattr(dat, "title", None),
         dat_status=getattr(dat, "status", None),
         target_url=getattr(notification, "target_url", None),

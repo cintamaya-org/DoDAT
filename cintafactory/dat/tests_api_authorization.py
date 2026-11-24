@@ -65,6 +65,24 @@ class ResourceApiAuthorizationTests(TestCase):
         )
         self.assertNotIn(str(self.hidden_dat.pk), {item["id"] for item in response.data})
 
+    def test_reference_is_automatic_on_post_and_stable_on_patch(self):
+        api = APIClient()
+        api.force_authenticate(self.porteur)
+        payload = {"title": "Automatic version", "application": str(self.application.pk)}
+        created = api.post(reverse("api:dat-list"), payload, format="json")
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(created.data["reference"], "001")
+        duplicate = api.post(reverse("api:dat-list"), {**payload, "reference": "1"}, format="json")
+        self.assertEqual(duplicate.status_code, 400)
+        self.assertIn("reference", duplicate.data)
+
+        api.force_authenticate(self.manager)
+        detail = reverse("api:dat-detail", args=[created.data["id"]])
+        edited = api.patch(detail, {"title": "Edited"}, format="json")
+        self.assertEqual(edited.status_code, 200, edited.data)
+        self.assertEqual(edited.data["reference"], "001")
+        self.assertEqual(api.patch(detail, {"reference": ""}, format="json").status_code, 400)
+
     def test_anonymous_user_cannot_read_resource_api(self):
         response = APIClient().get(reverse("api:dat-list"))
 

@@ -1,6 +1,6 @@
 {% extends 'material/frontend/base_module.html' %}
-{% block title %}Approbations · {{ dat.reference }}{% endblock %}
-{% block page_title %}{{ dat.reference }} · {{ dat.title }}{% endblock %}
+{% block title %}Approbations · {{ dat.display_reference }}{% endblock %}
+{% block page_title %}{{ dat.display_reference }} · {{ dat.title }}{% endblock %}
 {% block extrahead %}
   {{ block.super }}
   {% if approval_graph %}{% include 'workflows/partials/review_assets.html' %}{% endif %}

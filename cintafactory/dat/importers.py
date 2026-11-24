@@ -26,6 +26,7 @@ from .resources import (
     group_resource_rows,
 )
 from .sections import sync_dat_sections_if_needed
+from .versioning import DATReferenceError
 
 
 UserModel = get_user_model()
@@ -60,21 +61,13 @@ class DATImportService:
         if not isinstance(dat_data, dict):
             raise DATImportError("Fichier invalide: section \"dat\" manquante.")
 
-        override_reference = (reference_override or "").strip()
-        reference = override_reference or (dat_data.get("reference") or "").strip()
-        if not reference:
-            if override_reference:
-                raise DATImportError("La référence du DAT fournie est vide.")
-            raise DATImportError("La référence du DAT est absente du fichier importé.")
-        if DAT.objects.filter(reference=reference).exists():
-            raise DATImportError(f"Un DAT avec la référence « {reference} » existe déjà.")
-
         title = (dat_data.get("title") or "").strip()
         if not title:
             raise DATImportError("Le titre du DAT est absent du fichier importé.")
 
         application_payload = payload.get("application")
         application = self._resolve_application(application_payload)
+        reference = (reference_override or "").strip() or dat_data.get("reference")
         owner_payload = payload.get("owner")
         owner = self._resolve_user(owner_payload)
         status = self._normalise_status(dat_data.get("status"))
@@ -92,7 +85,10 @@ class DATImportService:
             )
             dat._history_actor = self.actor  # type: ignore[attr-defined]
             dat._workflow_initial_state = status  # type: ignore[attr-defined]
-            dat.save()
+            try:
+                dat.save()
+            except DATReferenceError as exc:
+                raise DATImportError(exc.messages[0]) from exc
 
             participants_payload = payload.get("participants")
             self._import_participants(dat, participants_payload)

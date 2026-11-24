@@ -695,7 +695,7 @@ class WorkflowNotificationsView(LoginRequiredMixin, TemplateView):
             payload = {
                 "source": entry.source,
                 "dat_link": reverse("dat:my_detail", args=[dat.pk]) if dat else "",
-                "dat_reference": getattr(dat, "reference", "") if dat else "",
+                "dat_reference": dat.display_reference() if dat else "",
                 "dat_title": getattr(dat, "title", "") if dat else "",
                 "dat_application_name": getattr(application, "name", "") if application else "",
             }

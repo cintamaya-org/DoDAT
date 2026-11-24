@@ -2,8 +2,8 @@
 {% load dat_extras static %}
 
 {% block page_eyebrow %}Dossier d'Architecture Technique{% endblock %}
-{% block page_title %}DAT — {{ object.title|default:object.reference }}{% endblock %}
-{% block page_title_meta %}{% include "dat/partials/dat_topbar_meta.html" with dat=object dat_header_version=dat_header_version only %}{% endblock %}
+{% block page_title %}DAT — {{ object.title|default:object.display_reference }}{% endblock %}
+{% block page_title_meta %}{% include "dat/partials/dat_topbar_meta.html" with dat=object only %}{% endblock %}
 
 {% block extrahead %}
 {{ block.super }}
@@ -28,7 +28,7 @@
           Retour à la liste des DAT
         </a>
         <h5 class="dat-section-card__title">
-          <span>{{ dat.reference }}</span>
+          <span>{{ dat.display_reference }}</span>
           <span class="text-muted-soft">·</span>
           <span>{{ dat.title }}</span>
         </h5>
@@ -400,12 +400,7 @@
     </a>
   </div>
 </div>
-<div id="wf-tooltip" class="wf-tooltip" hidden>
-  <div class="wf-tooltip__spinner">
-    {% include "components/_loading_spinner.html" %}
-  </div>
-  <span class="wf-tooltip__text" hidden></span>
-</div>
+{% include "components/_workflow_tooltip.html" %}
 <script src="{% static 'js/dat_table_pagination.js' %}"></script>
 <script src="{% static 'js/dat_sub_section_toggle.js' %}"></script>
 <script src="{% static 'js/dat_dat_detail.js' %}"></script>

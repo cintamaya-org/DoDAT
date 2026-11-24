@@ -245,7 +245,7 @@ def _build_dat_context(dat) -> dict[str, Any]:
     owner = getattr(dat, "owner", None)
     return {
         "id": str(getattr(dat, "pk", "")),
-        "reference": getattr(dat, "reference", "") or "",
+        "reference": dat.display_reference(),
         "title": getattr(dat, "title", "") or "",
         "status": getattr(dat, "status", "") or "",
         "status_label": getattr(dat, "get_status_display", lambda: "")() or "",

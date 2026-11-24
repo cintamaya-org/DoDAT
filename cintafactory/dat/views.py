@@ -75,6 +75,7 @@ from .export_access import (
 )
 from .exporters import get_dat_export_model_builder
 from .forms import DATForm, DATImportForm, DATSubSectionForm
+from .versioning import DATReferenceError
 from .importers import DATImportError, DATImportService
 from .models import (
     Application,
@@ -107,13 +108,16 @@ from .permissions import (
     user_is_dat_admin,
     user_is_dat_admin_for_dat,
 )
+from .section_status_summary import build_dat_list_section_statuses
 from .sections import (
     SECTION_STATUS_BLOCKED_VALUE,
     SECTION_STATUS_DEFAULT,
     SECTION_STATUS_ENTRY_KEY,
     SECTION_STATUS_VALIDATED_VALUE,
+    index_section_status_rows,
     section_has_attachments,
     section_has_status,
+    section_value_is_filled,
     sync_dat_sections_if_needed,
 )
 from .search import (
@@ -186,6 +190,7 @@ def _dispatch_section_status_notification(
         user_display=format_user_display(actor),
         dat_id=str(getattr(dat, "pk", "")),
         dat_reference=getattr(dat, "reference", None),
+        dat_display_reference=dat.display_reference(),
         dat_title=getattr(dat, "title", None),
         dat_status=getattr(dat, "status", None),
         target_url=target_url,
@@ -892,37 +897,6 @@ def build_dat_admin_editor(dat: DAT, user):
     }
 
 
-def build_dat_header_version(dat: DAT) -> str:
-    version_part = (
-        DATPart.objects.filter(
-            sub_section__section__dat=dat,
-            sub_section__section__metadata__slug="informations-generales",
-            key="historique_versions",
-        )
-        .order_by("order", "id")
-        .prefetch_related(
-            Prefetch(
-                "entries",
-                queryset=DATPartEntry.objects.select_related("payload").order_by("-updated_at", "-id"),
-            )
-        )
-        .first()
-    )
-    rows = version_part.value if version_part is not None else None
-    if not isinstance(rows, (list, tuple)):
-        return ""
-    for row in reversed(rows):
-        if not isinstance(row, dict):
-            continue
-        raw_version = row.get("version")
-        if not isinstance(raw_version, (str, int, float)):
-            continue
-        version = str(raw_version).strip()
-        if version:
-            return f"v{version[1:]}" if version[:1].lower() == "v" else f"v{version}"
-    return ""
-
-
 def build_dat_overview_context(dat: DAT, user):
     from workflows.graph_engine import graph_context
     return {
@@ -1100,24 +1074,7 @@ def build_section_status_map(dat: DAT, sections_list: list[DATSection] | None = 
         raw_rows = status_part.value if status_part else []
     except Exception:
         raw_rows = []
-    if not isinstance(raw_rows, list):
-        raw_rows = []
-    existing_by_slug: dict[str, dict] = {}
-    existing_by_title: dict[str, dict] = {}
-    stale_rows = False
-    for row in raw_rows:
-        if not isinstance(row, dict):
-            stale_rows = True
-            continue
-        slug = row.get("section_slug")
-        if slug not in (None, ""):
-            existing_by_slug[str(slug)] = row
-            continue
-        label = row.get("section")
-        if label not in (None, ""):
-            existing_by_title[str(label)] = row
-            continue
-        stale_rows = True
+    existing_by_slug, existing_by_title, stale_rows = index_section_status_rows(raw_rows)
     status_map: dict[str, dict[str, object]] = {}
     updated_rows: list[dict[str, object]] = []
     dirty = stale_rows
@@ -1597,16 +1554,6 @@ def build_section_payload(
     return sections_payload
 
 
-def _validation_value_is_filled(value) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return bool(value.strip())
-    if isinstance(value, (list, tuple, dict, set)):
-        return bool(value)
-    return True
-
-
 def build_validation_section_rows(
     dat: DAT,
     user,
@@ -1676,7 +1623,7 @@ def build_validation_section_rows(
         ]
         required_parts = [part for part in parts if part.required]
         measured_parts = required_parts or parts
-        filled_count = sum(_validation_value_is_filled(part.value) for part in measured_parts)
+        filled_count = sum(section_value_is_filled(part.value) for part in measured_parts)
         progress = round((filled_count / len(measured_parts)) * 100) if measured_parts else None
         progress_basis = "champs obligatoires" if required_parts else "champs renseignés"
         progress_detail = (
@@ -2917,7 +2864,21 @@ class BaseSecuredViewSet(LoginRequiredMixin, ModelViewSet):
         return self._can_mutate(request)
 
 
-class DATCreateView(ModuleContextMixin, CreateModelView):
+class DATFormViewMixin:
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs["user"] = self.request.user
+        return kwargs
+
+    def form_valid(self, form):
+        try:
+            return super().form_valid(form)
+        except DATReferenceError as exc:
+            form.add_error("reference", exc)
+            return self.form_invalid(form)
+
+
+class DATCreateView(DATFormViewMixin, ModuleContextMixin, CreateModelView):
     template_name = "dat/dat_form.html"
     success_url = reverse_lazy("dat:my_list")
 
@@ -2925,11 +2886,6 @@ class DATCreateView(ModuleContextMixin, CreateModelView):
         if not user_can_create_dat_entities(request.user):
             raise PermissionDenied
         return super().dispatch(request, *args, **kwargs)
-
-    def get_form_kwargs(self):
-        kwargs = super().get_form_kwargs()
-        kwargs["user"] = self.request.user
-        return kwargs
 
     def message_user(self):
         messages.success(self.request, "Le DAT a été créé avec succès.")
@@ -2947,13 +2903,8 @@ class DATCreateView(ModuleContextMixin, CreateModelView):
         return super().get_success_url()
 
 
-class DATUpdateView(FrenchUpdateMessageMixin, ModuleContextMixin, UpdateModelView):
+class DATUpdateView(DATFormViewMixin, FrenchUpdateMessageMixin, ModuleContextMixin, UpdateModelView):
     template_name = "dat/dat_form.html"
-
-    def get_form_kwargs(self):
-        kwargs = super().get_form_kwargs()
-        kwargs["user"] = self.request.user
-        return kwargs
 
 
 class DATDetailView(LoginRequiredMixin, ModuleContextMixin, DetailModelView):
@@ -2983,7 +2934,6 @@ class DATDetailView(LoginRequiredMixin, ModuleContextMixin, DetailModelView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         section_status_map, section_status_choices = build_section_status_map(self.object)
-        context["dat_header_version"] = build_dat_header_version(self.object)
         try:
             from dat_viewflow.services import ensure_dat_viewflow_process
             from dat_viewflow.config import build_dat_viewflow_template
@@ -3050,13 +3000,13 @@ class DATViewSet(BaseSecuredViewSet):
     def has_change_permission(self, request, obj=None):
         return user_can_change_dat(obj, request.user)
 
-    list_display = ("reference", "title", "application", "business_direction", "status", "owner", "created_at")
-    list_display_links = ("reference",)
+    list_display = ("display_reference", "title", "application", "business_direction", "status", "owner", "created_at")
+    list_display_links = ("display_reference",)
     ordering = ("-created_at",)
     search_fields = ("reference", "title", "description", "application__name", "application__code", "business_direction__name")
 
     layout = Layout(
-        Fieldset("Identité", Row("reference", "title"), Row("application")),
+        Fieldset("Identité", Row("application"), Row("reference", "title")),
         Fieldset(
             "Participants",
             Row("participant_porteur_demande"),
@@ -3170,9 +3120,11 @@ class DatList(ModuleContextMixin, LoginRequiredMixin, ListView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context["show_technical_architect_assignment"] = self.show_technical_architect_assignment
-        for dat in context.get("object_list") or ():
+        dats = list(context["object_list"])
+        section_statuses = build_dat_list_section_statuses(dats)
+        for dat in dats:
             dat.can_change = user_can_change_dat(dat, self.request.user)  # type: ignore[attr-defined]
-            dat.workflow_state_display = workflow_state_label(dat)  # type: ignore[attr-defined]
+            dat.section_statuses = section_statuses.get(dat.pk, ())  # type: ignore[attr-defined]
         user = self.request.user
         context["owner_can_edit"] = user_is_dat_admin(user)
         context["can_create_dat"] = user_can_create_dat_entities(user)
@@ -3351,7 +3303,6 @@ class DatDetail(ModuleContextMixin, LoginRequiredMixin, DetailView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         section_status_map, section_status_choices = build_section_status_map(self.object)
-        context["dat_header_version"] = build_dat_header_version(self.object)
         try:
             from dat_viewflow.services import ensure_dat_viewflow_process
             from dat_viewflow.config import build_dat_viewflow_template
@@ -3901,7 +3852,7 @@ class DatImportView(ModuleContextMixin, DatManagerAccessMixin, FormView):
         dat = result.dat
         messages.success(
             self.request,
-            f"Le DAT « {dat.reference} - {dat.title} » a été importé avec succès.",
+            f"Le DAT « {dat} » a été importé avec succès.",
         )
         detail_url = reverse("dat:my_detail", args=[dat.pk])
         messages.info(
@@ -4064,11 +4015,11 @@ def application_options(request):
         raise PermissionDenied
     applications = (
         Application.objects.filter(business_direction__isnull=False)
-        .order_by("name")
-        .values("id", "name")
+        .order_by("name", "code")
+        .only("id", "name", "code")
     )
     options = [
-        {"value": application["id"], "label": application["name"]}
+        {"value": application.pk, "label": application.name_with_code()}
         for application in applications
     ]
     return JsonResponse({"options": options})
@@ -4231,7 +4182,9 @@ def create_schema_diagram(request, dat_pk: int):
                 status=400,
             )
     else:
-        fallback_title = f"{dat.reference} - Schéma"
+        suffix = " - Schéma"
+        max_length = DrawIODiagram._meta.get_field("title").max_length - len(suffix)
+        fallback_title = dat.display_reference(max_length=max_length) + suffix
         try:
             title = sanitize_diagram_title(fallback_title)
         except ValidationError:

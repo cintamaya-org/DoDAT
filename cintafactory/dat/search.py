@@ -162,7 +162,7 @@ class DATTopbarSearchProvider(BaseTopbarSearchProvider):
                 ),
                 length_delta=Abs(Length("reference") - Value(query_length)),
             )
-            .order_by("-match_score", "length_delta", "reference")[:limit]
+            .order_by("-match_score", "length_delta", "application__name", "application__code", "reference", "pk")[:limit]
         )
         results = []
         for dat in queryset:
@@ -170,7 +170,7 @@ class DATTopbarSearchProvider(BaseTopbarSearchProvider):
                 TopbarSearchResult(
                     kind="dat",
                     identifier=str(dat.pk),
-                    label=dat.reference,
+                    label=dat.display_reference(),
                     subtitle=f"DAT - {dat.title}",
                     url=reverse("dat:my_detail", args=[dat.pk]),
                     score=getattr(dat, "match_score", 0) or 0,

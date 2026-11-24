@@ -15,6 +15,7 @@ from cintafactory.logging.logging_utils import get_request_context, log_info
 
 from .models import DAT, DATSection, DATSectionMetadata, DATHistory, DATHistoryAction
 from .sections import ensure_default_sections
+from .versioning import assign_reference
 
 TRACKED_FIELDS = ("title", "description", "status", "owner_id")
 
@@ -114,20 +115,21 @@ def _create_history_entry(
 
 
 @receiver(pre_save, sender=DAT)
-def capture_original_dat_state(sender, instance: DAT, **kwargs) -> None:
-    """
-    Store a lightweight copy of the previous DAT state before updates so that
-    we can diff changes once the save completes.
-    """
-    if not instance.pk:
-        instance._original_dat_snapshot = None  # type: ignore[attr-defined]
-        return
-    try:
-        original = sender.objects.get(pk=instance.pk)
-    except sender.DoesNotExist:
-        instance._original_dat_snapshot = None  # type: ignore[attr-defined]
-    else:
-        instance._original_dat_snapshot = _snapshot(original)  # type: ignore[attr-defined]
+def prepare_dat_save(sender, instance: DAT, raw, using, update_fields, **kwargs) -> None:
+    writes_reference = not raw and (
+        update_fields is None or bool({"application", "application_id", "reference"}.intersection(update_fields))
+    )
+    original = None
+    if not instance._state.adding:
+        queryset = sender.objects.using(using).select_related("owner")
+        if writes_reference:
+            # Workflow locks are already held. Serialize moves and renames before
+            # checking their destination application and reserving its number.
+            queryset = queryset.select_for_update(of=("self",))
+        original = queryset.filter(pk=instance.pk).first()
+    if writes_reference:
+        assign_reference(instance, original, update_fields, using)
+    instance._original_dat_snapshot = _snapshot(original) if original else None
 
 
 @receiver(post_save, sender=DAT)
