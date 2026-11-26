@@ -11,7 +11,6 @@ class WorkflowsConfig(ModuleMixin, AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "workflows"
     verbose_name = "Flux de travail"
-    menu_group_title = True
 
     icon = "<i class='material-icons'>fact_check</i>"
     order = 40

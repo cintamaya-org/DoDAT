@@ -45,23 +45,27 @@
 }
 
 .wf-node.wf-node--tone-validated {
-  --wf-node-tone-color: var(--cinta-color-success);
+  --wf-node-tone-color: var(--cinta-color-status-validated);
 }
 
 .wf-node.wf-node--tone-blocked {
-  --wf-node-tone-color: var(--cinta-color-danger);
+  --wf-node-tone-color: var(--cinta-color-status-reserve);
+}
+
+.wf-node.wf-node--tone-rejected {
+  --wf-node-tone-color: var(--cinta-color-status-refused);
 }
 
 .wf-node.wf-node--tone-in_progress {
-  --wf-node-tone-color: var(--cinta-color-warning);
+  --wf-node-tone-color: var(--cinta-color-status-in-progress);
 }
 
 .wf-node.wf-node--tone-unknown {
-  --wf-node-tone-color: var(--cinta-color-info);
+  --wf-node-tone-color: var(--cinta-color-status-todo);
 }
 
 .wf-node.wf-node--tone-review {
-  --wf-node-tone-color: var(--cinta-color-review);
+  --wf-node-tone-color: var(--cinta-color-status-review);
 }
 
 .wf-node[class*="wf-node--tone-"] {

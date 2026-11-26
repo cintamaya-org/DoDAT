@@ -1,5 +1,5 @@
 {% load dat_extras static %}
-{% with wrap_card=wrap|default:True %}
+{% with wrap_card=wrap|default_if_none:True %}
 {% if wrap_card %}
 <div class="card cinta-card" id="section-{{ container.section.metadata.slug }}">
   <div class="card-content">
@@ -32,14 +32,14 @@
         {% if container.has_status %}
           {% with blocked_value=container.status_values|get_item:"blocked" %}
           {% section_status_icon container.status.value as section_status_icon %}
-          <div class="dat-section-status-chip">
-            <span class="{{ section_status_icon.variant }} dat-section-status-icon" aria-hidden="true" style="color: {{ section_status_icon.color|default:'#546e7a' }};">
+          <div class="dat-section-status-chip dat-section-status-chip--{{ section_status_icon.tone }}">
+            <span class="{{ section_status_icon.variant }} dat-section-status-icon" aria-hidden="true">
               {{ section_status_icon.name|default:'radio_button_unchecked' }}
             </span>
             <span class="dat-section-status-chip__label">{{ container.status.label|default:"En cours" }}</span>
           </div>
           {% if container.status_locked %}
-            <span class="chip green lighten-4 dat-section-locked-chip">Section validée</span>
+            <span class="cinta-status-badge cinta-status-badge--validated dat-section-locked-chip">Section validée</span>
           {% endif %}
           {% if container.status.commentaire and container.status.value != blocked_value %}
             <p class="dat-section-status-note">{{ container.status.commentaire }}</p>
@@ -162,7 +162,7 @@
 	      </div>
 	    {% endif %}
 	    {% for part in container.parts %}
-	      {% include "dat/partials/dat_sub_section_card.html" with part=part container=container container_section=container.section dat=dat %}
+	      {% include "dat/partials/dat_sub_section_card.html" with part=part container=container container_section=container.section dat=dat subsection_card=subsection_cards %}
 	    {% endfor %}
 	    {% if container.has_status %}
 	      <div class="dat-section-status-actions">

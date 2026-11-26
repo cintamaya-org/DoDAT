@@ -33,7 +33,7 @@
           <span>{{ dat.title }}</span>
         </h5>
         <div class="dat-section-card__actions">
-          <span class="chip blue lighten-4" title="Statut actuel">{{ dat.get_status_display }}</span>
+          <span class="cinta-status-badge cinta-status-badge--{{ dat.status_tone }}" title="Statut actuel">{{ dat.get_status_display }}</span>
           {% if dat.owner %}
             <span class="chip grey lighten-3" title="Responsable">{{ dat.owner }}</span>
           {% endif %}
@@ -334,7 +334,7 @@
                     {% if item.kind == "validation" %}
                       {% if entry.action == history_actions.RESPONSIBLE_VALIDATION %}
                         <div class="dat-section-history-entry">
-                          <span class="chip green lighten-4">Validation référent</span>
+                          <span class="cinta-status-badge cinta-status-badge--validated">Validation référent</span>
                         </div>
                         {% with details=entry.details %}
                           {% if details.section %}
@@ -352,7 +352,7 @@
                         {% endwith %}
                       {% else %}
                         <div class="dat-section-history-entry">
-                          <span class="chip green lighten-4">Validation</span>
+                        <span class="cinta-status-badge cinta-status-badge--validated">Validation</span>
                         </div>
                         {% if entry.details.from or entry.details.to %}
                           Passage de <strong>{{ entry.details.from|default:"-" }}</strong> à <strong>{{ entry.details.to|default:"-" }}</strong>.
@@ -363,9 +363,9 @@
                     {% else %}
                       <div class="dat-section-history-entry">
                         {% if entry.action == "cleared" %}
-                          <span class="chip blue lighten-4">Réserve levée</span>
+                          <span class="cinta-status-badge cinta-status-badge--validated">Réserve levée</span>
                         {% else %}
-                          <span class="chip grey lighten-3">Mise en réserve</span>
+                          <span class="cinta-status-badge cinta-status-badge--reserve">Mise en réserve</span>
                         {% endif %}
                       </div>
                       {% if entry.section_title or entry.section_slug %}

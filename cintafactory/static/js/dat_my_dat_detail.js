@@ -121,6 +121,205 @@
 })();
 
 (function () {
+  if (window.__datSubsectionNavInitialized) {
+    return;
+  }
+  window.__datSubsectionNavInitialized = true;
+
+  const storageKeyFor = (nav) => {
+    const userId = nav.dataset.userId;
+    return userId ? `cintafactory:dat-subsection-nav:user:${userId}` : null;
+  };
+
+  function setExpanded(nav, expanded, persist) {
+    const links = nav.querySelector(".dat-subsection-nav__links");
+    const toggle = nav.querySelector("[data-dat-subsection-nav-toggle]");
+    if (!links || !toggle) {
+      return;
+    }
+
+    links.setAttribute("aria-hidden", String(!expanded));
+    links.inert = !expanded;
+    nav.classList.toggle("is-collapsed", !expanded);
+    nav.classList.toggle("has-transition", persist);
+    const stickyHeader = nav.closest(".dat-section-sticky-cinta-card");
+    if (stickyHeader) {
+      stickyHeader.classList.toggle("dat-section-sticky-cinta-card--subsection-nav-collapsed", !expanded);
+    }
+    toggle.setAttribute("aria-expanded", String(expanded));
+    const label = expanded ? "Masquer les sous-sections" : "Afficher les sous-sections";
+    toggle.setAttribute("aria-label", label);
+    toggle.setAttribute("title", label);
+    const icon = toggle.querySelector(".material-icons");
+    if (icon) {
+      icon.textContent = expanded ? "keyboard_arrow_up" : "keyboard_arrow_down";
+    }
+
+    if (persist) {
+      const storageKey = storageKeyFor(nav);
+      if (storageKey) {
+        try {
+          window.localStorage.setItem(storageKey, expanded ? "expanded" : "collapsed");
+        } catch (_error) {
+          // Keep the current page usable when browser storage is unavailable.
+        }
+      }
+    }
+  }
+
+  function getNav() {
+    return document.querySelector("[data-dat-subsection-nav]");
+  }
+
+  function syncActiveLink() {
+    const nav = getNav();
+    if (!nav) {
+      return;
+    }
+
+    const links = Array.from(nav.querySelectorAll(".dat-subsection-nav__link"));
+    const targets = links.map((link) => ({
+      link,
+      target: document.getElementById(`sub-section-${link.dataset.subsectionTarget}`),
+    }));
+    if (!targets.length) {
+      return;
+    }
+
+    const stickyHeader = nav.closest(".dat-section-sticky-cinta-card");
+    const threshold = stickyHeader
+      ? stickyHeader.getBoundingClientRect().bottom + 8
+      : 8;
+    let activeIndex = 0;
+    targets.forEach(({target}, index) => {
+      if (target && target.getBoundingClientRect().top <= threshold) {
+        activeIndex = index;
+      }
+    });
+
+    const activeLink = targets[activeIndex].link;
+    const activeSlug = activeLink.dataset.subsectionTarget;
+    const changed = nav.dataset.activeSubsection !== activeSlug;
+    nav.dataset.activeSubsection = activeSlug;
+    targets.forEach(({link}, index) => {
+      const active = index === activeIndex;
+      link.classList.toggle("active-section", active);
+      if (active) {
+        link.setAttribute("aria-current", "location");
+      } else {
+        link.removeAttribute("aria-current");
+      }
+    });
+
+    const linksContainer = nav.querySelector(".dat-subsection-nav__links");
+    if (!changed || !linksContainer || nav.classList.contains("is-collapsed")) {
+      return;
+    }
+    const linkRect = activeLink.getBoundingClientRect();
+    const containerRect = linksContainer.getBoundingClientRect();
+    if (linkRect.left < containerRect.left) {
+      linksContainer.scrollLeft -= containerRect.left - linkRect.left;
+    } else if (linkRect.right > containerRect.right) {
+      linksContainer.scrollLeft += linkRect.right - containerRect.right;
+    }
+  }
+
+  let updateScheduled = false;
+  function scheduleActiveUpdate() {
+    if (updateScheduled) {
+      return;
+    }
+    updateScheduled = true;
+    window.requestAnimationFrame(() => {
+      updateScheduled = false;
+      syncActiveLink();
+    });
+  }
+
+  function initializeNav() {
+    const nav = getNav();
+    if (!nav) {
+      return;
+    }
+
+    let expanded = true;
+    const storageKey = storageKeyFor(nav);
+    if (storageKey) {
+      try {
+        expanded = window.localStorage.getItem(storageKey) !== "collapsed";
+      } catch (_error) {
+        expanded = true;
+      }
+    }
+    setExpanded(nav, expanded, false);
+    syncActiveLink();
+  }
+
+  document.addEventListener("click", (event) => {
+    const toggle = event.target.closest("[data-dat-subsection-nav-toggle]");
+    if (toggle) {
+      const nav = toggle.closest("[data-dat-subsection-nav]");
+      if (!nav) {
+        return;
+      }
+      event.preventDefault();
+      const expanded = toggle.getAttribute("aria-expanded") !== "true";
+      setExpanded(nav, expanded, true);
+      if (expanded) {
+        nav.dataset.activeSubsection = "";
+      }
+      scheduleActiveUpdate();
+      return;
+    }
+
+    const link = event.target.closest(".dat-subsection-nav__link");
+    if (
+      !link
+      || event.button !== 0
+      || event.metaKey
+      || event.ctrlKey
+      || event.shiftKey
+      || event.altKey
+    ) {
+      return;
+    }
+    const target = document.getElementById(`sub-section-${link.dataset.subsectionTarget}`);
+    if (!target) {
+      return;
+    }
+
+    event.preventDefault();
+    window.history.replaceState(window.history.state, "", link.getAttribute("href"));
+    const nav = link.closest("[data-dat-subsection-nav]");
+    const stickyHeader = nav ? nav.closest(".dat-section-sticky-cinta-card") : null;
+    const stickyStyle = stickyHeader ? window.getComputedStyle(stickyHeader) : null;
+    const stickyTop = stickyStyle ? (parseFloat(stickyStyle.top) || 0) : 0;
+    const stickyHeight = stickyHeader ? stickyHeader.getBoundingClientRect().height : 0;
+    const top = target.getBoundingClientRect().top + window.scrollY - stickyTop - stickyHeight - 4;
+    const reduceMotion = window.matchMedia
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    window.scrollTo({top: Math.max(0, top), behavior: reduceMotion ? "auto" : "smooth"});
+    scheduleActiveUpdate();
+  });
+
+  window.addEventListener("scroll", scheduleActiveUpdate, {passive: true});
+  window.addEventListener("resize", () => {
+    const nav = getNav();
+    if (nav) {
+      nav.dataset.activeSubsection = "";
+    }
+    scheduleActiveUpdate();
+  });
+  document.addEventListener("dat:section-edit-end", scheduleActiveUpdate);
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initializeNav);
+  } else {
+    initializeNav();
+  }
+  document.addEventListener("turbolinks:load", initializeNav);
+})();
+
+(function () {
   function bindHistoryFilters() {
     const modal = document.getElementById("dat-reserve-history-modal");
     if (!modal || modal.__datHistoryFiltersBound) {

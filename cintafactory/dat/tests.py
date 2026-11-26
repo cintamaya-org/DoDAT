@@ -71,6 +71,7 @@ from .permissions import (
     user_is_responsible_for_section,
 )
 from .drawio_parser import (
+    FLUX_COLUMNS,
     _clean_model_xml,
     _inflate_drawio_payload,
     dedupe_architecture_rows,
@@ -761,6 +762,12 @@ class FrenchMaterialCrudMessagesTest(SimpleTestCase):
                 with mock.patch("cintafactory.french_messages.messages.success") as add_success:
                     view.message_user()
                 add_success.assert_called_once_with(request, expected_message)
+
+    def test_dat_and_application_crud_use_french_material_delete_view(self):
+        from cintafactory.french_messages import FrenchDeleteView
+
+        self.assertIs(dat_views.DATViewSet.delete_view_class, FrenchDeleteView)
+        self.assertIs(dat_views.ApplicationViewSet.delete_view_class, FrenchDeleteView)
 
 
 class ApplicationManagementPaginationTest(TestCase):
@@ -2285,6 +2292,23 @@ class DatSectionIntegrationTest(TestCase):
 
 
 class CreateSchemaDiagramViewTest(TestCase):
+    MULTIFLUX_XML = """
+        <mxGraphModel><root>
+            <object id="src" objectType="brique" labelBrique="API"/>
+            <object id="dst" objectType="brique" labelBrique="Proxy"/>
+            <object id="flow" objectType="flux" idflux="FG02" protocole="multi">
+                <mxCell edge="1" source="src" target="dst"/>
+            </object>
+            <object id="legend" objectType="cartoucheMultiFlux" label="FG01..FG04"/>
+            <object id="http" objectType="flux" idflux="1" protocole="HTTP" port="80">
+                <mxCell edge="1" parent="legend"/>
+            </object>
+            <object id="https" objectType="flux" idflux="2" protocole="HTTPS" port="443">
+                <mxCell edge="1" parent="legend"/>
+            </object>
+        </root></mxGraphModel>
+    """
+
     def setUp(self) -> None:
         self.user = get_user_model().objects.create_user(
             username="diagram-staff",
@@ -2554,8 +2578,62 @@ class CreateSchemaDiagramViewTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["parsed"], {"flux": 1, "briques": 1})
-        parse_architecture.assert_called_once_with("<diagram />")
+        parse_architecture.assert_called_once_with("<diagram />", deduplicate=False)
         self.assertEqual(update_part.call_count, 2)
+
+    def test_generation_persists_both_multiflux_ports_and_is_idempotent(self):
+        architecture = self.dat.sections.get(metadata__slug="architecture")
+        schemas = architecture.sub_sections.get(slug="schemas").parts.get(key="schemas")
+        flux_part = architecture.sub_sections.get(slug="flux").parts.get(key="flux")
+        legend = DrawIODiagram.objects.create(title="Avec légende", dat=self.dat, owner=self.user)
+        other = DrawIODiagram.objects.create(title="Autre fichier", dat=self.dat, owner=self.user)
+        schemas.update_value([
+            {"nom_schema": diagram.title, "schema_systeme": "drawio", "diagramme_id": str(diagram.pk)}
+            for diagram in (legend, other)
+        ])
+        xml_by_id = {
+            legend.pk: self.MULTIFLUX_XML,
+            other.pk: '<mxGraphModel><root><object objectType="flux" idflux="FG03" protocole="multi"/></root></mxGraphModel>',
+        }
+        self.client.force_login(self.user)
+        with mock.patch.object(DrawIODiagram, "read_xml", autospec=True, side_effect=lambda obj: xml_by_id[obj.pk]):
+            response = self.client.post(self.parse_url, data="{}", content_type="application/json")
+            repeat = self.client.post(self.parse_url, data="{}", content_type="application/json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["parsed"], {"flux": 2, "briques": 2})
+        self.assertTrue(response.json()["updated"]["flux"])
+        rows = DATPart.objects.get(pk=flux_part.pk).value
+        self.assertEqual(
+            [(row["flux_id"], row["source"], row["cible"], row["protocole"], row["port"]) for row in rows],
+            [("FG02", "API", "Proxy", "HTTP", "80"), ("FG02", "API", "Proxy", "HTTPS", "443")],
+        )
+        for row in rows:
+            self.assertCountEqual(row, FLUX_COLUMNS)
+        self.assertEqual(repeat.status_code, 200)
+        self.assertEqual(repeat.json()["parsed"], response.json()["parsed"])
+        self.assertEqual(repeat.json()["updated"], {"flux": False, "briques": False})
+
+    def test_multiflux_limit_preserves_existing_table(self):
+        architecture = self.dat.sections.get(metadata__slug="architecture")
+        flux_part = architecture.sub_sections.get(slug="flux").parts.get(key="flux")
+        existing = [{"flux_id": "F1", "port": "22"}]
+        flux_part.update_value(existing)
+        diagram = SimpleNamespace(read_xml=mock.Mock(return_value=self.MULTIFLUX_XML))
+        self.client.force_login(self.user)
+        with (
+            mock.patch.object(dat_views, "get_dat_diagram", return_value=diagram),
+            mock.patch("dat.drawio_parser.MAX_MULTIFLUX_ROWS", 1),
+        ):
+            response = self.client.post(
+                self.parse_url,
+                data=json.dumps({"diagram_ids": [str(uuid.uuid4())]}),
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(response.json()["error"], "graph_too_large")
+        self.assertEqual(DATPart.objects.get(pk=flux_part.pk).value, existing)
 
 
 class DatPdfExportNotificationTest(TestCase):
@@ -3028,6 +3106,113 @@ class DrawioParserTests(SimpleTestCase):
         self.assertEqual(fluxes[0]["cible"], "Service B")
         self.assertEqual(fluxes[0]["chiffrement"], "oui")
         self.assertEqual(fluxes[0]["authentification"], "oui")
+
+    def test_multiflux_expands_overlapping_cartouches_with_port_metadata(self):
+        xml = """
+        <mxGraphModel><root>
+            <object id="source" objectType="brique" labelBrique="Client"/>
+            <object id="target" objectType="brique" idBrique="B2"/>
+            <object objectType="flux" idflux="FG02" protocole=" MuLtI " mecanismeAuth="certificat">
+                <mxCell source="source" target="target"/>
+            </object>
+            <object id="range" objectType="cartoucheMultiFlux" label=" fg01 .. FG04 "/>
+            <object id="single" objectType="cartoucheMultiFlux" label="FG02"/>
+            <object objectType="flux" idflux="1" protocole="HTTP" port="80" mecanismeAuth="Whitelist IP">
+                <mxCell parent="range" source="target" target="source"/>
+            </object>
+            <object objectType="flux" idflux="2" protocole="HTTPS" port="443"><mxCell parent="range"/></object>
+            <object objectType="flux" idflux="3" protocole="http" port="80"><mxCell parent="single"/></object>
+            <object objectType="flux" idflux="4" protocole="TCP" port="3306"><mxCell parent="single"/></object>
+            <object objectType="flux" idflux="FG01" protocole="multi"/>
+            <object objectType="flux" idflux="FG04" protocole="multi"/>
+            <object objectType="flux" idflux="FG4" protocole="multi"/>
+            <object objectType="flux" idflux="FG05" protocole="multi"/>
+            <object objectType="flux" idflux="FG02" protocole="UDP" port="53"/>
+        </root></mxGraphModel>
+        """
+        _, rows = parse_architecture_diagram(xml)
+        self.assertEqual(
+            [(row["flux_id"], row["protocole"], row["port"]) for row in rows],
+            [
+                ("FG02", "HTTP", "80"), ("FG02", "HTTPS", "443"), ("FG02", "TCP", "3306"),
+                ("FG01", "HTTP", "80"), ("FG01", "HTTPS", "443"),
+                ("FG04", "HTTP", "80"), ("FG04", "HTTPS", "443"), ("FG02", "UDP", "53"),
+            ],
+        )
+        self.assertEqual([(row["source"], row["cible"]) for row in rows[:3]], [("Client", "B2")] * 3)
+        self.assertEqual([row["chiffrement"] for row in rows[:3]], ["non", "oui", ""])
+        self.assertEqual([row["authentification"] for row in rows[:3]], ["oui", "oui", "oui"])
+        self.assertEqual(rows[3]["authentification"], "")
+
+    def test_multiflux_tag_shares_ports_across_pages_and_keeps_distinct_routes(self):
+        xml = """
+        <mxfile>
+            <diagram name="Architecture"><mxGraphModel><root>
+                <object id="src" objectType="brique" labelBrique="API"/>
+                <object id="dst" objectType="brique" labelBrique="Proxy"/>
+                <object objectType="flux" idflux="FG01" protocole=" #Proxy " source="src" target="dst"/>
+                <object objectType="flux" idflux="FG01" protocole="#proxy" source="dst" target="src"/>
+                <object objectType="flux" idflux="FG02" protocole="#proxy" source="src" target="dst"
+                    mecanismeAuth="certificat"/>
+                <object objectType="flux" idflux="#proxy" protocole="multi"/>
+                <object objectType="flux" idflux="FG03" protocole="#proxy-other"/>
+                <object objectType="flux" idflux="FG04" protocole="#empty"/>
+                <object objectType="flux" idflux="FG05" protocole="#"/>
+                <object objectType="flux" idflux="F-local" protocole="TCP" port="22"><mxCell parent="legend"/></object>
+            </root></mxGraphModel></diagram>
+            <diagram name="Légende"><mxGraphModel><root>
+                <object id="src" labelBrique="Autre page"/>
+                <object id="legend" objectType="cartoucheMultiFlux" label="#proxy"/>
+                <object objectType="flux" protocole="HTTPS" port="443" mecanismeAuth="certificat">
+                    <mxCell parent="legend"/>
+                </object>
+                <object objectType="flux" protocole="HTTP" port="80" mecanismeAuth="Whitelist IP">
+                    <mxCell parent="legend"/>
+                </object>
+                <object id="empty" objectType="cartoucheMultiFlux" label="#empty"/>
+                <object objectType="flux" protocole="HTTPS" port=" "><mxCell parent="empty"/></object>
+                <object objectType="flux" protocole="multi" port="80"><mxCell parent="empty"/></object>
+            </root></mxGraphModel></diagram>
+        </mxfile>
+        """
+        _, rows = parse_architecture_diagram(xml)
+        self.assertEqual(
+            [(row["flux_id"], row["source"], row["cible"], row["port"], row["authentification"]) for row in rows],
+            [
+                ("FG01", "API", "Proxy", "443", "oui"), ("FG01", "API", "Proxy", "80", ""),
+                ("FG01", "Proxy", "API", "443", "oui"), ("FG01", "Proxy", "API", "80", ""),
+                ("FG02", "API", "Proxy", "443", "oui"), ("FG02", "API", "Proxy", "80", ""),
+                ("F-local", "", "", "22", ""),
+            ],
+        )
+
+    def test_multiflux_range_matches_existing_ids_across_digit_widths(self):
+        xml = f"""
+        <mxGraphModel><root>
+            <object id="range" objectType="cartoucheMultiFlux" label="FG09..FG{'9' * 4500}"/>
+            <object objectType="flux" protocole="TCP" port="22"><mxCell parent="range"/></object>
+            <object id="invalid" objectType="cartoucheMultiFlux" label="FG08..ZZ40"/>
+            <object objectType="flux" protocole="TCP" port="23"><mxCell parent="invalid"/></object>
+            <object id="descending" objectType="cartoucheMultiFlux" label="FG12..FG08"/>
+            <object objectType="flux" protocole="TCP" port="24"><mxCell parent="descending"/></object>
+            <object objectType="flux" idflux="FG08" protocole="multi"/>
+            <object objectType="flux" idflux="FG09" protocole="multi"/>
+            <object objectType="flux" idflux="FG9" protocole="multi"/>
+            <object objectType="flux" idflux="FG10" protocole="multi"/>
+            <object objectType="flux" idflux="FG010" protocole="multi"/>
+        </root></mxGraphModel>
+        """
+        _, rows = parse_architecture_diagram(xml)
+        self.assertEqual([(row["flux_id"], row["port"]) for row in rows], [("FG09", "22"), ("FG10", "22")])
+
+    def test_architecture_aggregation_preserves_legacy_flow_id_deduplication(self):
+        drawio = '<mxGraphModel><root><object objectType="flux" idflux="F1" protocole="HTTPS"/></root></mxGraphModel>'
+        _, drawio_rows = parse_architecture_diagram(drawio, deduplicate=False)
+        likec4_rows = [{"flux_id": " f1 ", "source": "API", "protocole": "http", "port": "443"}]
+        _, rows = dedupe_architecture_rows([], drawio_rows + likec4_rows)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["flux_id"], rows[0]["source"], rows[0]["protocole"], rows[0]["port"]),
+                         ("F1", "API", "HTTPS", "443"))
 
     def test_dedupe_architecture_rows_merges_values(self):
         briques = [

@@ -46,7 +46,7 @@
                 <td>{{ obj.title }}</td>
                 <td>{{ obj.application|default:"—" }}</td>
                 <td>{{ obj.business_direction|default:"—" }}</td>
-                <td>{{ obj.get_status_display }}</td>
+                <td><span class="cinta-status-badge cinta-status-badge--{{ obj.status_tone }}">{{ obj.get_status_display }}</span></td>
                 <td>{{ obj.owner|default:"—" }}</td>
                 <td>{{ obj.created_at|date:"d/m/Y" }} à {{ obj.created_at|time:"H\\hi" }}</td>
                 <td>{{ obj.updated_at|date:"d/m/Y" }} à {{ obj.updated_at|time:"H\\hi" }}</td>

@@ -45,7 +45,7 @@ from diagrams.likec4_scope import refresh_revision, scope_headers
 from diagrams.models import DrawIODiagram, LikeC4Diagram
 from diagrams.references import iter_diagram_references
 from diagrams.validation import sanitize_diagram_title
-from cintafactory.french_messages import FrenchCreateMessageMixin, FrenchUpdateMessageMixin
+from cintafactory.french_messages import FrenchCreateMessageMixin, FrenchDeleteView, FrenchUpdateMessageMixin
 from cintafactory.url_safety import is_http_url
 from cintafactory.pagination import PaginatedMaterialListMixin, PaginatedModelViewSetMixin
 from cintafactory.select_options import normalize_remote_select_query
@@ -63,7 +63,13 @@ from .constants import (
     DAT_REQUIRED_PARTICIPANT_ROLE_LABELS,
     DAT_REQUIRED_PARTICIPANT_ROLE_SLUGS,
 )
-from .drawio_parser import BRIQUE_COLUMNS, FLUX_COLUMNS, dedupe_architecture_rows, parse_architecture_diagram
+from .drawio_parser import (
+    BRIQUE_COLUMNS,
+    FLUX_COLUMNS,
+    MultifluxExpansionLimitExceeded,
+    dedupe_architecture_rows,
+    parse_architecture_diagram,
+)
 from .export_access import (
     ExportAccessConflict,
     ExportAccessPermissionDenied,
@@ -2845,6 +2851,7 @@ def user_can_progress_dat(dat: DAT, user) -> bool:
 
 class BaseSecuredViewSet(LoginRequiredMixin, ModelViewSet):
     list_view_class = ModuleAwareListView
+    delete_view_class = FrenchDeleteView
     def has_view_permission(self, request, obj=None):
         return request.user.is_authenticated
 
@@ -3381,7 +3388,7 @@ class DatDetail(ModuleContextMixin, LoginRequiredMixin, DetailView):
             )
         context["section_nav"] = section_nav
         context["selected_section_slug"] = selected_slug
-        context["selected_sections"] = (
+        selected_sections = (
             build_section_payload(
                 self.object,
                 self.request.user,
@@ -3392,6 +3399,16 @@ class DatDetail(ModuleContextMixin, LoginRequiredMixin, DetailView):
             if selected_slug and selected_slug != "validation"
             else []
         )
+        context["selected_sections"] = selected_sections
+        context["sub_section_nav"] = [
+            {
+                "slug": part["section_part"].slug,
+                "title": part["section_part"].title,
+            }
+            for container in selected_sections
+            for part in container["parts"]
+        ]
+        context["sub_section_nav_user_id"] = self.request.user.pk
         if selected_slug == "validation":
             from workflows.review_diagram import review_diagram
             context["validation_section_rows"] = build_validation_section_rows(
@@ -4558,14 +4575,16 @@ def parse_schema_diagram(request, dat_pk: int):
 
     briques_rows: list[dict[str, str]] = []
     flux_rows: list[dict[str, str]] = []
-    if diagrams:
+    try:
         for diagram in diagrams:
             diagram_xml = diagram.read_xml() or ""
-            briques, fluxes = parse_architecture_diagram(diagram_xml)
+            briques, fluxes = parse_architecture_diagram(diagram_xml, deduplicate=False)
             if briques:
                 briques_rows.extend(briques)
             if fluxes:
                 flux_rows.extend(fluxes)
+    except MultifluxExpansionLimitExceeded:
+        return JsonResponse({"ok": False, "error": "graph_too_large"}, status=413)
     if likec4_diagrams:
         for diagram in likec4_diagrams:
             likec4_payload = _fetch_likec4_flow_matrix(diagram)

@@ -4,6 +4,7 @@
 
 import hashlib
 import json
+import unicodedata
 import uuid
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -25,6 +26,40 @@ class DATStatus(models.TextChoices):
     VALIDER = "valider", "Valider"
     REFUSE = "refuse", "Refusé"
     RESERVE = "reserve", "Reserve"
+
+
+DAT_STATUS_TONES = {
+    DATStatus.NOUVELLE_DEMANDE: "todo",
+    DATStatus.EN_COURS: "in-progress",
+    DATStatus.EN_ATTENTE_DE_REVUE: "review",
+    DATStatus.VALIDER: "validated",
+    DATStatus.REFUSE: "refused",
+    DATStatus.RESERVE: "reserve",
+}
+
+
+def _normalize_dat_status_label(status) -> str:
+    normalized = unicodedata.normalize("NFKD", str(status or "").strip())
+    return "".join(char for char in normalized if not unicodedata.combining(char)).casefold()
+
+
+DAT_STATUS_LABEL_TONES = {
+    _normalize_dat_status_label(label): DAT_STATUS_TONES[value]
+    for value, label in DATStatus.choices
+}
+DAT_STATUS_TONE_ALIASES = {
+    "a faire": "todo",
+    "a valider": "review",
+    "bloque": "reserve",
+    "valide": "validated",
+}
+
+
+def dat_status_tone(status) -> str:
+    if isinstance(status, str) and status in DAT_STATUS_TONES:
+        return DAT_STATUS_TONES[status]
+    normalized = _normalize_dat_status_label(status)
+    return DAT_STATUS_LABEL_TONES.get(normalized, DAT_STATUS_TONE_ALIASES.get(normalized, "todo"))
 
 
 class DATParticipantType(models.TextChoices):
@@ -149,6 +184,10 @@ class DAT(WorkflowTrackedContent, models.Model):
 
     def __str__(self) -> str:
         return f"{self.display_reference()} - {self.title}"
+
+    @property
+    def status_tone(self) -> str:
+        return dat_status_tone(self.status)
 
     def display_reference(self, *, max_length=None) -> str:
         if not self.application_id:

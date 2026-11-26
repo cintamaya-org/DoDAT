@@ -184,7 +184,7 @@
   {
     "slug": "besoins",
     "title": "BESOIN(S)",
-    "description": "Capture des besoins exprimés par le porteur.",
+    "description": "",
     "allowed_roles": [
       "porteur-demande"
     ],
@@ -247,7 +247,7 @@
   {
     "slug": "urbanisme",
     "title": "URBANISME",
-    "description": "Analyse urbanisme et cohérence d'ensemble.",
+    "description": "",
     "allowed_roles": [
       "urbaniste"
     ],
@@ -519,7 +519,7 @@
   {
     "slug": "architecture",
     "title": "ARCHITECTURE",
-    "description": "Vue d'architecture cible et décisions associées.",
+    "description": "",
     "allowed_roles": [
       "architecte-technique",
       "architecte-referent"
@@ -972,7 +972,7 @@
   {
     "slug": "cybersecurite",
     "title": "CYBERSÉCURITÉ",
-    "description": "Évaluations et mesures cyber.",
+    "description": "",
     "allowed_roles": [
       "analyste-secu",
       "rssi"
@@ -1324,7 +1324,7 @@
   {
     "slug": "exploitation",
     "title": "EXPLOITATION",
-    "description": "Préparation à l'exploitation et à l'exploitation continue.",
+    "description": "",
     "allowed_roles": [
       "infra-exploitation"
     ],

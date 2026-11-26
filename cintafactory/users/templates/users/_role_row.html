@@ -20,7 +20,7 @@
     {% endif %}
   </td>
   <td>
-    <div class="u-flex u-gap-0-3 u-flex-wrap">
+    <div class="role-row__actions">
       <a href="{% url 'users:role_detail' pk=obj.pk %}" class="btn-flat waves-effect">Détails</a>
       {% if request.user.is_superuser %}
         <a href="{% url 'users:role_change' pk=obj.pk %}" class="btn-flat waves-effect">Modifier</a>

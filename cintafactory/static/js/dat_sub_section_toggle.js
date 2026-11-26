@@ -13,6 +13,10 @@
     activeAnimations.delete(content);
 
     button.setAttribute("aria-expanded", String(expanded));
+    const arrow = button.querySelector(".dat-sub-section__toggle-arrow");
+    if (arrow) {
+      arrow.textContent = expanded ? "keyboard_arrow_up" : "keyboard_arrow_down";
+    }
     content.inert = !expanded;
     if (!animate || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       content.hidden = !expanded;

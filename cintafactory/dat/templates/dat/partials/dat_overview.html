@@ -20,7 +20,7 @@
       </h5>
     </div>
     <div class="dat-overview-actions">
-      <span class="chip blue lighten-4" title="Statut actuel">{{ dat.get_status_display }}</span>
+      <span class="cinta-status-badge cinta-status-badge--{{ dat.status_tone }}" title="Statut actuel">{{ dat.get_status_display }}</span>
         <a
           href="#dat-history-modal"
           class="btn waves-effect waves-light cinta-btn-primary dat-modal-trigger"

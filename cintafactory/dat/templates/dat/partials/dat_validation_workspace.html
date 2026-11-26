@@ -18,7 +18,7 @@
           {% elif dat_is_reviewable %}
             <span class="dat-validation-status dat-validation-status--review">En attente de revue</span>
           {% else %}
-            <span class="dat-validation-status dat-validation-status--neutral">{{ dat.get_status_display }}</span>
+            <span class="dat-validation-status dat-validation-status--{{ dat.status_tone }}">{{ dat.get_status_display }}</span>
           {% endif %}
         </div>
       </div>

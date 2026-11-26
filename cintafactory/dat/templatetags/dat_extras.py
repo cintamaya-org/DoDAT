@@ -74,6 +74,7 @@ SECTION_STATUS_ICON_MAP = {
 SECTION_STATUS_ICON_DEFAULT = {
     "name": "radio_button_unchecked",
     "color": DEFAULT_STATUS_ICON_COLOR,
+    "tone": "todo",
     "variant": MATERIAL_SYMBOLS_VARIANT,
 }
 
@@ -83,6 +84,13 @@ def get_item(mapping, key):
     if isinstance(mapping, dict):
         return mapping.get(key)
     return None
+
+
+@register.filter
+def status_palette_tone(status):
+    from dat.models import dat_status_tone
+
+    return dat_status_tone(status)
 
 
 @register.filter
@@ -170,10 +178,13 @@ def section_part_tooltip(section_slug, part_slug):
 @register.simple_tag
 def section_status_icon(status_value=None):
     icon = SECTION_STATUS_ICON_MAP.get(status_value) or SECTION_STATUS_ICON_DEFAULT
+    from dat.models import dat_status_tone
+
     return {
         "name": icon.get("name"),
         "variant": icon.get("variant", DEFAULT_ICON_VARIANT),
         "color": icon.get("color", DEFAULT_STATUS_ICON_COLOR),
+        "tone": dat_status_tone(status_value),
     }
 
 

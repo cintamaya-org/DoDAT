@@ -97,12 +97,12 @@
   border-bottom: 1px solid var(--review-line);
 }
 .approval-workspace .review-lane span { width: 146px; color: var(--review-muted); font-size: .8rem; font-weight: 600; overflow-wrap: anywhere; }
-.approval-workspace [data-tone] { --tone: var(--cinta-color-text-muted); --tint: var(--cinta-color-surface-subtle); }
-.approval-workspace [data-tone=completed] { --tone: var(--cinta-color-success); --tint: var(--cinta-color-success-bg); }
+.approval-workspace [data-tone] { --tone: var(--cinta-color-status-todo); --tint: var(--cinta-color-status-todo-tint); }
+.approval-workspace [data-tone=completed] { --tone: var(--cinta-color-status-validated); --tint: var(--cinta-color-status-validated-tint); }
 .approval-workspace [data-tone=current],
-.approval-workspace [data-tone=ready] { --tone: var(--review-accent); --tint: var(--cinta-color-brand-50); }
-.approval-workspace [data-tone=blocked] { --tone: var(--cinta-color-warning); --tint: var(--cinta-color-warning-bg); }
-.approval-workspace [data-tone=rejected] { --tone: var(--cinta-color-danger); --tint: var(--cinta-color-danger-bg); }
+.approval-workspace [data-tone=ready] { --tone: var(--cinta-color-status-review); --tint: var(--cinta-color-status-review-tint); }
+.approval-workspace [data-tone=blocked] { --tone: var(--cinta-color-status-reserve); --tint: var(--cinta-color-status-reserve-tint); }
+.approval-workspace [data-tone=rejected] { --tone: var(--cinta-color-status-refused); --tint: var(--cinta-color-status-refused-tint); }
 .approval-workspace .review-node {
   position: absolute;
   display: flex;
@@ -168,7 +168,7 @@
 .approval-workspace .review-legend [data-tone=skipped]::before { border-style: dashed; }
 .approval-workspace .review-connection-key-dotted::before { content: ''; width: 16px; border-top: 3px dotted var(--review-direct); }
 .approval-workspace .review-connection-key::before { content: ''; width: 16px; border-top: 3px solid var(--review-direct); }
-.approval-workspace .review-return-key, .approval-workspace .workflow-refusal-link { color: var(--cinta-color-danger); }
+.approval-workspace .review-return-key, .approval-workspace .workflow-refusal-link { color: var(--cinta-color-status-refused); }
 .approval-workspace .review-step { padding: 18px; margin: 0 0 12px; overflow-wrap: anywhere; }
 .approval-workspace .review-step h3 { font-size: 1.25rem; line-height: 1.3; margin: 10px 0 2px; font-weight: 650; }
 .approval-workspace .review-step p { margin: 10px 0; }

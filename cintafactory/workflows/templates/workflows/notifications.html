@@ -1,5 +1,5 @@
 {% extends "material/frontend/base_module.html" %}
-{% load static %}
+{% load static dat_extras %}
 
 {% block title %}Notifications{% endblock %}
 {% block page_title %}Notifications{% endblock %}
@@ -90,10 +90,10 @@
                 <div class="wf-notification__status-chips">
                   {% if notification.source == "history" and notification.action == history_actions.STATUS_CHANGED %}
                     {% if notification.status_from %}
-                      <span class="chip grey lighten-3" title="Statut précédent">{{ notification.status_from }}</span>
+                      <span class="cinta-status-badge cinta-status-badge--{{ notification.status_from|status_palette_tone }}" title="Statut précédent">{{ notification.status_from }}</span>
                     {% endif %}
                     {% if notification.status_to and notification.status_to != notification.status_from %}
-                      <span class="chip blue lighten-5" title="Statut actuel">{{ notification.status_to }}</span>
+                      <span class="cinta-status-badge cinta-status-badge--{{ notification.status_to|status_palette_tone }}" title="Statut actuel">{{ notification.status_to }}</span>
                     {% endif %}
                   {% else %}
                     <span class="chip grey lighten-3">{{ notification.actor_name }}</span>

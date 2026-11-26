@@ -40,8 +40,39 @@
             </div>
           {% endfor %}
         </div>
-
       </div>
+      {% if sub_section_nav %}
+        <div class="dat-subsection-nav" data-dat-subsection-nav data-user-id="{{ sub_section_nav_user_id }}">
+          <div
+            id="dat-subsection-nav-links"
+            class="dat-section-nav dat-subsection-nav__links"
+            role="navigation"
+            aria-label="Sous-sections du DAT"
+          >
+            {% for entry in sub_section_nav %}
+              <div class="dat-section-nav-item">
+                <a
+                  href="#sub-section-{{ entry.slug }}"
+                  class="dat-section-link dat-subsection-nav__link{% if forloop.first %} active-section{% endif %}"
+                  data-subsection-target="{{ entry.slug }}"
+                  {% if forloop.first %}aria-current="location"{% endif %}
+                >{{ entry.title }}</a>
+              </div>
+            {% endfor %}
+          </div>
+          <button
+            type="button"
+            class="dat-subsection-nav__toggle"
+            data-dat-subsection-nav-toggle
+            aria-controls="dat-subsection-nav-links"
+            aria-expanded="true"
+            aria-label="Masquer les sous-sections"
+            title="Masquer les sous-sections"
+          >
+            <i class="material-icons" aria-hidden="true">keyboard_arrow_up</i>
+          </button>
+        </div>
+      {% endif %}
       </div>
     </div>
     {% endif %}
@@ -55,7 +86,7 @@
       {% else %}
         <div{% if selected_section_slug == "informations-generales" %} class="u-mt-1-5"{% endif %}>
           {% for container in selected_sections %}
-            {% include "dat/partials/dat_section_card.html" with container=container dat=dat wrap=False %}
+            {% include "dat/partials/dat_section_card.html" with container=container dat=dat wrap=False subsection_cards=True %}
           {% empty %}
             {% if selected_section_slug != "informations-generales" %}
               <p class="u-m-0">Aucune donnée n'est disponible pour cette section.</p>
@@ -221,7 +252,7 @@
                       {% if item.kind == "validation" %}
                         {% if entry.action == history_actions.RESPONSIBLE_VALIDATION %}
                           <div class="dat-section-history-entry">
-                            <span class="chip green lighten-4">Validation référent</span>
+                            <span class="cinta-status-badge cinta-status-badge--validated">Validation référent</span>
                           </div>
                           {% with details=entry.details %}
                             {% if details.section %}
@@ -239,7 +270,7 @@
                           {% endwith %}
                         {% else %}
                           <div class="dat-section-history-entry">
-                            <span class="chip green lighten-4">Validation</span>
+                          <span class="cinta-status-badge cinta-status-badge--validated">Validation</span>
                           </div>
                           {% if entry.details.from or entry.details.to %}
                             Passage de <strong>{{ entry.details.from|default:"-" }}</strong> à <strong>{{ entry.details.to|default:"-" }}</strong>.
@@ -250,9 +281,9 @@
                       {% else %}
                         <div class="dat-section-history-entry">
                           {% if entry.action == "cleared" %}
-                            <span class="chip blue lighten-4">Réserve levée</span>
+                            <span class="cinta-status-badge cinta-status-badge--validated">Réserve levée</span>
                           {% else %}
-                            <span class="chip grey lighten-3">Mise en réserve</span>
+                            <span class="cinta-status-badge cinta-status-badge--reserve">Mise en réserve</span>
                           {% endif %}
                         </div>
                         {% if entry.section_title or entry.section_slug %}

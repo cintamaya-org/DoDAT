@@ -21,7 +21,7 @@ from cintafactory.pagination import (
     PaginatedMaterialListMixin,
     PaginatedModelViewSetMixin,
 )
-from cintafactory.french_messages import FrenchCreateMessageMixin, FrenchUpdateMessageMixin
+from cintafactory.french_messages import FrenchCreateMessageMixin, FrenchDeleteView, FrenchUpdateMessageMixin
 from cintafactory.select_options import MAX_REMOTE_SELECT_RESULTS, normalize_remote_select_query
 
 from .forms import BusinessDirectionForm, BusinessGroupForm, RoleForm, TechnicalDirectionForm, UserForm
@@ -145,6 +145,7 @@ class SuperAdminRequiredMixin(LoginRequiredMixin):
 
 class BaseSecuredViewSet(PaginatedModelViewSetMixin, SuperAdminRequiredMixin, ModelViewSet):
     list_view_class = ModuleAwareListView
+    delete_view_class = FrenchDeleteView
 
     def has_view_permission(self, request, obj=None):
         return self._is_super_admin(request)

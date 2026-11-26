@@ -35,11 +35,93 @@
   <td>{{ obj.owner|default:"—" }}</td>
   <td>{{ obj.created_at|date:"Y-m-d H:i" }}</td>
   <td>
-    <a href="{% url 'dat:my_detail' obj.pk %}" class="btn-flat waves-effect">Détails</a>
+    <button
+      type="button"
+      class="btn-flat waves-effect dat-list__detail-toggle"
+      aria-expanded="false"
+      aria-controls="dat-details-{{ obj.pk }}"
+      aria-label="Afficher les détails du DAT {{ obj.display_reference }}"
+      data-label-collapsed="Afficher les détails du DAT {{ obj.display_reference }}"
+      data-label-expanded="Masquer les détails du DAT {{ obj.display_reference }}"
+      data-dat-detail-toggle
+      data-detail-target="dat-details-{{ obj.pk }}"
+    >
+      Détails <i class="material-icons" aria-hidden="true">expand_more</i>
+    </button>
     {% if obj.can_change %}
-      <a href="/dat/manage/dats/crud/{{ obj.pk }}/change/" class="btn-flat waves-effect">Modifier</a>
+      <a href="/dat/manage/dats/crud/{{ obj.pk }}/change/" class="btn-flat waves-effect dat-list__modify-button">Modifier</a>
     {% else %}
       <span class="text-muted-faint">—</span>
     {% endif %}
+  </td>
+</tr>
+<tr id="dat-details-{{ obj.pk }}" class="dat-list__details-row" aria-hidden="true" hidden>
+  <td colspan="8">
+    <div class="dat-list__detail-panel">
+      <div class="dat-list__detail-inner">
+        <div class="dat-list__details-grid">
+          <section class="dat-list__detail-section" aria-labelledby="dat-details-info-{{ obj.pk }}">
+            <h3 id="dat-details-info-{{ obj.pk }}">Informations du DAT</h3>
+            <dl class="dat-list__detail-list">
+              <div>
+                <dt>Référence</dt>
+                <dd>{{ obj.display_reference }}</dd>
+              </div>
+              <div>
+                <dt>Statut du DAT</dt>
+                <dd><span class="cinta-status-badge cinta-status-badge--{{ obj.status_tone }}">{{ obj.get_status_display }}</span></dd>
+              </div>
+              <div>
+                <dt>Application</dt>
+                <dd>{{ obj.application|default:"—" }}</dd>
+              </div>
+              <div>
+                <dt>Direction métier</dt>
+                <dd>{{ obj.business_direction|default:"—" }}</dd>
+              </div>
+              <div>
+                <dt>Responsable</dt>
+                <dd>{{ obj.owner|default:"—" }}</dd>
+              </div>
+              <div>
+                <dt>Créé le</dt>
+                <dd>{{ obj.created_at|date:"Y-m-d H:i" }}</dd>
+              </div>
+              <div>
+                <dt>Modifié le</dt>
+                <dd>{{ obj.updated_at|date:"Y-m-d H:i" }}</dd>
+              </div>
+              {% if obj.description %}
+                <div class="dat-list__detail-description">
+                  <dt>Description</dt>
+                  <dd>{{ obj.description }}</dd>
+                </div>
+              {% endif %}
+            </dl>
+          </section>
+
+          <section class="dat-list__detail-section" aria-labelledby="dat-details-sections-{{ obj.pk }}">
+            <h3 id="dat-details-sections-{{ obj.pk }}">Statut des sections</h3>
+            {% if obj.section_statuses %}
+              <ul class="dat-list__section-status-list">
+                {% for section_status in obj.section_statuses %}
+                  <li class="dat-list__section-status-item">
+                    <div class="dat-list__section-status-heading">
+                      <strong>{{ section_status.title }}</strong>
+                      <span class="dat-list__section-status-badge dat-list__section-status-badge--{{ section_status.tone }}">
+                        {{ section_status.status }}
+                      </span>
+                    </div>
+                    <span class="dat-list__section-editor">Affecté à : {{ section_status.editor }}</span>
+                  </li>
+                {% endfor %}
+              </ul>
+            {% else %}
+              <p class="dat-list__empty-status">Aucune section disponible.</p>
+            {% endif %}
+          </section>
+        </div>
+      </div>
+    </div>
   </td>
 </tr>

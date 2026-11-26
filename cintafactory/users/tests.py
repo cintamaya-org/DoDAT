@@ -23,7 +23,7 @@ from django.urls import reverse
 from .models import BusinessDirection, BusinessGroup, OAuthAccount, TechnicalDirection, Role
 from .forms import BusinessGroupForm, UserForm
 from . import oauth_views
-from .views import ModuleAwareCreateView, ModuleAwareUpdateView
+from .views import ModuleAwareCreateView, ModuleAwareUpdateView, UserViewSet
 from .oauth_providers import OAuthProvider, get_oauth_provider, list_enabled_oauth_providers
 from .oauth_service import OAuthError, build_authorize_url, resolve_oauth_user
 from .oauth_views import SESSION_NEXT_KEY, SESSION_PROVIDER_KEY, SESSION_STATE_KEY
@@ -51,6 +51,28 @@ class FrenchUserCrudMessagesTest(SimpleTestCase):
                 with mock.patch("cintafactory.french_messages.messages.success") as add_success:
                     view.message_user()
                 add_success.assert_called_once_with(request, expected_message)
+
+    def test_material_delete_toast_is_french_and_keeps_object_name(self):
+        from cintafactory.french_messages import FrenchDeleteView
+
+        request = SimpleNamespace()
+        view = FrenchDeleteView()
+        view.request = request
+        view.object = "Compte de test"
+
+        with mock.patch("cintafactory.french_messages.messages.success") as add_success:
+            view.message_user()
+
+        add_success.assert_called_once_with(
+            request,
+            "Suppression effectuée : « Compte de test ».",
+            fail_silently=True,
+        )
+
+    def test_user_crud_uses_french_material_delete_view(self):
+        from cintafactory.french_messages import FrenchDeleteView
+
+        self.assertIs(UserViewSet.delete_view_class, FrenchDeleteView)
 
 
 class _OAuthHTTPResponse:

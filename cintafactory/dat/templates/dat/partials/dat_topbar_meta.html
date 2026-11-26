@@ -1,9 +1,9 @@
 {% if dat.status %}
   <span
-    class="topbar__title-meta topbar__title-meta--{{ dat.status }}"
+    class="topbar__title-meta cinta-status-meta--{{ dat.status_tone }}"
     aria-label="Version {{ dat.display_reference }}, statut {{ dat.get_status_display }}"
     title="{{ dat.display_reference }} · {{ dat.get_status_display }}"
   >
-    <span class="topbar__version-reference">{{ dat.display_reference }}</span> · {{ dat.get_status_display|lower }}
+    <span class="topbar__version-reference">{{ dat.display_reference }}</span> · <span class="cinta-status-text cinta-status-text--{{ dat.status_tone }}">{{ dat.get_status_display|lower }}</span>
   </span>
 {% endif %}

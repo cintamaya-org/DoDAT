@@ -151,5 +151,14 @@ def build_dat_list_section_statuses(dats: list[DAT]) -> dict[UUID, list[dict[str
             editor = dats_by_id[section.dat_id].owner
         editor_name = format_user_display(editor) if editor is not None else "Non affecté"
         title = section.title or section.slug
-        result[section.dat_id].append({"tone": tone, "text": f"{title} · {STATUS_LABELS[tone]} · {editor_name}"})
+        status_label = STATUS_LABELS[tone]
+        result[section.dat_id].append(
+            {
+                "tone": tone,
+                "title": title,
+                "status": status_label,
+                "editor": editor_name,
+                "text": f"{title} · {status_label} · {editor_name}",
+            }
+        )
     return dict(result)

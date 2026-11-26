@@ -1,6 +1,7 @@
 {% load dat_extras %}
 {% with drawio_table_id="drawio-table-"|add:container_section.metadata.slug|add:"-"|add:part.section_part.slug %}
-<div class="section dat-sub-section" data-sub-section-slug="{{ part.section_part.slug }}" id="sub-section-{{ part.section_part.slug }}">
+<div class="section dat-sub-section{% if subsection_card %} card cinta-card dat-sub-section--card{% endif %}" data-sub-section-slug="{{ part.section_part.slug }}" id="sub-section-{{ part.section_part.slug }}">
+  {% if subsection_card %}<div class="card-content">{% endif %}
   <div class="dat-sub-section__header">
     <div class="dat-sub-section__header-body">
       {% with part_icon=container_section.metadata.slug|section_part_icon:part.section_part.slug %}
@@ -8,6 +9,15 @@
         {% if part_icon %}
           <span class="{{ part_icon.variant }} dat-section-part-icon" aria-hidden="true">{{ part_icon.name }}</span>
         {% endif %}
+        <button
+          type="button"
+          class="dat-sub-section__toggle"
+          aria-expanded="true"
+          aria-controls="sub-section-content-{{ container_section.metadata.slug }}-{{ part.section_part.slug }}"
+          aria-label="Afficher ou masquer la sous-section : {{ part.section_part.title }}"
+        >
+          <i class="material-icons dat-sub-section__toggle-arrow" aria-hidden="true">keyboard_arrow_up</i>
+        </button>
         {{ part.section_part.title }}
         {% with tooltip_text=container_section.metadata.slug|section_part_tooltip:part.section_part.slug %}
           {% if tooltip_text %}
@@ -23,17 +33,6 @@
       </h6>
       {% endwith %}
     </div>
-    <button
-      type="button"
-      class="dat-sub-section__toggle"
-      aria-expanded="true"
-      aria-controls="sub-section-content-{{ container_section.metadata.slug }}-{{ part.section_part.slug }}"
-      aria-label="Afficher ou masquer la sous-section : {{ part.section_part.title }}"
-    >
-      <svg class="dat-sub-section__toggle-arrow" width="32" height="24" viewBox="0 0 32 24" fill="none" aria-hidden="true" focusable="false">
-        <path d="M3 19L16 5L29 19" stroke="currentColor" stroke-width="1.5" />
-      </svg>
-    </button>
     {% if part.can_edit %}
       <a
         href="{% url 'dat:sub_section_edit' dat.pk container_section.metadata.slug part.section_part.slug %}"
@@ -168,9 +167,9 @@
                                               {% with row_slug=row|get_item:"section_slug" validated_value=container.status_values|get_item:"validated" %}
                                                 {% if row_slug and container.validation_allowed_sections|get_item:row_slug %}
                                                   {% if row|get_item:"statut_responsable" == validated_value %}
-                                                    <span class="chip green lighten-4 dat-sub-section__chip-spaced">Validée</span>
+                                                    <span class="cinta-status-badge cinta-status-badge--validated dat-sub-section__chip-spaced">Validée</span>
                                                   {% elif row|get_item:"statut" != validated_value %}
-                                                    <span class="chip grey lighten-3 dat-sub-section__chip-spaced">Attente section</span>
+                                                    <span class="cinta-status-badge cinta-status-badge--todo dat-sub-section__chip-spaced">Attente section</span>
                                                   {% else %}
                                                     <form method="post" action="{% url 'dat:section_responsible_status' dat.pk row_slug %}" class="dat-sub-section__inline-form-spaced">
                                                       {% csrf_token %}
@@ -194,12 +193,17 @@
                           </div>
                           {% if pagination.num_pages > 1 %}
                             <p class="text-muted" data-table-search-empty hidden>Aucune ligne ne correspond à votre recherche.</p>
-                            <div class="dat-list__pagination" role="navigation" aria-label="Pagination {{ entry.label }}">
-                              <div data-table-page-status aria-live="polite">Page 1 sur {{ pagination.num_pages }} · {{ pagination.total }} ligne{{ pagination.total|pluralize }}</div>
-                              <div class="dat-list__pagination-actions">
-                                <button type="button" class="btn waves-effect waves-light cinta-btn-primary" data-table-page-step="-1" disabled>Précédent</button>
-                                <button type="button" class="btn waves-effect waves-light cinta-btn-primary" data-table-page-step="1">Suivant</button>
+                            <div class="dat-table__pagination" role="navigation" aria-label="Pagination {{ entry.label }}">
+                              <button type="button" class="dat-table__page-step" data-table-page-step="-1" aria-label="Page précédente" disabled>
+                                <i class="material-icons" aria-hidden="true">chevron_left</i>
+                              </button>
+                              <div class="dat-table__page-info">
+                                <div data-table-page-status aria-live="polite">Page 1 sur {{ pagination.num_pages }}</div>
+                                <div class="dat-table__page-size">{{ pagination.page_size }} ligne{{ pagination.page_size|pluralize }}</div>
                               </div>
+                              <button type="button" class="dat-table__page-step" data-table-page-step="1" aria-label="Page suivante">
+                                <i class="material-icons" aria-hidden="true">chevron_right</i>
+                              </button>
                             </div>
                           {% endif %}
                         </div>
@@ -225,5 +229,6 @@
     <p class="u-m-0 text-muted-soft">Aucune donnée pour cette sous-section.</p>
   {% endif %}
   </div>
+  {% if subsection_card %}</div>{% endif %}
 </div>
 {% endwith %}

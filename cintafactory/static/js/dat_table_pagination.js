@@ -31,8 +31,7 @@
     container.dataset.page = String(page);
     container.dataset.tableQuery = query;
     container.querySelector("[data-table-page-status]").textContent =
-      `Page ${page} sur ${numPages} · ${matches.length} ligne${matches.length > 1 ? "s" : ""}`
-      + (query ? ` sur ${rows.length}` : "");
+      `Page ${page} sur ${numPages}`;
     container.querySelector('[data-table-page-step="-1"]').disabled = page === 1;
     container.querySelector('[data-table-page-step="1"]').disabled = page === numPages;
 

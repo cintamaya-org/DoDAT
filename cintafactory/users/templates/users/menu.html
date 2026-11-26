@@ -3,8 +3,8 @@
 {% block menu_toggle_label %}{% endblock %} {# etiquette vide #}
 {% block app_menu_items %}
   {% if request.user.is_superuser %}
-    <li><a href="{% url 'users:user_list' %}"><i class='material-icons icon-custom-menu'>supervisor_account</i>Gestion des utilisateurs</a></li>
-    <li><a href="{% url 'users:group_list' %}"><i class='material-icons'>group_work</i>Gestion des groupes</a></li>
+    <li><a href="{% url 'users:user_list' %}"><i class='material-icons icon-custom-menu'>supervisor_account</i>Utilisateurs</a></li>
+    <li><a href="{% url 'users:group_list' %}"><i class='material-icons'>group_work</i>Groupes</a></li>
     <li><a href="{% url 'users:technical_direction_list' %}"><i class='material-icons'>share</i>Directions technique</a></li>
     <li><a href="{% url 'users:business_direction_list' %}"><i class='material-icons'>business</i>Directions métier</a></li>
     <li><a href="{% url 'users:role_list' %}"><i class='material-icons'>shield</i>Gestion des roles</a></li>
