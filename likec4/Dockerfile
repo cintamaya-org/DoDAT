@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright:v1.64.0-noble@sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f AS runtime
+FROM mcr.microsoft.com/playwright:v1.65.1-noble@sha256:1507cbfc550a63a6b7396791ca4f00df17beb56342d2447b3f106c306f525579 AS runtime
 # Existing layout dependency, pinned rather than removed during isolation.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends graphviz=2.42.2-9ubuntu0.1 libbrotli1=1.1.0-2ubuntu0.1 \
